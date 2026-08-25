@@ -134,7 +134,7 @@ struct GraphView {
     /// Carries the picker's selections into [`GraphView::set_mode`].
     _mode_choices: Subscription,
     kind_picker: Entity<MultiSelect>,
-    /// Carries the picker's toggles into [`model::set_kind_selection`].
+    /// Carries the picker's toggles into [`model::set_kind_visible`].
     _kind_choices: Subscription,
     search: Search,
     /// Box under the cursor.
@@ -205,15 +205,12 @@ impl GraphView {
             )
         });
         let kind_choices = cx.subscribe(&kind_picker, |view, picker, event, cx| {
-            let MultiSelectEvent::Changed(_) = event;
-            let indices = picker.read(cx).selected();
-            let kinds = Kind::ALL
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| indices.contains(i))
-                .map(|(_, k)| *k)
-                .collect();
-            model::set_kind_selection(view, kinds, cx);
+            let MultiSelectEvent::Changed(index) = *event;
+            let Some(&kind) = Kind::ALL.get(index) else {
+                return;
+            };
+            let checked = picker.read(cx).selected().contains(&index);
+            model::set_kind_visible(view, kind, checked, cx);
         });
         let search = Search::new(cx);
         Self {

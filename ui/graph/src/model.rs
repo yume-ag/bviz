@@ -314,21 +314,23 @@ pub(crate) fn relayout(view: &mut GraphView, cx: &mut Context<GraphView>) {
     );
 }
 
-/// Bulk-adds or removes every node of the given kinds to or from the visible
-/// set, matching the kind picker's checked state, and re-derives the graph.
-pub(crate) fn set_kind_selection(
+/// Bulk-adds or removes every node of `kind` to or from the visible set,
+/// matching the kind picker's new checked state for that one row, and
+/// re-derives the graph. Every other kind's nodes are left exactly as they
+/// were, so a node search individually hid or re-shown stays that way across
+/// an unrelated kind toggle.
+pub(crate) fn set_kind_visible(
     view: &mut GraphView,
-    kinds: HashSet<Kind>,
+    kind: Kind,
+    visible: bool,
     cx: &mut Context<GraphView>,
 ) {
     let Source::Loaded(loaded) = &view.model.source else {
         return;
     };
     let raw = Arc::clone(&loaded.raw);
-    // A node not present in `kinds` but individually re-shown by search stays
-    // shown: this only touches the kinds the picker actually reports on.
-    for node in &raw.nodes {
-        if kinds.contains(&node.kind) {
+    for node in raw.nodes.iter().filter(|n| n.kind == kind) {
+        if visible {
             view.model.visible.insert(node.id);
         } else {
             view.model.visible.remove(&node.id);
