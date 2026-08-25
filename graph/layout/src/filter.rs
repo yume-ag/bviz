@@ -11,7 +11,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::graph::{EdgeKind, Graph};
+use crate::graph::{EdgeKind, Graph, Node};
 use crate::intern::Id;
 
 /// `graph` restricted to `keep`: every kept node, reparented to its nearest
@@ -19,6 +19,11 @@ use crate::intern::Id;
 /// nodes; and one [`EdgeKind::Transitive`] edge for each kept pair the original
 /// graph connected only via dropped nodes and that keeps no direct edge of its
 /// own. An id in `keep` that names no node in `graph` is ignored.
+///
+/// `graph` must already carry dense, ascending ids (`nodes[i].id == Id(i)`, as
+/// [`crate::joint::build_joint`] produces and this function also produces) —
+/// see [`densify`] for why. The result keeps every survivor's relative order,
+/// so it satisfies the same precondition and can itself be filtered again.
 pub fn filter(graph: &Graph, keep: &HashSet<Id>) -> Graph {
     let parent_of: HashMap<Id, Option<Id>> = graph.nodes.iter().map(|n| (n.id, n.parent)).collect();
 
@@ -62,6 +67,35 @@ pub fn filter(graph: &Graph, keep: &HashSet<Id>) -> Graph {
         out.add_edge(from, to, EdgeKind::Transitive);
     }
 
+    densify(out)
+}
+
+/// Renumbers `graph`'s ids into a dense `0..nodes.len()` range, keeping each
+/// node's position in `graph.nodes` (so a graph already in that order, such as
+/// this function's own input, keeps its relative order). [`crate::lod`] and
+/// [`crate::map`] index straight into per-node arrays sized to the node count,
+/// so every graph reaching them must hold this invariant — one that dropping
+/// nodes, as [`filter`] does, otherwise breaks by leaving gaps.
+fn densify(graph: Graph) -> Graph {
+    let remap: HashMap<Id, Id> = graph
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.id, Id(i as u32)))
+        .collect();
+    let mut out = Graph::new();
+    for node in &graph.nodes {
+        out.nodes.push(Node {
+            id: remap[&node.id],
+            label: node.label.clone(),
+            kind: node.kind,
+            group: node.group,
+            parent: node.parent.map(|p| remap[&p]),
+        });
+    }
+    for edge in &graph.edges {
+        out.add_edge(remap[&edge.from], remap[&edge.to], edge.kind);
+    }
     out
 }
 
@@ -157,17 +191,36 @@ mod tests {
         labels.iter().map(|l| n.get(l).unwrap()).collect()
     }
 
-    fn edges(g: &Graph, n: &Names) -> HashSet<(String, String, EdgeKind)> {
+    /// A node's label, so an assertion can name a survivor without assuming
+    /// anything about the id [`filter`] renumbered it to.
+    fn label_of(g: &Graph, id: Id) -> &str {
+        g.nodes
+            .iter()
+            .find(|n| n.id == id)
+            .map(|n| n.label.as_str())
+            .unwrap_or_else(|| panic!("no node with id {id:?} in the output"))
+    }
+
+    fn edges(g: &Graph) -> HashSet<(String, String, EdgeKind)> {
         g.edges
             .iter()
             .map(|e| {
                 (
-                    n.resolve(e.from).to_string(),
-                    n.resolve(e.to).to_string(),
+                    label_of(g, e.from).to_string(),
+                    label_of(g, e.to).to_string(),
                     e.kind,
                 )
             })
             .collect()
+    }
+
+    /// [`filter`]'s output must satisfy the same dense, ascending-id invariant
+    /// its input does, or a second pass over it (or `lod`/`map`, which index by
+    /// id into node-count-sized arrays) would read out of bounds.
+    fn assert_dense(g: &Graph) {
+        for (i, node) in g.nodes.iter().enumerate() {
+            assert_eq!(node.id, Id(i as u32), "node {i} is out of place");
+        }
     }
 
     #[test]
@@ -175,8 +228,9 @@ mod tests {
         let (g, n) = build(&[("a", "b"), ("b", "c")]);
         let out = filter(&g, &ids(&n, &["a", "c"]));
         assert_eq!(out.nodes.len(), 2);
+        assert_dense(&out);
         assert_eq!(
-            edges(&out, &n),
+            edges(&out),
             [("a".to_string(), "c".to_string(), EdgeKind::Transitive)]
                 .into_iter()
                 .collect()
@@ -188,7 +242,7 @@ mod tests {
         let (g, n) = build(&[("a", "b"), ("a", "c")]);
         let out = filter(&g, &ids(&n, &["a", "c"]));
         assert_eq!(
-            edges(&out, &n),
+            edges(&out),
             [("a".to_string(), "c".to_string(), EdgeKind::Query)]
                 .into_iter()
                 .collect()
@@ -199,8 +253,9 @@ mod tests {
     fn fan_out_through_a_dropped_hub_reaches_every_kept_successor() {
         let (g, n) = build(&[("a", "d"), ("d", "b"), ("d", "c")]);
         let out = filter(&g, &ids(&n, &["a", "b", "c"]));
+        assert_dense(&out);
         assert_eq!(
-            edges(&out, &n),
+            edges(&out),
             [
                 ("a".to_string(), "b".to_string(), EdgeKind::Transitive),
                 ("a".to_string(), "c".to_string(), EdgeKind::Transitive),
@@ -215,7 +270,7 @@ mod tests {
         let (g, n) = build(&[("a", "d"), ("b", "d"), ("d", "c")]);
         let out = filter(&g, &ids(&n, &["a", "b", "c"]));
         assert_eq!(
-            edges(&out, &n),
+            edges(&out),
             [
                 ("a".to_string(), "c".to_string(), EdgeKind::Transitive),
                 ("b".to_string(), "c".to_string(), EdgeKind::Transitive),
@@ -238,7 +293,7 @@ mod tests {
         }
         let out = filter(&g, &ids(&n, &["a", "b"]));
         assert_eq!(
-            edges(&out, &n),
+            edges(&out),
             [("a".to_string(), "b".to_string(), EdgeKind::Transitive)]
                 .into_iter()
                 .collect()
@@ -267,7 +322,7 @@ mod tests {
         }
         let out = filter(&g, &ids(&n, &["a", "x", "b", "c"]));
         assert_eq!(
-            edges(&out, &n),
+            edges(&out),
             [
                 ("a".to_string(), "b".to_string(), EdgeKind::Transitive),
                 ("a".to_string(), "c".to_string(), EdgeKind::Transitive),
@@ -291,8 +346,9 @@ mod tests {
         g.add_node(leaf, "leaf", Kind::Target, Some(mid));
 
         let out = filter(&g, &ids(&n, &["root", "leaf"]));
-        let leaf_out = out.nodes.iter().find(|node| node.id == leaf).unwrap();
-        assert_eq!(leaf_out.parent, Some(root));
+        assert_dense(&out);
+        let leaf_out = out.nodes.iter().find(|node| node.label == "leaf").unwrap();
+        assert_eq!(leaf_out.parent.map(|p| label_of(&out, p)), Some("root"));
     }
 
     #[test]
@@ -316,5 +372,18 @@ mod tests {
         keep.insert(Id(9999));
         let out = filter(&g, &keep);
         assert_eq!(out.nodes.len(), 2);
+    }
+
+    /// A dropped middle node leaves a gap in the original numbering (here id 1
+    /// of 3), which fed straight to `map_layout` used to panic on an
+    /// out-of-bounds index: `lod::IndexedGraph` sizes its arrays to the node
+    /// count and indexes them by id directly, an invariant only [`densify`]
+    /// restores once nodes have been dropped.
+    #[test]
+    fn a_gap_left_by_a_dropped_node_still_lays_out() {
+        let (g, n) = build(&[("a", "b"), ("b", "c")]);
+        let out = filter(&g, &ids(&n, &["a", "c"]));
+        let reduced = crate::reduce::transitive_reduction(&out);
+        crate::map::map_layout(&out, &reduced);
     }
 }
