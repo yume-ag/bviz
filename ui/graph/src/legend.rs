@@ -2,13 +2,18 @@ use crate::Palette;
 use bviz_graph_layout::{EdgeKind, LaidOut};
 use gpui::{Div, div, prelude::*, px};
 
-/// Lists the edge provenances actually drawn, in enum order, so it explains only
-/// the kinds present in this graph. `None` when none are drawn.
+/// Lists the edge kinds actually drawn, in enum order, so it explains only the
+/// kinds present in this graph. `None` when none are drawn.
 pub(crate) fn legend(g: &LaidOut, palette: &Palette) -> Option<Div> {
-    let present: Vec<EdgeKind> = [EdgeKind::Query, EdgeKind::Cquery, EdgeKind::Aquery]
-        .into_iter()
-        .filter(|k| g.connectors.iter().any(|c| c.kinds.contains(k)))
-        .collect();
+    let present: Vec<EdgeKind> = [
+        EdgeKind::Query,
+        EdgeKind::Cquery,
+        EdgeKind::Aquery,
+        EdgeKind::Transitive,
+    ]
+    .into_iter()
+    .filter(|k| g.connectors.iter().any(|c| c.kinds.contains(k)))
+    .collect();
     (!present.is_empty()).then(|| {
         div()
             .absolute()

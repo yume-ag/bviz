@@ -38,12 +38,16 @@ pub struct Node {
 
 /// Which Bazel query an edge came from, so the renderer can style the static
 /// (query), configured (cquery), and execution-phase (aquery) dependencies
-/// distinctly when several are drawn in one joint graph.
+/// distinctly when several are drawn in one joint graph. `Transitive` marks an
+/// edge the `filter` pass synthesizes to stand in for a path the original graph
+/// only had through a node the filter dropped, so it carries no single query's
+/// provenance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum EdgeKind {
     Query,
     Cquery,
     Aquery,
+    Transitive,
 }
 
 impl EdgeKind {
@@ -53,6 +57,7 @@ impl EdgeKind {
             EdgeKind::Query => "query",
             EdgeKind::Cquery => "cquery",
             EdgeKind::Aquery => "aquery",
+            EdgeKind::Transitive => "transitive",
         }
     }
 }

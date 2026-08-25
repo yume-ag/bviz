@@ -8,6 +8,7 @@
 //! from each dependency to the target that consumes it.
 pub mod aquery;
 pub mod cquery;
+pub mod filter;
 pub mod graph;
 pub mod intern;
 pub mod joint;

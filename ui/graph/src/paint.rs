@@ -234,13 +234,15 @@ impl Palette {
 
     /// Connector color, keyed by the query an edge came from, so static (query),
     /// configured (cquery), and execution-phase (aquery) dependencies read
-    /// distinctly. `marked` carries the color by [`MARK_LIFT`], which leaves
-    /// untouched the hue that names the query.
+    /// distinctly; a filter's synthetic transitive edges take a fourth hue of
+    /// their own. `marked` carries the color by [`MARK_LIFT`], which leaves
+    /// untouched the hue that names the kind.
     pub(crate) fn edge_color(&self, kind: EdgeKind, marked: bool) -> Rgba {
         let slot = match kind {
             EdgeKind::Query => self.data.blue,
             EdgeKind::Cquery => self.data.cyan,
             EdgeKind::Aquery => self.data.orange,
+            EdgeKind::Transitive => self.data.red,
         };
         match marked {
             false => slot.into(),
@@ -1147,7 +1149,12 @@ mod colors {
     const CONTAINER_KINDS: [Kind; 3] = [Kind::Package, Kind::Group, Kind::Target];
 
     /// Every provenance a connector is drawn in.
-    const EDGE_KINDS: [EdgeKind; 3] = [EdgeKind::Query, EdgeKind::Cquery, EdgeKind::Aquery];
+    const EDGE_KINDS: [EdgeKind; 4] = [
+        EdgeKind::Query,
+        EdgeKind::Cquery,
+        EdgeKind::Aquery,
+        EdgeKind::Transitive,
+    ];
 
     /// Every theme's palette, under the name it answers to, for a rule that has
     /// to hold whichever one a window paints with.
