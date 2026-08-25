@@ -4,7 +4,7 @@ use crate::mode::LayoutMode;
 use crate::morph;
 use crate::{GraphView, MARGIN};
 use bviz_graph_layout::graph::Graph;
-use bviz_graph_layout::{Id, LaidOut, MapLayout, Names};
+use bviz_graph_layout::{Id, Kind, LaidOut, MapLayout, Names};
 use bviz_ui_components::load_in_background;
 use gpui::{Context, Task};
 use std::collections::HashSet;
@@ -31,8 +31,12 @@ pub(crate) struct Loaded {
     /// The layered layout of the expanded view; absent until that mode is first
     /// selected, and replaced by each relayout.
     layered: Option<Arc<LaidOut>>,
-    /// The built (pre-quotient) graph, cached so toggling a group re-lays-out
-    /// without re-reading or re-parsing the proto.
+    /// The joint graph exactly as built from the proto, before any kind filter
+    /// narrows it. Cached so changing the kind filter re-derives from it without
+    /// re-reading or re-parsing the proto.
+    raw: Arc<Graph>,
+    /// `raw` restricted to the current kind filter (identical to `raw` when
+    /// every kind is selected), pre-quotient. Every relayout starts from this.
     base: Arc<Graph>,
     /// The base with its transitively-redundant edges removed, cached so the
     /// reduced view's edges are a stable projection of one fixed skeleton.
@@ -157,10 +161,12 @@ impl Model {
                         view.model.containers =
                             Arc::new(bviz_graph_layout::lod::expandable_containers(&graph));
                         view.model.expanded = expanded;
+                        let graph = Arc::new(graph);
                         Source::Loaded(Loaded {
                             map: Arc::new(map),
                             layered: None,
-                            base: Arc::new(graph),
+                            raw: Arc::clone(&graph),
+                            base: graph,
                             reduced_base: Arc::new(reduced_base),
                             names,
                         })
@@ -283,6 +289,63 @@ pub(crate) fn relayout(view: &mut GraphView, cx: &mut Context<GraphView>) {
             view.framing.request_recenter();
             view.model.relaying = false;
             emphasis::begin_fade(view, cx);
+        },
+    );
+}
+
+/// Restricts the cached raw graph to nodes of the given kinds and adopts the
+/// result as the base every later relayout starts from, off the UI thread. The
+/// map pyramid, the expandable containers, and the default expansion are all
+/// derived from node identity, so a change in which nodes exist re-derives
+/// every one of them rather than patching them in place; the prior layered
+/// layout is dropped for the same reason, and recomputed only if that mode is
+/// on screen.
+pub(crate) fn set_kind_filter(
+    view: &mut GraphView,
+    kinds: HashSet<Kind>,
+    cx: &mut Context<GraphView>,
+) {
+    let Source::Loaded(loaded) = &view.model.source else {
+        return;
+    };
+    let raw = Arc::clone(&loaded.raw);
+    view.model.relaying = true;
+    view.model._task = load_in_background(
+        cx,
+        move || {
+            let keep: HashSet<Id> = raw
+                .nodes
+                .iter()
+                .filter(|n| kinds.contains(&n.kind))
+                .map(|n| n.id)
+                .collect();
+            let base = bviz_graph_layout::filter::filter(&raw, &keep);
+            let reduced_base = bviz_graph_layout::reduce::transitive_reduction(&base);
+            let map = bviz_graph_layout::map_layout(&base, &reduced_base);
+            let expanded = bviz_graph_layout::lod::default_expansion(
+                &base,
+                MAX_VISIBLE_NODES,
+                MAX_VISIBLE_EDGES,
+            );
+            (base, reduced_base, map, expanded)
+        },
+        |view, (base, reduced_base, map, expanded), cx| {
+            view.model.containers = Arc::new(bviz_graph_layout::lod::expandable_containers(&base));
+            view.model.expanded = expanded;
+            if let Source::Loaded(loaded) = &mut view.model.source {
+                loaded.base = Arc::new(base);
+                loaded.reduced_base = Arc::new(reduced_base);
+                loaded.map = Arc::new(map);
+                loaded.layered = None;
+            }
+            view.hovered = None;
+            view.emphasis.clear();
+            view.morph.clear();
+            view.framing.refit();
+            view.model.relaying = false;
+            if view.mode == LayoutMode::Layered {
+                relayout(view, cx);
+            }
         },
     );
 }

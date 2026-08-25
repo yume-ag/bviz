@@ -2,8 +2,10 @@
 //! through `bviz_graph_layout`, lays the graph out, and opens a window
 //! rendering the result.
 
-use bviz_graph_layout::Id;
-use bviz_ui_components::{DragEnd, Dropdown, DropdownEvent, ScrollbarColors};
+use bviz_graph_layout::{Id, Kind};
+use bviz_ui_components::{
+    DragEnd, Dropdown, DropdownEvent, MultiSelect, MultiSelectEvent, ScrollbarColors,
+};
 use bviz_ui_shell::Chrome;
 use bviz_ui_theme::{DataColors, Theme, ThemeColors};
 use clap::Parser;
@@ -129,6 +131,9 @@ struct GraphView {
     mode_picker: Entity<Dropdown>,
     /// Carries the picker's selections into [`GraphView::set_mode`].
     _mode_choices: Subscription,
+    kind_picker: Entity<MultiSelect>,
+    /// Carries the picker's toggles into [`model::set_kind_filter`].
+    _kind_choices: Subscription,
     /// Box under the cursor.
     hovered: Option<Id>,
     /// Whether hovering a box marks its neighborhood; flipped by the `h` key or
@@ -187,6 +192,26 @@ impl GraphView {
                 view.set_mode(mode, cx);
             }
         });
+        let kind_picker = cx.new(|cx| {
+            MultiSelect::new(
+                "kind-filter",
+                "kinds",
+                Kind::ALL.map(Kind::label),
+                (0..Kind::ALL.len()).collect(),
+                cx,
+            )
+        });
+        let kind_choices = cx.subscribe(&kind_picker, |view, picker, event, cx| {
+            let MultiSelectEvent::Changed(_) = event;
+            let indices = picker.read(cx).selected();
+            let kinds = Kind::ALL
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| indices.contains(i))
+                .map(|(_, k)| *k)
+                .collect();
+            model::set_kind_filter(view, kinds, cx);
+        });
         Self {
             focus_handle,
             model: Model::loading(inputs, cx),
@@ -197,6 +222,8 @@ impl GraphView {
             mode,
             mode_picker,
             _mode_choices: choices,
+            kind_picker,
+            _kind_choices: kind_choices,
             hovered: None,
             neighborhood_enabled: true,
             reduced: true,
@@ -381,6 +408,7 @@ impl Render for GraphView {
                 let controls = Controls {
                     mode: self.mode,
                     picker: self.mode_picker.clone(),
+                    kind_picker: self.kind_picker.clone(),
                     neighborhood_enabled: self.neighborhood_enabled,
                     reduced: self.reduced,
                     relaying: self.model.relaying(),
@@ -412,6 +440,7 @@ impl Render for GraphView {
 struct Controls {
     mode: LayoutMode,
     picker: Entity<Dropdown>,
+    kind_picker: Entity<MultiSelect>,
     neighborhood_enabled: bool,
     reduced: bool,
     relaying: bool,

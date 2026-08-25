@@ -21,6 +21,33 @@ pub enum Kind {
     Group,
 }
 
+impl Kind {
+    /// Every kind, in declaration order, for a UI that lets a user choose among
+    /// them (e.g. a kind filter).
+    pub const ALL: [Kind; 7] = [
+        Kind::Package,
+        Kind::Target,
+        Kind::ConfiguredTarget,
+        Kind::Action,
+        Kind::Artifact,
+        Kind::Source,
+        Kind::Group,
+    ];
+
+    /// The name shown for this kind in such a UI.
+    pub fn label(self) -> &'static str {
+        match self {
+            Kind::Package => "package",
+            Kind::Target => "target",
+            Kind::ConfiguredTarget => "configured target",
+            Kind::Action => "action",
+            Kind::Artifact => "artifact",
+            Kind::Source => "source",
+            Kind::Group => "group",
+        }
+    }
+}
+
 /// A box in the graph. A node is a container if any other node names it as
 /// parent, and a leaf otherwise.
 #[derive(Clone)]

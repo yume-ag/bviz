@@ -9,16 +9,18 @@ use gpui::{
 };
 
 /// The fill under the cursor on the row already chosen, composited so that row
-/// keeps its accent while the cursor is on it.
-fn chosen_hover(colors: &ThemeColors) -> Hsla {
+/// keeps its accent while the cursor is on it. Shared with [`crate::MultiSelect`],
+/// whose checked rows carry the same accent-under-hover treatment.
+pub(crate) fn chosen_hover(colors: &ThemeColors) -> Hsla {
     Hsla::from(over(
         colors.element_hover,
         over(colors.selection, colors.panel),
     ))
 }
 
-/// Breathing room between the trigger and the menu it opens.
-const MENU_GAP: Pixels = px(2.);
+/// Breathing room between the trigger and the menu it opens. Shared with
+/// [`crate::MultiSelect`], whose menu opens the same way.
+pub(crate) const MENU_GAP: Pixels = px(2.);
 
 /// Emitted when the user picks a different option. Programmatic
 /// [`set_selected`](Dropdown::set_selected) does NOT emit — only a user choice —
