@@ -1,3 +1,4 @@
+use crate::search::search_field;
 use crate::{Controls, GraphView, Palette};
 use bviz_ui_components::{Button, Toolbar, spinner};
 use gpui::{ClickEvent, Context, IntoElement, div, prelude::*, px};
@@ -10,6 +11,14 @@ pub(crate) fn toolbar(
     let mut bar = Toolbar::new()
         .child(controls.picker)
         .child(controls.kind_picker)
+        .child(search_field(
+            controls.search_input,
+            controls.search_focused,
+            controls.search_matches,
+            controls.search_over,
+            palette,
+            cx,
+        ))
         .child(
             Button::new(
                 "neighborhood-toggle",

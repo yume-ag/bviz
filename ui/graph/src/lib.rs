@@ -4,15 +4,15 @@
 
 use bviz_graph_layout::{Id, Kind};
 use bviz_ui_components::{
-    DragEnd, Dropdown, DropdownEvent, MultiSelect, MultiSelectEvent, ScrollbarColors,
+    DragEnd, Dropdown, DropdownEvent, MultiSelect, MultiSelectEvent, ScrollbarColors, TextInput,
 };
 use bviz_ui_shell::Chrome;
 use bviz_ui_theme::{DataColors, Theme, ThemeColors};
 use clap::Parser;
 use gpui::{
-    AnyElement, Bounds, Context, Entity, FocusHandle, IntoElement, KeyDownEvent, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render, Rgba, ScrollDelta,
-    ScrollWheelEvent, Subscription, Window, canvas, div, prelude::*, px, size,
+    AnyElement, Bounds, Context, Entity, FocusHandle, Focusable, IntoElement, KeyDownEvent,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render, Rgba,
+    ScrollDelta, ScrollWheelEvent, Subscription, Window, canvas, div, prelude::*, px, size,
 };
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -29,6 +29,7 @@ mod morph;
 mod neighborhood;
 mod paint;
 mod scroll;
+mod search;
 mod toolbar;
 
 use build::{Input, InputKind};
@@ -42,6 +43,7 @@ use model::{Drawn, Expandable, Model};
 use morph::{Frame, Morph};
 use paint::{Scene, TitleTarget, canvas_body};
 use scroll::{scrollbar_hit, start_scroll_drag};
+use search::Search;
 
 /// Padding around the graph, in layout pixels.
 const MARGIN: f64 = 16.0;
@@ -132,8 +134,9 @@ struct GraphView {
     /// Carries the picker's selections into [`GraphView::set_mode`].
     _mode_choices: Subscription,
     kind_picker: Entity<MultiSelect>,
-    /// Carries the picker's toggles into [`model::set_kind_filter`].
+    /// Carries the picker's toggles into [`model::set_kind_selection`].
     _kind_choices: Subscription,
+    search: Search,
     /// Box under the cursor.
     hovered: Option<Id>,
     /// Whether hovering a box marks its neighborhood; flipped by the `h` key or
@@ -210,8 +213,9 @@ impl GraphView {
                 .filter(|(i, _)| indices.contains(i))
                 .map(|(_, k)| *k)
                 .collect();
-            model::set_kind_filter(view, kinds, cx);
+            model::set_kind_selection(view, kinds, cx);
         });
+        let search = Search::new(cx);
         Self {
             focus_handle,
             model: Model::loading(inputs, cx),
@@ -224,6 +228,7 @@ impl GraphView {
             _mode_choices: choices,
             kind_picker,
             _kind_choices: kind_choices,
+            search,
             hovered: None,
             neighborhood_enabled: true,
             reduced: true,
@@ -405,10 +410,33 @@ impl Render for GraphView {
         let body = match self.model.source().placeholder(&palette.colors) {
             Some(placeholder) => placeholder.into_any_element(),
             None => {
+                let search_focused = self.search.input.focus_handle(cx).is_focused(window);
+                let query = self.search.input.read(cx).content();
+                let (search_matches, search_over) = match self.model.raw() {
+                    Some(raw) if search_focused => {
+                        let (found, over) = search::matches(raw, &query);
+                        (
+                            found
+                                .into_iter()
+                                .map(|n| search::Match {
+                                    id: n.id,
+                                    label: n.label.clone(),
+                                    visible: self.model.is_visible(n.id),
+                                })
+                                .collect(),
+                            over,
+                        )
+                    }
+                    _ => (Vec::new(), 0),
+                };
                 let controls = Controls {
                     mode: self.mode,
                     picker: self.mode_picker.clone(),
                     kind_picker: self.kind_picker.clone(),
+                    search_input: self.search.input.clone(),
+                    search_focused,
+                    search_matches,
+                    search_over,
                     neighborhood_enabled: self.neighborhood_enabled,
                     reduced: self.reduced,
                     relaying: self.model.relaying(),
@@ -441,6 +469,13 @@ struct Controls {
     mode: LayoutMode,
     picker: Entity<Dropdown>,
     kind_picker: Entity<MultiSelect>,
+    search_input: Entity<TextInput>,
+    /// Whether `search_input` holds focus, so its dropdown of `search_matches`
+    /// is open.
+    search_focused: bool,
+    search_matches: Vec<search::Match>,
+    /// Matches beyond `search_matches`'s cap, for a trailing count.
+    search_over: usize,
     neighborhood_enabled: bool,
     reduced: bool,
     relaying: bool,

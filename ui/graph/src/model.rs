@@ -131,6 +131,11 @@ pub(crate) struct Model {
     expanded: HashSet<Id>,
     /// The set a layered layout's [`Expandable`] is built from.
     containers: Arc<HashSet<Id>>,
+    /// The raw ids [`filter`](bviz_graph_layout::filter::filter) draws from,
+    /// written by the kind picker (every node of a toggled kind, at once) and
+    /// the label search (one node at a time); empty until the raw graph is
+    /// loaded, when it starts out holding every node.
+    visible: HashSet<Id>,
     /// Whether a layered layout is running, so the view shows a progress
     /// indicator while the prior layout stays interactive.
     relaying: bool,
@@ -161,6 +166,7 @@ impl Model {
                         view.model.containers =
                             Arc::new(bviz_graph_layout::lod::expandable_containers(&graph));
                         view.model.expanded = expanded;
+                        view.model.visible = graph.nodes.iter().map(|n| n.id).collect();
                         let graph = Arc::new(graph);
                         Source::Loaded(Loaded {
                             map: Arc::new(map),
@@ -179,6 +185,7 @@ impl Model {
             source: Source::Loading,
             expanded: HashSet::new(),
             containers: Arc::new(HashSet::new()),
+            visible: HashSet::new(),
             relaying: false,
             _task: task,
         }
@@ -186,6 +193,20 @@ impl Model {
 
     pub(crate) fn source(&self) -> &Source {
         &self.source
+    }
+
+    /// The unfiltered joint graph search reads labels from, or `None` before it
+    /// has loaded.
+    pub(crate) fn raw(&self) -> Option<&Graph> {
+        match &self.source {
+            Source::Loaded(loaded) => Some(&loaded.raw),
+            _ => None,
+        }
+    }
+
+    /// Whether `id` is in the current visible set, for a search row's checkmark.
+    pub(crate) fn is_visible(&self, id: Id) -> bool {
+        self.visible.contains(&id)
     }
 
     /// The layout `mode` draws, or `None` while the graph or that mode's layout
@@ -293,14 +314,9 @@ pub(crate) fn relayout(view: &mut GraphView, cx: &mut Context<GraphView>) {
     );
 }
 
-/// Restricts the cached raw graph to nodes of the given kinds and adopts the
-/// result as the base every later relayout starts from, off the UI thread. The
-/// map pyramid, the expandable containers, and the default expansion are all
-/// derived from node identity, so a change in which nodes exist re-derives
-/// every one of them rather than patching them in place; the prior layered
-/// layout is dropped for the same reason, and recomputed only if that mode is
-/// on screen.
-pub(crate) fn set_kind_filter(
+/// Bulk-adds or removes every node of the given kinds to or from the visible
+/// set, matching the kind picker's checked state, and re-derives the graph.
+pub(crate) fn set_kind_selection(
     view: &mut GraphView,
     kinds: HashSet<Kind>,
     cx: &mut Context<GraphView>,
@@ -309,17 +325,45 @@ pub(crate) fn set_kind_filter(
         return;
     };
     let raw = Arc::clone(&loaded.raw);
+    // A node not present in `kinds` but individually re-shown by search stays
+    // shown: this only touches the kinds the picker actually reports on.
+    for node in &raw.nodes {
+        if kinds.contains(&node.kind) {
+            view.model.visible.insert(node.id);
+        } else {
+            view.model.visible.remove(&node.id);
+        }
+    }
+    rederive(view, cx);
+}
+
+/// Flips whether `id` is in the visible set, matching a search row's click,
+/// and re-derives the graph.
+pub(crate) fn toggle_node_visible(view: &mut GraphView, id: Id, cx: &mut Context<GraphView>) {
+    if !view.model.visible.remove(&id) {
+        view.model.visible.insert(id);
+    }
+    rederive(view, cx);
+}
+
+/// Restricts the cached raw graph to the current visible set and adopts the
+/// result as the base every later relayout starts from, off the UI thread. The
+/// map pyramid, the expandable containers, and the default expansion are all
+/// derived from node identity, so a change in which nodes exist re-derives
+/// every one of them rather than patching them in place; the prior layered
+/// layout is dropped for the same reason, and recomputed only if that mode is
+/// on screen.
+fn rederive(view: &mut GraphView, cx: &mut Context<GraphView>) {
+    let Source::Loaded(loaded) = &view.model.source else {
+        return;
+    };
+    let raw = Arc::clone(&loaded.raw);
+    let visible = view.model.visible.clone();
     view.model.relaying = true;
     view.model._task = load_in_background(
         cx,
         move || {
-            let keep: HashSet<Id> = raw
-                .nodes
-                .iter()
-                .filter(|n| kinds.contains(&n.kind))
-                .map(|n| n.id)
-                .collect();
-            let base = bviz_graph_layout::filter::filter(&raw, &keep);
+            let base = bviz_graph_layout::filter::filter(&raw, &visible);
             let reduced_base = bviz_graph_layout::reduce::transitive_reduction(&base);
             let map = bviz_graph_layout::map_layout(&base, &reduced_base);
             let expanded = bviz_graph_layout::lod::default_expansion(
