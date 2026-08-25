@@ -43,6 +43,11 @@ const CONNECTOR_WIDTH: f32 = 1.5;
 /// an artifact of antialiasing.
 const MARKED_WIDTH: f32 = 2.0 * CONNECTOR_WIDTH;
 
+/// Dash and gap length (pre-zoom px) of a transitive edge's stroke, so it reads
+/// as standing in for a path a filter dropped rather than as a real dependency.
+const TRANSITIVE_DASH: f32 = 5.0;
+const TRANSITIVE_GAP: f32 = 3.0;
+
 /// How far a hover mark carries a connector's color in perceptual lightness,
 /// away from the canvas. Bounded below by a marked line standing
 /// [`bviz_ui_theme::MIN_DISTINCT_COLOR`] off the unmarked line of its own query,
@@ -737,6 +742,9 @@ fn paint_connector(
         false => CONNECTOR_WIDTH,
     };
     let mut line = PathBuilder::stroke(px(width * zoom));
+    if kind == EdgeKind::Transitive {
+        line = line.dash_array(&[px(TRANSITIVE_DASH * zoom), px(TRANSITIVE_GAP * zoom)]);
+    }
     line.move_to(pts[0]);
     for p in &pts[1..n - 1] {
         line.line_to(*p);
