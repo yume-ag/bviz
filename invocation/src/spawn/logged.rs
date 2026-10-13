@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use super::{Bytes, PhaseTiming};
+use super::{Bytes, InputBytes, PhaseTiming};
 
 /// The runner name Bazel logs for a spawn sent to a remote executor.
 const REMOTE_RUNNER: &str = "remote";
@@ -71,6 +71,29 @@ pub struct LoggedSpawns {
     records: Vec<Record>,
     /// Every spawn's outputs, each spawn's a run [`Record::outputs`] names.
     outputs: Paths,
+    inputs: MeasuredInputs,
+}
+
+/// The bytes each spawn of a [`LoggedSpawns`] read, in the order it lists them.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct MeasuredInputs {
+    per_spawn: Box<[InputBytes]>,
+}
+
+impl MeasuredInputs {
+    pub fn new(per_spawn: Vec<InputBytes>) -> Self {
+        Self {
+            per_spawn: per_spawn.into_boxed_slice(),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.per_spawn.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.per_spawn.is_empty()
+    }
 }
 
 struct Record {
@@ -143,9 +166,11 @@ impl LoggedSpawns {
 
     /// The spawns in the order the log lists them.
     pub fn iter(&self) -> impl ExactSizeIterator<Item = LoggedSpawn<'_>> {
-        self.records
-            .iter()
-            .map(|record| LoggedSpawn { log: self, record })
+        (self.records.iter().zip(&self.inputs.per_spawn)).map(|(record, &inputs)| LoggedSpawn {
+            log: self,
+            record,
+            inputs,
+        })
     }
 }
 
@@ -154,6 +179,7 @@ impl LoggedSpawns {
 pub struct LoggedSpawn<'a> {
     log: &'a LoggedSpawns,
     record: &'a Record,
+    inputs: InputBytes,
 }
 
 impl<'a> LoggedSpawn<'a> {
@@ -216,6 +242,10 @@ impl<'a> LoggedSpawn<'a> {
     /// as written, a tree artifact's being that of the files in it.
     pub fn output_bytes(&self) -> Bytes {
         self.record.output_bytes
+    }
+
+    pub fn input_bytes(&self) -> InputBytes {
+        self.inputs
     }
 
     /// The exec path of the first of [`outputs`](Self::outputs).
@@ -292,14 +322,21 @@ impl Builder {
         self.records.push(record);
     }
 
-    /// The spawns pushed; outputs added after the last of them are dropped.
-    pub fn finish(mut self) -> LoggedSpawns {
+    /// The spawns pushed, having read what `inputs` measures of them; outputs
+    /// added after the last spawn are dropped.
+    ///
+    /// # Panics
+    ///
+    /// Where `inputs` measures another number of spawns.
+    pub fn finish(mut self, inputs: MeasuredInputs) -> LoggedSpawns {
+        assert_eq!(inputs.len(), self.records.len(), "one measure per spawn");
         self.outputs.truncate(self.next_outputs);
         LoggedSpawns {
             runners: self.runners.into_vec(),
             mnemonics: self.mnemonics.into_vec(),
             records: self.records,
             outputs: self.outputs,
+            inputs,
         }
     }
 }
@@ -347,13 +384,42 @@ mod tests {
         }
     }
 
+    /// The spawns `builder` holds, reading no input.
+    fn finish(builder: Builder) -> LoggedSpawns {
+        let read = vec![InputBytes::default(); builder.records.len()];
+        builder.finish(MeasuredInputs::new(read))
+    }
+
+    #[test]
+    fn each_spawn_reads_what_was_measured_of_it() {
+        let mut builder = Builder::with_capacity(2, 0, 0);
+        builder.push(logged("remote", "A"));
+        builder.push(logged("remote", "B"));
+        let read = |tools, others| InputBytes {
+            tools: Bytes::new(tools),
+            others: Bytes::new(others),
+        };
+        let log = builder.finish(MeasuredInputs::new(vec![read(1, 2), read(0, 5)]));
+        let all: Vec<u64> = log.iter().map(|s| s.input_bytes().all().get()).collect();
+        assert_eq!(all, [3, 5]);
+        assert_eq!(log.iter().next().unwrap().input_bytes(), read(1, 2));
+    }
+
+    #[test]
+    #[should_panic(expected = "one measure per spawn")]
+    fn a_measure_of_other_spawns_is_refused() {
+        let mut builder = Builder::with_capacity(1, 0, 0);
+        builder.push(logged("remote", "A"));
+        builder.finish(MeasuredInputs::default());
+    }
+
     #[test]
     fn names_are_shared_between_spawns() {
         let mut builder = Builder::with_capacity(3, 0, 0);
         builder.push(logged("remote", "A"));
         builder.push(logged("local", "B"));
         builder.push(logged("remote", "B"));
-        let log = builder.finish();
+        let log = finish(builder);
         assert_eq!(*log.runners(), ["remote".into(), "local".into()]);
         assert_eq!(*log.mnemonics(), ["A".into(), "B".into()]);
         let runners: Vec<&str> = log.iter().map(|spawn| spawn.runner()).collect();
@@ -368,7 +434,7 @@ mod tests {
             target_label: "//a",
             ..logged("remote", "A")
         });
-        let log = builder.finish();
+        let log = finish(builder);
         let labels: Vec<_> = log.iter().map(|s| s.target_label()).collect();
         assert_eq!(labels, [None, Some("//a")]);
     }
@@ -386,7 +452,7 @@ mod tests {
             ..logged("disk cache hit", "C")
         });
         builder.output("bazel-out/dropped", Bytes::new(1));
-        let log = builder.finish();
+        let log = finish(builder);
         let outputs: Vec<Vec<&str>> = log.iter().map(|s| s.outputs().collect()).collect();
         assert_eq!(
             outputs,
@@ -426,7 +492,7 @@ mod tests {
                 ..logged(runner, "M")
             });
         }
-        let log = builder.finish();
+        let log = finish(builder);
         let on: Vec<SpawnRunner> = log.iter().map(|spawn| spawn.ran_on()).collect();
         let expected: Vec<SpawnRunner> = ran.iter().map(|&(_, _, runner)| runner).collect();
         assert_eq!(on, expected);

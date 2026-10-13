@@ -15,5 +15,6 @@ bviz_input = { workspace = true }
 bviz_invocation = { workspace = true }
 bviz_parallel = { workspace = true }
 prost = { workspace = true }
+rayon = { workspace = true }
 rustc-hash = { workspace = true }
 zstd = { workspace = true }

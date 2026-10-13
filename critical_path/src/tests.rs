@@ -521,7 +521,9 @@ fn logged<'a>(
 }
 
 fn log(spawns: &[LogSpawn]) -> LoggedSpawns {
-    use bviz_invocation::spawn::{Builder, Bytes, Logged, PhaseTiming, REPORTED_PHASES};
+    use bviz_invocation::spawn::{
+        Builder, Bytes, InputBytes, Logged, MeasuredInputs, PhaseTiming, REPORTED_PHASES,
+    };
     let mut builder = Builder::with_capacity(spawns.len(), 0, 0);
     for spawn in spawns {
         for output in spawn.outputs {
@@ -539,7 +541,10 @@ fn log(spawns: &[LogSpawn]) -> LoggedSpawns {
             timing: PhaseTiming::new(us(spawn.total_us), reported),
         });
     }
-    builder.finish()
+    builder.finish(MeasuredInputs::new(vec![
+        InputBytes::default();
+        spawns.len()
+    ]))
 }
 
 /// The spawns joined to `step`.

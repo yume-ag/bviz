@@ -507,7 +507,9 @@ pub(super) mod tests {
     /// A path of three steps: one whose span's output a remote spawn lists,
     /// one with a span no spawn is logged of, and one with neither.
     fn logged_path(logged: bool) -> CriticalPath {
-        use bviz_invocation::spawn::{Builder, Bytes, Logged, PhaseTiming, REPORTED_PHASES};
+        use bviz_invocation::spawn::{
+            Builder, Bytes, InputBytes, Logged, MeasuredInputs, PhaseTiming, REPORTED_PHASES,
+        };
         let json = r#"{"traceEvents":[
             {"name":"thread_name","ph":"M","tid":0,"args":{"name":"Critical Path"}},
             {"name":"thread_name","ph":"M","tid":1,"args":{"name":"Main Thread"}},
@@ -531,7 +533,7 @@ pub(super) mod tests {
             cache_hit: false,
             timing: PhaseTiming::new(ms(3), [Duration::ZERO; REPORTED_PHASES]),
         });
-        let log = builder.finish();
+        let log = builder.finish(MeasuredInputs::new(vec![InputBytes::default()]));
         CriticalPath::of(&profile, logged.then_some(&log), None).expect("path")
     }
 

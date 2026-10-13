@@ -26,6 +26,7 @@ rust_library(
         "//util/parallel",
         "@bazel_spawn_proto//:bazel_spawn_rust_proto",
         "@crates//:prost",
+        "@crates//:rayon",
         "@crates//:rustc-hash",
         "@crates//:zstd",
     ],

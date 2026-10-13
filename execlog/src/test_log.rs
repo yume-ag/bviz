@@ -62,6 +62,16 @@ pub(crate) fn directory(id: u32, path: &str, files: Vec<exec_log_entry::File>) -
     )
 }
 
+pub(crate) fn input_set(id: u32, input_ids: &[u32], transitive_set_ids: &[u32]) -> ExecLogEntry {
+    entry(
+        id,
+        Type::InputSet(exec_log_entry::InputSet {
+            input_ids: input_ids.to_vec(),
+            transitive_set_ids: transitive_set_ids.to_vec(),
+        }),
+    )
+}
+
 pub(crate) fn unresolved_symlink(id: u32, path: &str) -> ExecLogEntry {
     entry(
         id,

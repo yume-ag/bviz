@@ -37,3 +37,19 @@ impl Sum for Bytes {
         iter.fold(Bytes::ZERO, Add::add)
     }
 }
+
+/// The content of a spawn's inputs, each counted once however many of the
+/// sets that gather them hold it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct InputBytes {
+    /// The inputs that are the spawn's tools.
+    pub tools: Bytes,
+    /// The inputs that are none of the spawn's tools.
+    pub others: Bytes,
+}
+
+impl InputBytes {
+    pub fn all(self) -> Bytes {
+        self.tools + self.others
+    }
+}
