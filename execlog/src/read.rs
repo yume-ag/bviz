@@ -1,19 +1,18 @@
 use std::io::{self, ErrorKind, Read};
-use std::ops::Range;
 use std::time::Duration;
 
 use bazel_spawn_proto::duration_proto::google::protobuf::Duration as ProtoDuration;
 use bazel_spawn_proto::tools::protos::SpawnMetrics;
 use bazel_spawn_proto::tools::protos::exec_log_entry::Invocation;
 use bviz_input::Input;
-use bviz_invocation::spawn::{self, Logged, PhaseTiming, REPORTED_PHASES};
+use bviz_invocation::spawn::{self, Bytes, Logged, PhaseTiming, REPORTED_PHASES};
 use bviz_invocation::{InvocationId, Recorded};
 use bviz_parallel::worker_count;
 use prost::{DecodeError, Message};
 use rustc_hash::FxHashMap;
 
 use crate::frame::{first_message, for_each_message, for_each_message_pipelined};
-use crate::spawn_fields::exec_log_entry;
+use crate::spawn_fields::{digest, exec_log_entry};
 use crate::wire::{Value, next_field, text};
 use crate::{ExecLog, LoadError};
 
@@ -83,64 +82,95 @@ fn estimate(compressed: u64, bytes_per_item: u64) -> usize {
     usize::try_from(compressed / bytes_per_item).unwrap_or(usize::MAX)
 }
 
-/// Ids below this always index [`Paths`]'s vector.
+/// Ids below this always index [`Slots`]' vector.
 const DENSE_ID_FLOOR: usize = 4 << 10;
 
-/// Ids per held path [`Paths`]'s vector may span: Bazel numbers every entry
-/// from one counter, so the path entries' ids skip those of the others between.
-const DENSE_IDS_PER_PATH: usize = 4;
+/// Ids per held entry [`Slots`]' vector may span: Bazel numbers every entry
+/// from one counter, so the held entries' ids skip those of the others between.
+const DENSE_IDS_PER_ENTRY: usize = 4;
 
-/// The path of each file, directory and unresolved symlink entry, by entry id.
+/// The slot each held entry's data lies at in [`Entries`], by entry id.
 ///
 /// Bazel numbers entries from a counter, so ids run close to dense and index a
-/// vector; one beyond what the paths held so far could span goes to a map, so
-/// the vector stays within a multiple of the paths it holds.
-struct Paths {
-    text: String,
-    dense: Vec<Option<Range<usize>>>,
-    sparse: FxHashMap<u32, Range<usize>>,
-    held: usize,
+/// vector; one beyond what the entries held so far could span goes to a map, so
+/// the vector stays within a multiple of the entries it holds.
+struct Slots {
+    dense: Vec<Option<u32>>,
+    sparse: FxHashMap<u32, u32>,
 }
 
-impl Paths {
-    /// Room for the paths of a log of `entries` entries, `text_bytes` long
-    /// together.
-    fn with_capacity(entries: usize, text_bytes: usize) -> Paths {
-        Paths {
-            text: String::with_capacity(text_bytes),
+impl Slots {
+    fn with_capacity(entries: usize) -> Slots {
+        Slots {
             dense: Vec::with_capacity(entries),
             sparse: FxHashMap::default(),
-            held: 0,
         }
     }
 
-    fn insert(&mut self, id: u32, path: &str) {
-        let start = self.text.len();
-        self.text.push_str(path);
-        let range = start..self.text.len();
-        self.held += 1;
+    /// Points `id` at `slot`, the `slot + 1`th entry held.
+    fn insert(&mut self, id: u32, slot: u32) {
         let index = id as usize;
-        if index < DENSE_ID_FLOOR.max(self.held * DENSE_IDS_PER_PATH) {
+        if index < DENSE_ID_FLOOR.max((slot as usize + 1) * DENSE_IDS_PER_ENTRY) {
             if index >= self.dense.len() {
                 self.dense.resize(index + 1, None);
             }
-            self.dense[index] = Some(range);
+            self.dense[index] = Some(slot);
         } else {
-            self.sparse.insert(id, range);
+            self.sparse.insert(id, slot);
         }
     }
 
-    fn get(&self, id: u32) -> Option<&str> {
-        let range = match self.dense.get(id as usize) {
-            Some(Some(range)) => range,
-            _ => self.sparse.get(&id)?,
-        };
-        Some(&self.text[range.clone()])
+    fn get(&self, id: u32) -> Option<u32> {
+        match self.dense.get(id as usize) {
+            Some(Some(slot)) => Some(*slot),
+            _ => self.sparse.get(&id).copied(),
+        }
+    }
+}
+
+/// The path and content of each file, directory and unresolved symlink entry.
+struct Entries {
+    slots: Slots,
+    text: String,
+    /// Where each slot's path ends in `text`, the next slot's starting there.
+    path_ends: Vec<usize>,
+    bytes: Vec<Bytes>,
+}
+
+impl Entries {
+    /// Room for the entries of a log of `entries` entries, their paths
+    /// `text_bytes` long together.
+    fn with_capacity(entries: usize, text_bytes: usize) -> Entries {
+        Entries {
+            slots: Slots::with_capacity(entries),
+            text: String::with_capacity(text_bytes),
+            path_ends: Vec::with_capacity(entries),
+            bytes: Vec::with_capacity(entries),
+        }
+    }
+
+    fn insert(&mut self, id: u32, path: &str, bytes: Bytes) -> Result<(), DecodeError> {
+        let slot = u32::try_from(self.path_ends.len())
+            .map_err(|_| DecodeError::new("more entries than ids"))?;
+        self.text.push_str(path);
+        self.path_ends.push(self.text.len());
+        self.bytes.push(bytes);
+        self.slots.insert(id, slot);
+        Ok(())
+    }
+
+    /// The path and content of entry `id`.
+    fn get(&self, id: u32) -> Option<(&str, Bytes)> {
+        let slot = self.slots.get(id)? as usize;
+        let start = slot
+            .checked_sub(1)
+            .map_or(0, |before| self.path_ends[before]);
+        Some((&self.text[start..self.path_ends[slot]], self.bytes[slot]))
     }
 }
 
 struct Builder {
-    paths: Paths,
+    entries: Entries,
     spawns: spawn::Builder,
 }
 
@@ -149,7 +179,7 @@ impl Builder {
         let path_bytes = compressed.saturating_mul(PATH_BYTES_PER_COMPRESSED_KIB) >> 10;
         let output_bytes = compressed.saturating_mul(OUTPUT_BYTES_PER_COMPRESSED_KIB) >> 10;
         Builder {
-            paths: Paths::with_capacity(
+            entries: Entries::with_capacity(
                 estimate(compressed, COMPRESSED_BYTES_PER_ENTRY),
                 usize::try_from(path_bytes).unwrap_or(usize::MAX),
             ),
@@ -167,15 +197,15 @@ impl Builder {
             Some(Payload {
                 kind: exec_log_entry::FILE,
                 bytes,
-            }) => self.add_path(id, bytes, exec_log_entry::file::PATH)?,
+            }) => self.add_file(id, bytes)?,
             Some(Payload {
                 kind: exec_log_entry::DIRECTORY,
                 bytes,
-            }) => self.add_path(id, bytes, exec_log_entry::directory::PATH)?,
+            }) => self.add_directory(id, bytes)?,
             Some(Payload {
                 kind: exec_log_entry::UNRESOLVED_SYMLINK,
                 bytes,
-            }) => self.add_path(id, bytes, exec_log_entry::unresolved_symlink::PATH)?,
+            }) => self.add_unresolved_symlink(id, bytes)?,
             Some(Payload {
                 kind: exec_log_entry::SPAWN,
                 bytes,
@@ -185,21 +215,46 @@ impl Builder {
         Ok(())
     }
 
-    /// Holds field `path_field` of `payload` as the path of entry `id`.
-    fn add_path(
-        &mut self,
-        id: u32,
-        mut payload: &[u8],
-        path_field: u32,
-    ) -> Result<(), DecodeError> {
-        while !payload.is_empty() {
-            if let (field, Value::Bytes(path)) = next_field(&mut payload)?
-                && field == path_field
-            {
-                self.paths.insert(id, text(path)?);
+    fn add_file(&mut self, id: u32, mut file: &[u8]) -> Result<(), DecodeError> {
+        let mut path = "";
+        let mut bytes = Bytes::ZERO;
+        while !file.is_empty() {
+            match next_field(&mut file)? {
+                (exec_log_entry::file::PATH, Value::Bytes(value)) => path = text(value)?,
+                (exec_log_entry::file::DIGEST, Value::Bytes(digest)) => {
+                    bytes = digest_bytes(digest)?
+                }
+                _ => {}
             }
         }
-        Ok(())
+        self.entries.insert(id, path, bytes)
+    }
+
+    fn add_directory(&mut self, id: u32, mut directory: &[u8]) -> Result<(), DecodeError> {
+        let mut path = "";
+        let mut bytes = Bytes::ZERO;
+        while !directory.is_empty() {
+            match next_field(&mut directory)? {
+                (exec_log_entry::directory::PATH, Value::Bytes(value)) => path = text(value)?,
+                (exec_log_entry::directory::FILES, Value::Bytes(file)) => {
+                    bytes += file_bytes(file)?
+                }
+                _ => {}
+            }
+        }
+        self.entries.insert(id, path, bytes)
+    }
+
+    fn add_unresolved_symlink(&mut self, id: u32, mut symlink: &[u8]) -> Result<(), DecodeError> {
+        let mut path = "";
+        while !symlink.is_empty() {
+            if let (exec_log_entry::unresolved_symlink::PATH, Value::Bytes(value)) =
+                next_field(&mut symlink)?
+            {
+                path = text(value)?;
+            }
+        }
+        self.entries.insert(id, path, Bytes::ZERO)
     }
 
     fn add_spawn(&mut self, mut spawn: &[u8]) -> Result<(), DecodeError> {
@@ -211,8 +266,8 @@ impl Builder {
         while !spawn.is_empty() {
             match next_field(&mut spawn)? {
                 (exec_log_entry::spawn::OUTPUTS, Value::Bytes(output)) => {
-                    if let Some(path) = output_path(&self.paths, output)? {
-                        self.spawns.output(path);
+                    if let Some((path, bytes)) = spawn_output(&self.entries, output)? {
+                        self.spawns.output(path, bytes);
                     }
                 }
                 (exec_log_entry::spawn::TARGET_LABEL, Value::Bytes(bytes)) => {
@@ -244,21 +299,47 @@ impl Builder {
     }
 }
 
-/// The path of the spawn output encoded in `output`.
-fn output_path<'a>(paths: &'a Paths, mut output: &'a [u8]) -> Result<Option<&'a str>, DecodeError> {
-    let mut path = None;
+/// The path and content of the spawn output encoded in `output`.
+fn spawn_output<'a>(
+    entries: &'a Entries,
+    mut output: &'a [u8],
+) -> Result<Option<(&'a str, Bytes)>, DecodeError> {
+    let mut found = None;
     while !output.is_empty() {
         match next_field(&mut output)? {
             (exec_log_entry::output::OUTPUT_ID, Value::Varint(id)) => {
-                path = paths.get(entry_id(id)?);
+                found = entries.get(entry_id(id)?);
             }
             (exec_log_entry::output::INVALID_OUTPUT_PATH, Value::Bytes(bytes)) => {
-                path = Some(text(bytes)?);
+                found = Some((text(bytes)?, Bytes::ZERO));
             }
             _ => {}
         }
     }
-    Ok(path)
+    Ok(found)
+}
+
+/// The content of the file encoded in `file`, none where it has no digest.
+fn file_bytes(mut file: &[u8]) -> Result<Bytes, DecodeError> {
+    let mut bytes = Bytes::ZERO;
+    while !file.is_empty() {
+        if let (exec_log_entry::file::DIGEST, Value::Bytes(digest)) = next_field(&mut file)? {
+            bytes = digest_bytes(digest)?;
+        }
+    }
+    Ok(bytes)
+}
+
+/// The content size the digest encoded in `digest` names; a negative one
+/// reads as none.
+fn digest_bytes(mut digest: &[u8]) -> Result<Bytes, DecodeError> {
+    let mut bytes = Bytes::ZERO;
+    while !digest.is_empty() {
+        if let (digest::SIZE_BYTES, Value::Varint(size)) = next_field(&mut digest)? {
+            bytes = Bytes::new(u64::try_from(size as i64).unwrap_or(0));
+        }
+    }
+    Ok(bytes)
 }
 
 struct Entry<'a> {
@@ -423,6 +504,41 @@ mod tests {
     }
 
     #[test]
+    fn a_spawn_wrote_the_content_of_its_outputs() {
+        let mut writes = spawn("remote", "M", metrics(1, &[]));
+        writes.outputs = vec![
+            output_id(1),
+            output_id(2),
+            output_id(3),
+            output_id(4),
+            invalid_output("bazel-out/missing"),
+        ];
+        let mut writes_nothing = spawn("remote", "M", metrics(1, &[]));
+        writes_nothing.outputs = vec![output_id(3), output_id(4)];
+        let log = load(&[
+            sized_file(1, "bazel-out/lib.o", 1000),
+            directory(
+                2,
+                "bazel-out/tree",
+                vec![sized("a", 30), sized("b", 7), file_in("empty")],
+            ),
+            file(3, "bazel-out/empty"),
+            unresolved_symlink(4, "bazel-out/link"),
+            entry(0, Type::Spawn(writes)),
+            entry(0, Type::Spawn(writes_nothing)),
+        ]);
+        let written: Vec<u64> = log.spawns().map(|s| s.output_bytes().get()).collect();
+        assert_eq!(written, [1037, 0]);
+    }
+
+    fn file_in(path: &str) -> exec_log_entry::File {
+        exec_log_entry::File {
+            path: path.into(),
+            digest: None,
+        }
+    }
+
+    #[test]
     fn each_reported_phase_lands_in_its_own() {
         let reported: Vec<(Phase, u64)> = Phase::ALL[..REPORTED_PHASES]
             .iter()
@@ -571,10 +687,10 @@ mod tests {
     #[test]
     fn an_output_id_past_the_ids_bazel_writes_fails_the_read() {
         let output = varint_field(fields::output::OUTPUT_ID, PAST_ENTRY_IDS);
-        let paths = Paths::with_capacity(0, 0);
-        assert!(output_path(&paths, &output).is_err());
+        let entries = Entries::with_capacity(0, 0);
+        assert!(spawn_output(&entries, &output).is_err());
         let within = varint_field(fields::output::OUTPUT_ID, u64::from(u32::MAX));
-        assert!(matches!(output_path(&paths, &within), Ok(None)));
+        assert!(matches!(spawn_output(&entries, &within), Ok(None)));
     }
 
     #[test]

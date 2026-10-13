@@ -521,11 +521,11 @@ fn logged<'a>(
 }
 
 fn log(spawns: &[LogSpawn]) -> LoggedSpawns {
-    use bviz_invocation::spawn::{Builder, Logged, PhaseTiming, REPORTED_PHASES};
+    use bviz_invocation::spawn::{Builder, Bytes, Logged, PhaseTiming, REPORTED_PHASES};
     let mut builder = Builder::with_capacity(spawns.len(), 0, 0);
     for spawn in spawns {
         for output in spawn.outputs {
-            builder.output(output);
+            builder.output(output, Bytes::ZERO);
         }
         let mut reported = [Duration::ZERO; REPORTED_PHASES];
         for &(phase, time) in spawn.phases {

@@ -2,7 +2,7 @@
 
 use bazel_spawn_proto::duration_proto::google::protobuf::Duration as ProtoDuration;
 use bazel_spawn_proto::tools::protos::exec_log_entry::{self, Output, Type, output};
-use bazel_spawn_proto::tools::protos::{ExecLogEntry, SpawnMetrics};
+use bazel_spawn_proto::tools::protos::{Digest, ExecLogEntry, SpawnMetrics};
 use bviz_invocation::Recorded;
 use prost::Message;
 
@@ -31,6 +31,43 @@ pub(crate) fn file(id: u32, path: &str) -> ExecLogEntry {
         Type::File(exec_log_entry::File {
             path: path.into(),
             digest: None,
+        }),
+    )
+}
+
+/// A file of `bytes` bytes, at `path` relative to the directory holding it
+/// when it is a directory's.
+pub(crate) fn sized(path: &str, bytes: i64) -> exec_log_entry::File {
+    exec_log_entry::File {
+        path: path.into(),
+        digest: Some(Digest {
+            hash: format!("{bytes:064x}"),
+            size_bytes: bytes,
+            hash_function_name: String::new(),
+        }),
+    }
+}
+
+pub(crate) fn sized_file(id: u32, path: &str, bytes: i64) -> ExecLogEntry {
+    entry(id, Type::File(sized(path, bytes)))
+}
+
+pub(crate) fn directory(id: u32, path: &str, files: Vec<exec_log_entry::File>) -> ExecLogEntry {
+    entry(
+        id,
+        Type::Directory(exec_log_entry::Directory {
+            path: path.into(),
+            files,
+        }),
+    )
+}
+
+pub(crate) fn unresolved_symlink(id: u32, path: &str) -> ExecLogEntry {
+    entry(
+        id,
+        Type::UnresolvedSymlink(exec_log_entry::UnresolvedSymlink {
+            path: path.into(),
+            target_path: "elsewhere".into(),
         }),
     )
 }

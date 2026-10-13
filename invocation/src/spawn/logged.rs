@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use super::PhaseTiming;
+use super::{Bytes, PhaseTiming};
 
 /// The runner name Bazel logs for a spawn sent to a remote executor.
 const REMOTE_RUNNER: &str = "remote";
@@ -78,6 +78,7 @@ struct Record {
     mnemonic: usize,
     target_label: Option<Box<str>>,
     outputs: Range<usize>,
+    output_bytes: Bytes,
     cache_hit: bool,
     timing: PhaseTiming,
 }
@@ -211,6 +212,12 @@ impl<'a> LoggedSpawn<'a> {
         self.record.outputs.clone().map(|index| outputs.get(index))
     }
 
+    /// The content of the spawn's [`outputs`](Self::outputs) the log names
+    /// as written, a tree artifact's being that of the files in it.
+    pub fn output_bytes(&self) -> Bytes {
+        self.record.output_bytes
+    }
+
     /// The exec path of the first of [`outputs`](Self::outputs).
     pub fn primary_output(&self) -> Option<&'a str> {
         self.outputs().next()
@@ -244,6 +251,8 @@ pub struct Builder {
     outputs: Paths,
     /// Where the outputs of the spawn pushed next start in `outputs`.
     next_outputs: usize,
+    /// The content of the outputs added since the spawn pushed last.
+    next_output_bytes: Bytes,
 }
 
 impl Builder {
@@ -256,12 +265,15 @@ impl Builder {
             records: Vec::with_capacity(spawns),
             outputs: Paths::with_capacity(outputs, output_bytes),
             next_outputs: 0,
+            next_output_bytes: Bytes::ZERO,
         }
     }
 
-    /// Adds an output of the spawn [`push`](Self::push) adds next.
-    pub fn output(&mut self, path: &str) {
+    /// Adds an output of the spawn [`push`](Self::push) adds next, with
+    /// `bytes` of content.
+    pub fn output(&mut self, path: &str, bytes: Bytes) {
         self.outputs.push(path);
+        self.next_output_bytes += bytes;
     }
 
     /// Adds `spawn`, with the outputs added since the spawn before it.
@@ -273,6 +285,7 @@ impl Builder {
             mnemonic: self.mnemonics.intern(spawn.mnemonic),
             target_label: (!spawn.target_label.is_empty()).then(|| spawn.target_label.into()),
             outputs,
+            output_bytes: std::mem::take(&mut self.next_output_bytes),
             cache_hit: spawn.cache_hit,
             timing: spawn.timing,
         };
@@ -363,16 +376,16 @@ mod tests {
     #[test]
     fn each_spawn_keeps_the_outputs_added_before_it() {
         let mut builder = Builder::with_capacity(3, 3, 0);
-        builder.output("bazel-out/a.o");
-        builder.output("bazel-out/a.d");
+        builder.output("bazel-out/a.o", Bytes::new(100));
+        builder.output("bazel-out/a.d", Bytes::new(20));
         builder.push(logged("remote", "A"));
         builder.push(logged("remote", "B"));
-        builder.output("bazel-out/c");
+        builder.output("bazel-out/c", Bytes::new(3));
         builder.push(Logged {
             cache_hit: true,
             ..logged("disk cache hit", "C")
         });
-        builder.output("bazel-out/dropped");
+        builder.output("bazel-out/dropped", Bytes::new(1));
         let log = builder.finish();
         let outputs: Vec<Vec<&str>> = log.iter().map(|s| s.outputs().collect()).collect();
         assert_eq!(
@@ -385,6 +398,8 @@ mod tests {
         );
         let primary: Vec<_> = log.iter().map(|s| s.primary_output()).collect();
         assert_eq!(primary, [Some("bazel-out/a.o"), None, Some("bazel-out/c")]);
+        let written: Vec<u64> = log.iter().map(|s| s.output_bytes().get()).collect();
+        assert_eq!(written, [120, 0, 3]);
         let hits: Vec<bool> = log.iter().map(|s| s.cache_hit()).collect();
         assert_eq!(hits, [false, false, true]);
     }
