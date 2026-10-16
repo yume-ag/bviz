@@ -1,5 +1,6 @@
 //! Reusable, window-agnostic widgets and gpui interaction helpers.
 
+pub mod amount;
 mod background;
 mod button;
 mod by_room;

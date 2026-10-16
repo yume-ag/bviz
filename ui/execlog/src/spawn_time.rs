@@ -2,10 +2,11 @@ use crate::format::{duration, exact_duration, share};
 use crate::model::ExecLogModel;
 use crate::model::Source;
 use crate::palette::Palette;
-use crate::summary::{GroupRow, Runner, Summary, TopSpawn};
-use bviz_execlog::{Phase, PhaseTiming};
+use crate::summary::{BigSpawn, GroupRow, LISTED_SPAWNS, Runner, SpawnName, Summary, TopSpawn};
+use bviz_execlog::{ByteMeasure, Phase, PhaseTiming};
 use bviz_label::names::RepoNames;
 use bviz_label::shown::Parts;
+use bviz_ui_components::amount::{self, bytes};
 use bviz_ui_components::gesture::{GestureRow, Gestures, Pointer};
 use bviz_ui_components::{
     Dropdown, DropdownEvent, HintedLabelLine, KeyScope, LabelLine, Legend, LegendEntry,
@@ -40,6 +41,7 @@ const CELL_PAD: Pixels = px(6.);
 const CARET: Pixels = px(12.);
 const NAME_WIDTH: Pixels = px(220.);
 const NUMBER_WIDTH: Pixels = px(110.);
+const BYTES_WIDTH: Pixels = px(90.);
 const NOTE_WIDTH: Pixels = px(110.);
 
 /// What the panel does for a gesture in [`GESTURES`].
@@ -86,6 +88,12 @@ fn apply(sort: Sort<SortBy>, rows: &mut [GroupRow]) {
     rows.sort_by(|a, b| compare(sort, a, b));
 }
 
+/// The order the list of spawns largest in bytes opens in.
+const BIGGEST_SORT: Sort<ByteMeasure> = Sort {
+    by: ByteMeasure::Inputs,
+    descending: true,
+};
+
 /// What the panel shows of a loaded log.
 struct Shown {
     summary: Summary,
@@ -98,6 +106,8 @@ struct Shown {
     /// Picks the phase the list of spawns longest in a phase ranks by.
     phase_picker: Entity<Dropdown>,
     _phase_picked: Subscription,
+    /// Which list of spawns largest in bytes shows, and which way round.
+    biggest_sort: Sort<ByteMeasure>,
 }
 
 impl Shown {
@@ -112,7 +122,8 @@ impl Shown {
 }
 
 /// The spawn time of an execution log by phase: summed per runner and per
-/// mnemonic, and the spawns that spent longest in one phase.
+/// mnemonic, and the spawns that spent longest in one phase. Beside it, the
+/// spawns that wrote or read the most.
 pub struct SpawnTimePanel {
     focus: FocusHandle,
     model: Entity<ExecLogModel>,
@@ -180,6 +191,7 @@ impl SpawnTimePanel {
             sort,
             phase_picker,
             _phase_picked: phase_picked,
+            biggest_sort: BIGGEST_SORT,
         });
     }
 
@@ -189,6 +201,13 @@ impl SpawnTimePanel {
             for runner in &mut shown.summary.runners {
                 apply(shown.sort, &mut runner.mnemonics);
             }
+            cx.notify();
+        }
+    }
+
+    fn sort_biggest(&mut self, by: ByteMeasure, cx: &mut Context<Self>) {
+        if let Some(shown) = &mut self.shown {
+            shown.biggest_sort = shown.biggest_sort.clicked(by, true);
             cx.notify();
         }
     }
@@ -238,6 +257,12 @@ impl SpawnTimePanel {
                         "Longest in a phase",
                         Some(labelled("Phase", shown.phase_picker.clone())),
                         top_table(phase, &summary.top[phase.index()], &summary.repos, palette),
+                        palette,
+                    ))
+                    .child(section(
+                        "Largest in bytes",
+                        None,
+                        biggest_table(shown.biggest_sort, summary, palette, cx),
                         palette,
                     ))
             });
@@ -441,36 +466,56 @@ fn plain_header(name_title: &'static str, palette: &Palette) -> Div {
     )
 }
 
+/// A header cell of `column` titled `title`, which `sort` applies to the
+/// panel on a click to sort its table by `what`; `sorted` is as [`Sort::of`]
+/// gives it.
+fn sorting_cell(
+    column: Column,
+    title: &'static str,
+    hint: SharedString,
+    sorted: Option<bool>,
+    palette: &Palette,
+    cx: &mut Context<SpawnTimePanel>,
+    sort: impl Fn(&mut SpawnTimePanel, &mut Context<SpawnTimePanel>) + 'static,
+) -> AnyElement {
+    let content = sort_header(
+        title,
+        sorted,
+        column.numeric,
+        CARET,
+        palette.colors.text_muted,
+    );
+    cell(column, content)
+        .id(title)
+        .cursor_pointer()
+        .hover(|style| style.bg(palette.colors.element_hover))
+        .tooltip(TextTooltip::builder(hint, palette.colors.tooltip()))
+        .on_click(cx.listener(move |panel, e, _, cx| {
+            GESTURES.dispatch(Pointer::click(e), |intent| match intent {
+                SpawnTimeIntent::Sort => {
+                    sort(panel, cx);
+                    true
+                }
+            });
+        }))
+        .into_any_element()
+}
+
 /// The header of a table of mnemonics, whose titles but the bar's and the
 /// note's sort it.
 fn sorting_header(sort: Sort<SortBy>, palette: &Palette, cx: &mut Context<SpawnTimePanel>) -> Div {
     let [name, spawns, time, bar, note] = GROUP_COLUMNS;
     let [spawns_title, time_title, bar_title, note_title] = GROUP_TITLES;
-    let sorting = |column: Column, title: &'static str, by: SortBy, what: &str| {
-        let content = sort_header(
+    let mut sorting = |column: Column, title: &'static str, by: SortBy, what: &str| {
+        sorting_cell(
+            column,
             title,
+            sort_hint(what),
             sort.of(by),
-            column.numeric,
-            CARET,
-            palette.colors.text_muted,
-        );
-        cell(column, content)
-            .id(title)
-            .cursor_pointer()
-            .hover(|style| style.bg(palette.colors.element_hover))
-            .tooltip(TextTooltip::builder(
-                sort_hint(what),
-                palette.colors.tooltip(),
-            ))
-            .on_click(cx.listener(move |panel, e, _, cx| {
-                GESTURES.dispatch(Pointer::click(e), |intent| match intent {
-                    SpawnTimeIntent::Sort => {
-                        panel.sort_mnemonics(by, cx);
-                        true
-                    }
-                });
-            }))
-            .into_any_element()
+            palette,
+            cx,
+            move |panel, cx| panel.sort_mnemonics(by, cx),
+        )
     };
     header_row(
         [
@@ -486,7 +531,12 @@ fn sorting_header(sort: Sort<SortBy>, palette: &Palette, cx: &mut Context<SpawnT
 
 /// One row per group of `rows` under `header`, each bar as long against the
 /// longest as its spawn time is.
-fn group_table(id: &'static str, header: Div, rows: &[GroupRow], palette: &Palette) -> Div {
+fn group_table(
+    id: &'static str,
+    header: Div,
+    rows: &[GroupRow],
+    palette: &Palette,
+) -> Stateful<Div> {
     let longest = rows
         .iter()
         .map(|row| row.timing.total())
@@ -511,37 +561,36 @@ fn group_table(id: &'static str, header: Div, rows: &[GroupRow], palette: &Palet
             ],
         )
     });
-    div().flex().flex_col().child(header).children(body)
+    div().id(id).flex().flex_col().child(header).children(body)
 }
 
-/// The columns of the list of spawns longest in a phase: its time in the
-/// phase, its mnemonic, its runner, and what the spawn made.
-const TOP_COLUMNS: [Column; 4] = [
-    number(Width::Fixed(NUMBER_WIDTH)),
+/// The columns naming a spawn in a list of spawns: its mnemonic, its runner,
+/// and what the spawn made.
+const NAME_COLUMNS: [Column; 3] = [
     text(Width::Fixed(NAME_WIDTH)),
     text(Width::Fixed(NAME_WIDTH)),
     text(Width::Rest),
 ];
 
+const NAME_TITLES: [&str; NAME_COLUMNS.len()] = ["Mnemonic", "Runner", "Target and output"];
+
+fn name_header_cells() -> impl Iterator<Item = AnyElement> {
+    NAME_COLUMNS
+        .into_iter()
+        .zip(NAME_TITLES)
+        .map(|(column, title)| cell(column, title).into_any_element())
+}
+
 /// What names a spawn that names neither its target nor its output.
 const NO_TARGET_OR_OUTPUT: &str = "no target or output";
 
-/// `spawns`, longest in `phase` first, each named by its target and output.
-fn top_table(phase: Phase, spawns: &[TopSpawn], repos: &RepoNames, palette: &Palette) -> Div {
-    if spawns.is_empty() {
-        return div()
-            .text_color(palette.colors.text_muted)
-            .child(format!("No spawn spent time in {}.", phase_name(phase)));
-    }
-    let [time, mnemonic, runner, made] = TOP_COLUMNS;
-    let titles = ["Time in phase", "Mnemonic", "Runner", "Target and output"];
-    let header = header_row(
-        TOP_COLUMNS
-            .into_iter()
-            .zip(titles)
-            .map(|(column, title)| cell(column, title)),
-        palette,
-    );
+/// The cells of [`NAME_COLUMNS`] naming `spawn`.
+fn name_cells(
+    spawn: &SpawnName,
+    repos: &RepoNames,
+    palette: &Palette,
+) -> [Div; NAME_COLUMNS.len()] {
+    let [mnemonic, runner, made] = NAME_COLUMNS;
     let muted = palette.colors.text_muted;
     let label = |label: &str| {
         let written = repos.written_label(label);
@@ -551,44 +600,128 @@ fn top_table(phase: Phase, spawns: &[TopSpawn], repos: &RepoNames, palette: &Pal
     let path = |id: &'static str, path: &SharedString| -> HintedLabelLine {
         LabelLine::parted(path.clone(), Parts::of_path(path), muted).hinted(id, path.clone())
     };
+    let (first, second) = match (&spawn.target_label, &spawn.primary_output) {
+        (Some(target), output) => (label(target), output.as_ref().map(|o| path("output", o))),
+        (None, Some(output)) => (path("output", output), None),
+        (None, None) => {
+            let none = LabelLine::new(NO_TARGET_OR_OUTPUT, muted);
+            (none.hinted("none", NO_TARGET_OR_OUTPUT), None)
+        }
+    };
+    [
+        cell(
+            mnemonic,
+            TruncatingLabel::new("mnemonic", spawn.mnemonic.clone()),
+        ),
+        cell(runner, TruncatingLabel::new("runner", spawn.runner.clone())),
+        cell(
+            made,
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .child(first)
+                .children(second.map(|output| div().text_xs().text_color(muted).child(output))),
+        ),
+    ]
+}
+
+const TIME_COLUMN: Column = number(Width::Fixed(NUMBER_WIDTH));
+
+/// `spawns`, longest in `phase` first, each named by its target and output.
+fn top_table(phase: Phase, spawns: &[TopSpawn], repos: &RepoNames, palette: &Palette) -> Div {
+    if spawns.is_empty() {
+        return div()
+            .text_color(palette.colors.text_muted)
+            .child(format!("No spawn spent time in {}.", phase_name(phase)));
+    }
+    let header = header_row(
+        std::iter::once(cell(TIME_COLUMN, "Time in phase").into_any_element())
+            .chain(name_header_cells()),
+        palette,
+    );
     let body = spawns.iter().enumerate().map(|(index, spawn)| {
-        let (first, second) = match (&spawn.target_label, &spawn.primary_output) {
-            (Some(target), output) => (label(target), output.as_ref().map(|o| path("output", o))),
-            (None, Some(output)) => (path("output", output), None),
-            (None, None) => {
-                let none = LabelLine::new(NO_TARGET_OR_OUTPUT, muted);
-                (none.hinted("none", NO_TARGET_OR_OUTPUT), None)
-            }
-        };
+        let time = cell(TIME_COLUMN, duration(spawn.time));
         row(
             ("top", index),
-            [
-                cell(time, duration(spawn.time)),
-                cell(
-                    mnemonic,
-                    TruncatingLabel::new("mnemonic", spawn.mnemonic.clone()),
-                ),
-                cell(runner, TruncatingLabel::new("runner", spawn.runner.clone())),
-                cell(
-                    made,
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .child(first)
-                        .children(second.map(|output| {
-                            div()
-                                .text_xs()
-                                .text_color(palette.colors.text_muted)
-                                .child(output)
-                        })),
-                ),
-            ],
+            std::iter::once(time).chain(name_cells(&spawn.name, repos, palette)),
         )
         .h(TWO_LINE_ROW_HEIGHT)
     });
     div().flex().flex_col().child(header).children(body)
+}
+
+const BYTES_COLUMN: Column = number(Width::Fixed(BYTES_WIDTH));
+
+fn measure_title(measure: ByteMeasure) -> &'static str {
+    match measure {
+        ByteMeasure::Outputs => "Outputs",
+        ByteMeasure::Inputs => "Inputs",
+        ByteMeasure::Tools => "Tools",
+    }
+}
+
+/// The spawns largest in the measure `sort` is by, in its order, each named
+/// by its target and output. A click on a measure's title shows the spawns
+/// largest in it.
+fn biggest_table(
+    sort: Sort<ByteMeasure>,
+    summary: &Summary,
+    palette: &Palette,
+    cx: &mut Context<SpawnTimePanel>,
+) -> Stateful<Div> {
+    let mut measure_cell = |measure: ByteMeasure| {
+        sorting_cell(
+            BYTES_COLUMN,
+            measure_title(measure),
+            format!(
+                "Show the {LISTED_SPAWNS} spawns largest in {}",
+                amount::measure_name(measure)
+            )
+            .into(),
+            sort.of(measure),
+            palette,
+            cx,
+            move |panel, cx| panel.sort_biggest(measure, cx),
+        )
+    };
+    let header = header_row(
+        ByteMeasure::ALL
+            .map(&mut measure_cell)
+            .into_iter()
+            .chain(name_header_cells()),
+        palette,
+    );
+    let spawns = &summary.biggest[sort.by.index()];
+    let ordered: Vec<&BigSpawn> = match sort.descending {
+        true => spawns.iter().collect(),
+        false => spawns.iter().rev().collect(),
+    };
+    let body = ordered.into_iter().enumerate().map(|(index, spawn)| {
+        let amounts =
+            ByteMeasure::ALL.map(|measure| cell(BYTES_COLUMN, bytes(spawn.bytes.measure(measure))));
+        row(
+            ("biggest", index),
+            amounts
+                .into_iter()
+                .chain(name_cells(&spawn.name, &summary.repos, palette)),
+        )
+        .h(TWO_LINE_ROW_HEIGHT)
+    });
+    let none = spawns.is_empty().then(|| {
+        div().text_color(palette.colors.text_muted).child(format!(
+            "No spawn has any {}.",
+            amount::measure_name(sort.by)
+        ))
+    });
+    div()
+        .id("biggest")
+        .flex()
+        .flex_col()
+        .child(header)
+        .children(body)
+        .children(none)
 }
 
 /// The phases `timing` spent time in, in the order a bar draws them; a sum's
