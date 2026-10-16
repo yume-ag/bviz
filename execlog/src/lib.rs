@@ -5,7 +5,6 @@
 use std::cmp::Reverse;
 use std::fmt;
 use std::path::Path;
-use std::time::Duration;
 
 mod frame;
 mod read;
@@ -16,8 +15,8 @@ mod wire;
 
 use bviz_input::Input;
 use bviz_invocation::Recorded;
+pub use bviz_invocation::spawn::{ByteMeasure, Bytes, InputBytes, Phase, PhaseTiming, SpawnBytes};
 use bviz_invocation::spawn::{LoggedSpawn, LoggedSpawns};
-pub use bviz_invocation::spawn::{Phase, PhaseTiming};
 pub use read::probe_invocation_id;
 
 #[derive(Debug)]
@@ -58,6 +57,10 @@ impl From<prost::DecodeError> for LoadError {
 }
 
 /// The spawns of one execution log.
+///
+/// A ranking of its spawns puts those it measures alike in order of target
+/// label, then of primary output, so it does not depend on the order the log
+/// lists its spawns in.
 pub struct ExecLog {
     spawns: LoggedSpawns,
 }
@@ -131,6 +134,7 @@ impl ExecLog {
                 name,
                 spawns: 0,
                 timing: PhaseTiming::default(),
+                bytes: SpawnBytes::default(),
             })
             .collect();
         for spawn in self.spawns() {
@@ -138,6 +142,7 @@ impl ExecLog {
                 let group = &mut groups[index];
                 group.spawns += 1;
                 group.timing.add(spawn.timing());
+                group.bytes += SpawnBytes::of(&spawn);
             }
         }
         groups.retain(|group| group.spawns > 0);
@@ -146,31 +151,42 @@ impl ExecLog {
     }
 
     /// The `n` spawns that spent longest in `phase`, longest first, leaving
-    /// out those that spent no time in it. Equal times go in order of target
-    /// label, then of primary output, so the ranking does not depend on the
-    /// order the log lists its spawns in.
+    /// out those that spent no time in it.
     pub fn top_spawns(&self, phase: Phase, n: usize) -> Vec<LoggedSpawn<'_>> {
-        let mut spawns: Vec<LoggedSpawn<'_>> = self
-            .spawns()
-            .filter(|spawn| !spawn.timing().phase(phase).is_zero())
-            .collect();
-        fn key<'s>(
-            spawn: &LoggedSpawn<'s>,
-            phase: Phase,
-        ) -> (Reverse<Duration>, Option<&'s str>, Option<&'s str>) {
-            (
-                Reverse(spawn.timing().phase(phase)),
-                spawn.target_label(),
-                spawn.primary_output(),
-            )
+        self.largest(n, |spawn| spawn.timing().phase(phase))
+    }
+
+    /// The `n` spawns largest in `measure`, largest first, leaving out those
+    /// of no content in it.
+    pub fn biggest_spawns(&self, measure: ByteMeasure, n: usize) -> Vec<LoggedSpawn<'_>> {
+        self.largest(n, |spawn| SpawnBytes::of(spawn).measure(measure))
+    }
+
+    /// The `n` spawns largest in `measure`, largest first, leaving out those
+    /// it measures at its default.
+    fn largest<K: Ord + Default>(
+        &self,
+        n: usize,
+        measure: impl Fn(&LoggedSpawn<'_>) -> K,
+    ) -> Vec<LoggedSpawn<'_>> {
+        let nothing = K::default();
+        let mut spawns: Vec<(K, LoggedSpawn<'_>)> = Vec::with_capacity(self.spawn_count());
+        spawns.extend(self.spawns().filter_map(|spawn| {
+            let size = measure(&spawn);
+            (size != nothing).then_some((size, spawn))
+        }));
+        fn name<'s>(spawn: &LoggedSpawn<'s>) -> (Option<&'s str>, Option<&'s str>) {
+            (spawn.target_label(), spawn.primary_output())
         }
-        let rank = |a: &LoggedSpawn<'_>, b: &LoggedSpawn<'_>| key(a, phase).cmp(&key(b, phase));
+        let rank = |(a, a_spawn): &(K, LoggedSpawn<'_>), (b, b_spawn): &(K, LoggedSpawn<'_>)| {
+            b.cmp(a).then_with(|| name(a_spawn).cmp(&name(b_spawn)))
+        };
         if spawns.len() > n {
             spawns.select_nth_unstable_by(n, rank);
             spawns.truncate(n);
         }
         spawns.sort_unstable_by(rank);
-        spawns
+        spawns.into_iter().map(|(_, spawn)| spawn).collect()
     }
 }
 
@@ -180,15 +196,20 @@ pub struct Group<'a> {
     pub name: &'a str,
     pub spawns: usize,
     pub timing: PhaseTiming,
+    pub bytes: SpawnBytes,
 }
 
 #[cfg(test)]
 mod tests {
 
+    use std::time::Duration;
+
     use bazel_spawn_proto::tools::protos::exec_log_entry::Type;
 
     use super::*;
-    use crate::test_log::{entry, invalid_output, load, metrics, spawn};
+    use crate::test_log::{
+        entry, input_set, invalid_output, load, metrics, output_id, sized_file, spawn,
+    };
 
     fn ms(millis: u64) -> Duration {
         Duration::from_millis(millis)
@@ -311,6 +332,89 @@ mod tests {
                 (Some("//a"), Some("y")),
                 (Some("//b"), Some("x")),
             ]
+        );
+    }
+
+    fn sized_sample() -> ExecLog {
+        let sized_spawn = |runner: &str, mnemonic: &str, label: &str, writes, reads, tools| {
+            let mut spawn = spawn(runner, mnemonic, metrics(1, &[]));
+            spawn.target_label = label.into();
+            spawn.outputs = vec![output_id(writes)];
+            spawn.input_set_id = reads;
+            spawn.tool_set_id = tools;
+            entry(0, Type::Spawn(spawn))
+        };
+        load(&[
+            sized_file(1, "bazel-out/small", 10),
+            sized_file(2, "bazel-out/large", 500),
+            sized_file(3, "src/a.h", 40),
+            sized_file(4, "bin/tool", 1000),
+            sized_file(5, "bazel-out/empty", 0),
+            input_set(10, &[3], &[]),
+            input_set(11, &[4], &[]),
+            input_set(12, &[3, 4], &[]),
+            sized_spawn("remote", "CppCompile", "//b", 1, 12, 11),
+            sized_spawn("remote", "CppLink", "//a", 2, 10, 0),
+            sized_spawn("linux-sandbox", "CppCompile", "//c", 5, 11, 11),
+            sized_spawn("remote", "CppCompile", "//a", 1, 10, 0),
+        ])
+    }
+
+    fn ranked(log: &ExecLog, measure: ByteMeasure, n: usize) -> Vec<(&str, u64)> {
+        log.biggest_spawns(measure, n)
+            .iter()
+            .map(|s| {
+                (
+                    s.target_label().unwrap_or_default(),
+                    SpawnBytes::of(s).measure(measure).get(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn biggest_spawns_rank_by_the_measure_alone() {
+        let log = sized_sample();
+        assert_eq!(
+            ranked(&log, ByteMeasure::Outputs, 5),
+            [("//a", 500), ("//a", 10), ("//b", 10)]
+        );
+        assert_eq!(
+            ranked(&log, ByteMeasure::Inputs, 5),
+            [("//b", 1040), ("//c", 1000), ("//a", 40), ("//a", 40)]
+        );
+        assert_eq!(
+            ranked(&log, ByteMeasure::Tools, 5),
+            [("//b", 1000), ("//c", 1000)]
+        );
+        assert_eq!(ranked(&log, ByteMeasure::Outputs, 1), [("//a", 500)]);
+        assert!(log.biggest_spawns(ByteMeasure::Tools, 0).is_empty());
+    }
+
+    fn bytes<'a>(groups: &[Group<'a>]) -> Vec<(&'a str, u64, u64, u64)> {
+        groups
+            .iter()
+            .map(|g| {
+                (
+                    g.name,
+                    g.bytes.outputs.get(),
+                    g.bytes.inputs.all().get(),
+                    g.bytes.inputs.tools.get(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn groups_sum_the_bytes_of_their_spawns() {
+        let log = sized_sample();
+        assert_eq!(
+            bytes(&log.by_runner()),
+            [("remote", 520, 1120, 1000), ("linux-sandbox", 0, 1000, 1000)]
+        );
+        assert_eq!(
+            bytes(&log.by_mnemonic("remote")),
+            [("CppCompile", 20, 1080, 1000), ("CppLink", 500, 40, 0)]
         );
     }
 }

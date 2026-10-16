@@ -1,6 +1,8 @@
 use std::iter::Sum;
 use std::ops::{Add, AddAssign};
 
+use super::LoggedSpawn;
+
 /// An amount of file content.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Bytes(u64);
@@ -51,5 +53,67 @@ pub struct InputBytes {
 impl InputBytes {
     pub fn all(self) -> Bytes {
         self.tools + self.others
+    }
+}
+
+impl AddAssign for InputBytes {
+    fn add_assign(&mut self, other: InputBytes) {
+        self.tools += other.tools;
+        self.others += other.others;
+    }
+}
+
+/// Which content of a spawn's files is measured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ByteMeasure {
+    Outputs,
+    /// Every input, its tools among them.
+    Inputs,
+    /// The inputs that are the spawn's tools.
+    Tools,
+}
+
+impl ByteMeasure {
+    pub const ALL: [ByteMeasure; 3] = [
+        ByteMeasure::Outputs,
+        ByteMeasure::Inputs,
+        ByteMeasure::Tools,
+    ];
+
+    /// Where `self` stands in [`ByteMeasure::ALL`].
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// The content of the files a spawn, or several spawns in sum, wrote and
+/// read.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SpawnBytes {
+    pub outputs: Bytes,
+    pub inputs: InputBytes,
+}
+
+impl SpawnBytes {
+    pub fn of(spawn: &LoggedSpawn<'_>) -> Self {
+        Self {
+            outputs: spawn.output_bytes(),
+            inputs: spawn.input_bytes(),
+        }
+    }
+
+    pub fn measure(self, measure: ByteMeasure) -> Bytes {
+        match measure {
+            ByteMeasure::Outputs => self.outputs,
+            ByteMeasure::Inputs => self.inputs.all(),
+            ByteMeasure::Tools => self.inputs.tools,
+        }
+    }
+}
+
+impl AddAssign for SpawnBytes {
+    fn add_assign(&mut self, other: SpawnBytes) {
+        self.outputs += other.outputs;
+        self.inputs += other.inputs;
     }
 }
