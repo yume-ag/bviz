@@ -68,6 +68,8 @@ pub struct LoggedSpawns {
     runners: Vec<Box<str>>,
     /// Distinct mnemonics, which [`Record::mnemonic`] indexes.
     mnemonics: Vec<Box<str>>,
+    /// Distinct target labels, which [`Record::target`] indexes.
+    targets: Vec<Box<str>>,
     records: Vec<Record>,
     /// Every spawn's outputs, each spawn's a run [`Record::outputs`] names.
     outputs: Paths,
@@ -99,7 +101,8 @@ impl MeasuredInputs {
 struct Record {
     runner: usize,
     mnemonic: usize,
-    target_label: Option<Box<str>>,
+    /// `None` for an action no target owns.
+    target: Option<usize>,
     outputs: Range<usize>,
     output_bytes: Bytes,
     cache_hit: bool,
@@ -162,6 +165,11 @@ impl LoggedSpawns {
     /// names.
     pub fn mnemonics(&self) -> &[Box<str>] {
         &self.mnemonics
+    }
+
+    /// Distinct labels of the targets owning the spawns' actions.
+    pub fn targets(&self) -> &[Box<str>] {
+        &self.targets
     }
 
     /// The spawns in the order the log lists them.
@@ -228,7 +236,7 @@ impl<'a> LoggedSpawn<'a> {
     /// The label of the target owning the spawn's action, `None` for an
     /// action no target owns.
     pub fn target_label(&self) -> Option<&'a str> {
-        self.record.target_label.as_deref()
+        Some(&self.log.targets[self.record.target?])
     }
 
     /// The exec paths of the spawn's outputs the log names, in the order it
@@ -277,6 +285,7 @@ pub struct Logged<'a> {
 pub struct Builder {
     runners: Names,
     mnemonics: Names,
+    targets: Names,
     records: Vec<Record>,
     outputs: Paths,
     /// Where the outputs of the spawn pushed next start in `outputs`.
@@ -292,6 +301,7 @@ impl Builder {
         Builder {
             runners: Names::default(),
             mnemonics: Names::default(),
+            targets: Names::default(),
             records: Vec::with_capacity(spawns),
             outputs: Paths::with_capacity(outputs, output_bytes),
             next_outputs: 0,
@@ -313,7 +323,8 @@ impl Builder {
         let record = Record {
             runner: self.runners.intern(spawn.runner),
             mnemonic: self.mnemonics.intern(spawn.mnemonic),
-            target_label: (!spawn.target_label.is_empty()).then(|| spawn.target_label.into()),
+            target: (!spawn.target_label.is_empty())
+                .then(|| self.targets.intern(spawn.target_label)),
             outputs,
             output_bytes: std::mem::take(&mut self.next_output_bytes),
             cache_hit: spawn.cache_hit,
@@ -334,6 +345,7 @@ impl Builder {
         LoggedSpawns {
             runners: self.runners.into_vec(),
             mnemonics: self.mnemonics.into_vec(),
+            targets: self.targets.into_vec(),
             records: self.records,
             outputs: self.outputs,
             inputs,
@@ -428,15 +440,18 @@ mod tests {
 
     #[test]
     fn an_empty_target_label_names_no_target() {
-        let mut builder = Builder::with_capacity(2, 0, 0);
+        let mut builder = Builder::with_capacity(3, 0, 0);
         builder.push(logged("remote", "A"));
-        builder.push(Logged {
-            target_label: "//a",
-            ..logged("remote", "A")
-        });
+        for mnemonic in ["A", "B"] {
+            builder.push(Logged {
+                target_label: "//a",
+                ..logged("remote", mnemonic)
+            });
+        }
         let log = finish(builder);
         let labels: Vec<_> = log.iter().map(|s| s.target_label()).collect();
-        assert_eq!(labels, [None, Some("//a")]);
+        assert_eq!(labels, [None, Some("//a"), Some("//a")]);
+        assert_eq!(*log.targets(), ["//a".into()]);
     }
 
     #[test]
