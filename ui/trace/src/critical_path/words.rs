@@ -6,6 +6,7 @@ use bviz_critical_path::{
     SpawnRunner, Spawned, Step, StepModel, Work,
 };
 use bviz_label::names::RepoNames;
+use bviz_ui_components::amount;
 pub(crate) use bviz_ui_spawn_phase::phase_name;
 use std::time::Duration;
 
@@ -101,6 +102,8 @@ fn spawned_note(spawned: &Spawned) -> String {
         if spawns == 1 { "spawn" } else { "spawns" },
         duration(spawned.logged()),
     );
+    note.push('\n');
+    note.push_str(&amount::moved(spawned.bytes()));
     if spawned.fit() == Fit::Scaled {
         note.push_str("\nphases scaled to action time");
     }
@@ -525,7 +528,7 @@ pub(super) mod tests {
             .expect("parse")
             .into_inner();
         let mut builder = Builder::with_capacity(1, 1, 0);
-        builder.output("bazel-out/a.o", Bytes::ZERO);
+        builder.output("bazel-out/a.o", Bytes::new(3 << 20));
         builder.push(Logged {
             runner: "remote",
             mnemonic: "CppCompile",
@@ -533,7 +536,10 @@ pub(super) mod tests {
             cache_hit: false,
             timing: PhaseTiming::new(ms(3), [Duration::ZERO; REPORTED_PHASES]),
         });
-        let log = builder.finish(MeasuredInputs::new(vec![InputBytes::default()]));
+        let log = builder.finish(MeasuredInputs::new(vec![InputBytes {
+            tools: Bytes::ZERO,
+            others: Bytes::new(512),
+        }]));
         CriticalPath::of(&profile, logged.then_some(&log), None).expect("path")
     }
 
@@ -554,12 +560,13 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn spawns_adding_up_past_their_action_say_they_were_scaled() {
+    fn a_step_s_spawns_say_what_they_took_and_moved_and_that_they_were_scaled() {
         let path = logged_path(true);
         let note = work_note(path.steps()[0].work(), true).expect("a note");
         assert_eq!(
             note,
-            "remote execution · 1 spawn · 3.00ms\nphases scaled to action time"
+            "remote execution · 1 spawn · 3.00ms\nwrote 3.0 MiB · read 512 B\n\
+             phases scaled to action time"
         );
     }
 
