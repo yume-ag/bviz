@@ -2,9 +2,12 @@
 
 use super::plot::{HOUR_MS, Ladder, MINUTE_MS, SECOND_MS, tick_label};
 use crate::duration::lasted;
+use crate::spawn_bytes::{NodeBytes, Unsized};
 use crate::timing::{NodeTimes, Ran, Untimed};
 use bviz_graph_layout::Id;
 use bviz_graph_layout::metrics::Metrics;
+use bviz_invocation::spawn::{ByteMeasure, Bytes, SpawnBytes};
+use bviz_ui_components::amount;
 use rustc_hash::FxHashMap;
 use std::time::Duration;
 
@@ -18,22 +21,90 @@ pub(crate) enum Axis {
     /// How long the actions the point stands for took, summed; placed in
     /// milliseconds.
     ActionTime,
+    /// The bytes the spawns landing on the point wrote, summed; placed, as
+    /// every measure of bytes is, in kibibytes.
+    BytesWritten,
+    /// The bytes those spawns read, their tools' among them.
+    BytesRead,
+    /// The bytes of those spawns' tools.
+    ToolBytes,
+}
+
+/// A report on an invocation that places measures on a graph's nodes, which a
+/// point can lack, and which changes as the session's report does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Overlay {
+    /// The action times of the invocation's profile.
+    Times,
+    /// The spawn bytes of its execution log.
+    Bytes,
+}
+
+/// Which [overlays](Overlay) place a measure on some point of the unit
+/// plotted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Carried {
+    pub(crate) times: bool,
+    pub(crate) bytes: bool,
+}
+
+impl Carried {
+    pub(crate) fn carries(self, overlay: Overlay) -> bool {
+        match overlay {
+            Overlay::Times => self.times,
+            Overlay::Bytes => self.bytes,
+        }
+    }
+}
+
+/// What the overlays place on one point.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Reported {
+    /// How long the actions the point stands for took.
+    pub(crate) time: Option<Duration>,
+    /// What the spawns landing on the point wrote and read.
+    pub(crate) bytes: Option<SpawnBytes>,
 }
 
 impl Axis {
-    pub(crate) const ALL: [Axis; 3] = [Axis::Closure, Axis::BlastRadius, Axis::ActionTime];
+    pub(crate) const ALL: [Axis; 6] = [
+        Axis::Closure,
+        Axis::BlastRadius,
+        Axis::ActionTime,
+        Axis::BytesWritten,
+        Axis::BytesRead,
+        Axis::ToolBytes,
+    ];
 
-    /// Where along the axis `point`, whose actions took `time`, falls, in the
-    /// values its scale is laid out in; absent where the point has no such
-    /// measure.
-    pub(crate) fn position(self, point: &Metrics, time: Option<Duration>) -> Option<u32> {
+    /// Where along the axis `point`, on which the overlays place `reported`,
+    /// falls, in the values its scale is laid out in; absent where the point
+    /// has no such measure.
+    pub(crate) fn position(self, point: &Metrics, reported: Reported) -> Option<u32> {
+        let capped = |value: f64| value.round().min(f64::from(u32::MAX)) as u32;
         match self {
             Axis::Closure => Some(point.closure.value()),
             Axis::BlastRadius => Some(point.blast_radius.value()),
-            Axis::ActionTime => {
-                let millis = (time?.as_secs_f64() * f64::from(SECOND_MS)).round();
-                Some(millis.min(f64::from(u32::MAX)) as u32)
+            Axis::ActionTime => Some(capped(reported.time?.as_secs_f64() * f64::from(SECOND_MS))),
+            Axis::BytesWritten | Axis::BytesRead | Axis::ToolBytes => {
+                let bytes = self.bytes(reported)?;
+                Some(capped(bytes.get() as f64 / amount::PER_BINARY_UNIT as f64))
             }
+        }
+    }
+
+    /// The bytes the axis measures of `reported`, where it measures bytes and
+    /// the point has any.
+    fn bytes(self, reported: Reported) -> Option<Bytes> {
+        Some(reported.bytes?.measure(self.measure()?))
+    }
+
+    /// What the axis measures of a spawn's bytes, where it measures them.
+    fn measure(self) -> Option<ByteMeasure> {
+        match self {
+            Axis::BytesWritten => Some(ByteMeasure::Outputs),
+            Axis::BytesRead => Some(ByteMeasure::Inputs),
+            Axis::ToolBytes => Some(ByteMeasure::Tools),
+            Axis::Closure | Axis::BlastRadius | Axis::ActionTime => None,
         }
     }
 
@@ -43,11 +114,20 @@ impl Axis {
         self as usize
     }
 
-    /// Whether the axis places a point by the action time the graph places on
-    /// it, which a point can lack, and which changes with the session's
-    /// timings.
-    pub(crate) fn reads_time(self) -> bool {
-        self == Axis::ActionTime
+    /// The overlay the axis places a point by, where it reads one.
+    pub(crate) fn overlay(self) -> Option<Overlay> {
+        match self {
+            Axis::Closure | Axis::BlastRadius => None,
+            Axis::ActionTime => Some(Overlay::Times),
+            Axis::BytesWritten | Axis::BytesRead | Axis::ToolBytes => Some(Overlay::Bytes),
+        }
+    }
+
+    /// Whether a unit carrying what `carried` says has any point the axis
+    /// places.
+    pub(crate) fn available(self, carried: Carried) -> bool {
+        self.overlay()
+            .is_none_or(|overlay| carried.carries(overlay))
     }
 
     /// How a line of text names the measure.
@@ -56,6 +136,9 @@ impl Axis {
             Axis::Closure => "closure",
             Axis::BlastRadius => "blast radius",
             Axis::ActionTime => "action time",
+            Axis::BytesWritten => amount::measure_name(ByteMeasure::Outputs),
+            Axis::BytesRead => amount::measure_name(ByteMeasure::Inputs),
+            Axis::ToolBytes => amount::measure_name(ByteMeasure::Tools),
         }
     }
 
@@ -65,16 +148,23 @@ impl Axis {
             Axis::Closure => "closure size (transitive dependencies)",
             Axis::BlastRadius => "blast radius (transitive dependents)",
             Axis::ActionTime => "action time (wall time of its actions, summed)",
+            Axis::BytesWritten => "bytes written (outputs of its spawns, summed)",
+            Axis::BytesRead => "bytes read (inputs of its spawns, tools included, summed)",
+            Axis::ToolBytes => "tool bytes (tools of its spawns, summed)",
         }
     }
 
-    /// How the measure of `point`, whose actions took `time`, reads, marked
-    /// where it is an estimate.
-    pub(crate) fn reading(self, point: &Metrics, time: Option<Duration>) -> String {
+    /// How the measure of `point`, on which the overlays place `reported`,
+    /// reads, marked where it is an estimate.
+    pub(crate) fn reading(self, point: &Metrics, reported: Reported) -> String {
+        let none = || "none".to_owned();
         match self {
             Axis::Closure => point.closure.to_string(),
             Axis::BlastRadius => point.blast_radius.to_string(),
-            Axis::ActionTime => time.map_or_else(|| "none".to_owned(), lasted),
+            Axis::ActionTime => reported.time.map_or_else(none, lasted),
+            Axis::BytesWritten | Axis::BytesRead | Axis::ToolBytes => {
+                self.bytes(reported).map_or_else(none, amount::bytes)
+            }
         }
     }
 
@@ -83,23 +173,26 @@ impl Axis {
         match self {
             Axis::Closure | Axis::BlastRadius => Ladder::Counts,
             Axis::ActionTime => Ladder::Millis,
+            Axis::BytesWritten | Axis::BytesRead | Axis::ToolBytes => Ladder::Kibibytes,
         }
     }
 
     /// How a tick at `value` along the axis reads.
     pub(crate) fn tick_label(self, value: u32) -> String {
-        match self {
-            Axis::Closure | Axis::BlastRadius => tick_label(value),
-            Axis::ActionTime => time_tick_label(value),
+        match (self.ladder(), value) {
+            (_, 0) | (Ladder::Counts, _) => tick_label(value),
+            (Ladder::Millis, _) => time_tick_label(value),
+            (Ladder::Kibibytes, kibibytes) => {
+                amount::whole_bytes(Bytes::new(u64::from(kibibytes) * amount::PER_BINARY_UNIT))
+            }
         }
     }
 }
 
-/// How a tick `millis` along the time axis reads: in the largest unit it
-/// reaches, which a tick of [`Ladder::Millis`] is a whole number of.
+/// How a tick `millis` past zero along the time axis reads: in the largest
+/// unit it reaches, which a tick of [`Ladder::Millis`] is a whole number of.
 fn time_tick_label(millis: u32) -> String {
     match millis {
-        0 => tick_label(millis),
         _ if millis < SECOND_MS => format!("{millis}ms"),
         _ if millis < MINUTE_MS => format!("{}s", millis / SECOND_MS),
         _ if millis < HOUR_MS => format!("{}m", millis / MINUTE_MS),
@@ -151,49 +244,57 @@ impl Axes {
         }
     }
 
-    /// These axes with the measure on neither in place of one that
-    /// [reads time](Axis::reads_time).
-    pub(crate) fn untimed(self) -> Axes {
-        let spare = match (self.x, self.y) {
-            (Axis::Closure, Axis::BlastRadius) | (Axis::BlastRadius, Axis::Closure) => {
-                Axis::ActionTime
-            }
-            (Axis::Closure, _) | (_, Axis::Closure) => Axis::BlastRadius,
+    /// These axes with each one a unit carrying what `carried` says has no
+    /// point on replaced by closure, or blast radius where the other axis
+    /// shows closure, which every point has.
+    pub(crate) fn available(self, carried: Carried) -> Axes {
+        let spare = |other: Axis| match other {
+            Axis::Closure => Axis::BlastRadius,
             _ => Axis::Closure,
         };
-        match (self.x.reads_time(), self.y.reads_time()) {
-            (true, _) => self.across(spare),
-            (_, true) => self.up(spare),
-            _ => self,
-        }
+        let x = match self.x.available(carried) {
+            true => self.x,
+            false => spare(self.y),
+        };
+        let y = match self.y.available(carried) {
+            true => self.y,
+            false => spare(x),
+        };
+        Axes { x, y }
     }
 
-    /// Where `point`, whose actions took `time`, falls along each axis's
-    /// scale; absent where it has no measure on one of them.
-    pub(crate) fn place(self, point: &Metrics, time: Option<Duration>) -> Option<(u32, u32)> {
-        Some((self.x.position(point, time)?, self.y.position(point, time)?))
+    /// Where `point`, on which the overlays place `reported`, falls along
+    /// each axis's scale; absent where it has no measure on one of them.
+    pub(crate) fn place(self, point: &Metrics, reported: Reported) -> Option<(u32, u32)> {
+        Some((
+            self.x.position(point, reported)?,
+            self.y.position(point, reported)?,
+        ))
     }
 
-    /// Whether either axis [reads time](Axis::reads_time).
-    pub(crate) fn reads_time(self) -> bool {
-        self.x.reads_time() || self.y.reads_time()
+    /// Whether either axis places a point by `overlay`.
+    pub(crate) fn reads(self, overlay: Overlay) -> bool {
+        [self.x, self.y]
+            .into_iter()
+            .any(|axis| axis.overlay() == Some(overlay))
     }
 
-    /// How `point`, whose actions took `time`, reads on both axes, each
-    /// measure named.
-    pub(crate) fn readings(self, point: &Metrics, time: Option<Duration>) -> String {
-        let reads = |axis: Axis| format!("{} {}", axis.name(), axis.reading(point, time));
+    /// How `point`, on which the overlays place `reported`, reads on both
+    /// axes, each measure named.
+    pub(crate) fn readings(self, point: &Metrics, reported: Reported) -> String {
+        let reads = |axis: Axis| format!("{} {}", axis.name(), axis.reading(point, reported));
         format!("{} · {}", reads(self.x), reads(self.y))
     }
 
-    /// How `point`, whose actions took `time`, reads on every measure it has
-    /// that neither axis places it by, each named; absent where it has none.
-    pub(crate) fn unplaced(self, point: &Metrics, time: Option<Duration>) -> Option<String> {
+    /// How `point`, on which the overlays place `reported`, reads on every
+    /// measure it has that neither axis places it by, each named; absent
+    /// where it has none.
+    pub(crate) fn unplaced(self, point: &Metrics, reported: Reported) -> Option<String> {
         let rest: Vec<String> = Axis::ALL
             .into_iter()
             .filter(|&axis| axis != self.x && axis != self.y)
-            .filter(|axis| axis.position(point, time).is_some())
-            .map(|axis| format!("{} {}", axis.name(), axis.reading(point, time)))
+            .filter(|axis| axis.position(point, reported).is_some())
+            .map(|axis| format!("{} {}", axis.name(), axis.reading(point, reported)))
             .collect();
         (!rest.is_empty()).then(|| rest.join(" · "))
     }
@@ -204,14 +305,39 @@ impl Axes {
         format!("{} · {}", self.x.name(), self.y.name())
     }
 
-    /// How `point`, whose actions took `time`, reads on both axes, under a
-    /// header of their [`names`](Self::names).
-    pub(crate) fn values(self, point: &Metrics, time: Option<Duration>) -> String {
+    /// How `point`, on which the overlays place `reported`, reads on both
+    /// axes, under a header of their [`names`](Self::names).
+    pub(crate) fn values(self, point: &Metrics, reported: Reported) -> String {
         format!(
             "{} · {}",
-            self.x.reading(point, time),
-            self.y.reading(point, time)
+            self.x.reading(point, reported),
+            self.y.reading(point, reported)
         )
+    }
+}
+
+/// What the spawns landing on each point of a measure wrote and read, of the
+/// points any spawn lands on, held apart from the graph so that a plot can be
+/// drawn off the UI thread.
+#[derive(Debug, Default)]
+pub(crate) struct Sizes(FxHashMap<Id, SpawnBytes>);
+
+impl Sizes {
+    /// The spawn bytes `bytes` places on each of `points`.
+    pub(crate) fn of(bytes: Result<&NodeBytes, Unsized>, points: &[Metrics]) -> Self {
+        let Ok(bytes) = bytes else {
+            return Sizes::default();
+        };
+        let mut sizes = FxHashMap::with_capacity_and_hasher(points.len(), Default::default());
+        sizes.extend(points.iter().filter_map(|point| {
+            let sized = bytes.get(point.id)?;
+            Some((point.id, sized.held.bytes))
+        }));
+        Sizes(sizes)
+    }
+
+    pub(crate) fn get(&self, id: Id) -> Option<SpawnBytes> {
+        self.0.get(&id).copied()
     }
 }
 
@@ -270,6 +396,7 @@ mod tests {
     use super::*;
     use bviz_graph_layout::Kind;
     use bviz_graph_layout::metrics::Count;
+    use bviz_invocation::spawn::InputBytes;
 
     fn point(closure: u32, blast_radius: u32) -> Metrics {
         Metrics {
@@ -283,13 +410,68 @@ mod tests {
         }
     }
 
+    fn timed(time: Option<Duration>) -> Reported {
+        Reported { time, bytes: None }
+    }
+
+    fn sized(outputs: u64, others: u64, tools: u64) -> Reported {
+        Reported {
+            time: None,
+            bytes: Some(SpawnBytes {
+                outputs: Bytes::new(outputs),
+                inputs: InputBytes {
+                    tools: Bytes::new(tools),
+                    others: Bytes::new(others),
+                },
+            }),
+        }
+    }
+
     #[test]
     fn action_time_places_a_point_by_its_milliseconds_and_leaves_an_untimed_one_out() {
-        let at = |time| Axis::ActionTime.position(&point(3, 4), time);
+        let at = |time| Axis::ActionTime.position(&point(3, 4), timed(time));
         assert_eq!(at(Some(Duration::from_micros(2_499_600))), Some(2_500));
         assert_eq!(at(Some(Duration::from_micros(400))), Some(0));
         assert_eq!(at(None), None);
-        assert_eq!(Axis::Closure.position(&point(3, 4), None), Some(3));
+        assert_eq!(
+            Axis::Closure.position(&point(3, 4), Reported::default()),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn a_byte_axis_places_a_point_by_the_kibibytes_it_measures() {
+        let reported = sized(3 << 20, 1536, 511);
+        let at = |axis: Axis| axis.position(&point(3, 4), reported);
+        assert_eq!(at(Axis::BytesWritten), Some(3 << 10));
+        assert_eq!(
+            at(Axis::BytesRead),
+            Some(2),
+            "a kibibyte and a half rounds up"
+        );
+        assert_eq!(at(Axis::ToolBytes), Some(0));
+        assert_eq!(Axis::BytesRead.position(&point(3, 4), timed(None)), None);
+        assert_eq!(
+            Axis::BytesWritten.position(&point(3, 4), sized(u64::MAX, 0, 0)),
+            Some(u32::MAX)
+        );
+        assert_eq!(
+            Axis::BytesWritten.reading(&point(3, 4), reported),
+            "3.0 MiB"
+        );
+        assert_eq!(Axis::ToolBytes.reading(&point(3, 4), timed(None)), "none");
+    }
+
+    #[test]
+    fn a_byte_tick_reads_as_a_whole_binary_unit() {
+        let ticks = [0, 1, 500, 1 << 10, 200 << 10, 1 << 20, 5 << 20];
+        let labels = [
+            "0", "1 KiB", "500 KiB", "1 MiB", "200 MiB", "1 GiB", "5 GiB",
+        ];
+        assert_eq!(
+            ticks.map(|value| Axis::BytesWritten.tick_label(value)),
+            labels
+        );
     }
 
     #[test]
@@ -314,7 +496,7 @@ mod tests {
 
     #[test]
     fn a_tooltip_reads_the_plotted_measures_and_then_those_left_off_the_axes() {
-        let timed = Some(Duration::from_millis(3_200));
+        let timed = timed(Some(Duration::from_millis(3_200)));
         let by_time = Axes::OPENING.across(Axis::ActionTime);
         assert_eq!(
             by_time.readings(&point(3, 4), timed),
@@ -329,7 +511,13 @@ mod tests {
             by_closure.unplaced(&point(3, 4), timed).as_deref(),
             Some("action time 3.2s")
         );
-        assert_eq!(by_closure.unplaced(&point(3, 4), None), None);
+        assert_eq!(by_closure.unplaced(&point(3, 4), Reported::default()), None);
+        assert_eq!(
+            by_closure
+                .unplaced(&point(3, 4), sized(2 << 10, 0, 0))
+                .as_deref(),
+            Some("bytes written 2.0 KiB · bytes read 0 B · tool bytes 0 B")
+        );
     }
 
     #[test]
@@ -367,8 +555,12 @@ mod tests {
     }
 
     #[test]
-    fn an_axis_reading_time_falls_back_to_the_measure_on_neither_axis() {
-        let fallen = |x, y| Axes { x, y }.untimed();
+    fn an_axis_reading_an_overlay_not_carried_falls_back_to_one_every_point_has() {
+        let carried = Carried {
+            times: false,
+            bytes: true,
+        };
+        let fallen = |x, y| Axes { x, y }.available(carried);
         let (closure, blast, time) = (Axis::Closure, Axis::BlastRadius, Axis::ActionTime);
         assert_eq!(
             fallen(time, blast),
@@ -403,6 +595,30 @@ mod tests {
             Axes {
                 x: blast,
                 y: closure
+            }
+        );
+        let (written, read) = (Axis::BytesWritten, Axis::BytesRead);
+        assert_eq!(
+            fallen(written, read),
+            Axes {
+                x: written,
+                y: read
+            },
+            "an axis whose overlay is carried stays"
+        );
+        let bare = Carried {
+            times: false,
+            bytes: false,
+        };
+        assert_eq!(
+            Axes {
+                x: written,
+                y: time
+            }
+            .available(bare),
+            Axes {
+                x: closure,
+                y: blast
             }
         );
     }

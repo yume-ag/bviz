@@ -197,7 +197,7 @@ mod tests {
     use super::*;
     use crate::hue::Hue;
     use crate::jump::fixture;
-    use crate::scatter::axis::Axes;
+    use crate::scatter::axis::{Axes, Reported};
     use bviz_graph_layout::InputSet;
     use bviz_graph_layout::graph::{EdgeKind, Kind};
     use bviz_graph_layout::metrics::{Count, Scope, Sizing};
@@ -262,7 +262,7 @@ mod tests {
             &measured,
             &measured,
             Axes::OPENING,
-            |_| None,
+            |_| Reported::default(),
             plots,
             |id| verdicts.get(id),
             |_| Hue::Other,
@@ -387,7 +387,7 @@ mod tests {
             &measured,
             &measured,
             Axes::OPENING,
-            |_| None,
+            |_| Reported::default(),
             |_| true,
             |id| verdicts.get(id),
             |_| Hue::Other,

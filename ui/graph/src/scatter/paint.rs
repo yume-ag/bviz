@@ -10,7 +10,7 @@ use gpui::{
 };
 
 /// Room left of the axes for the vertical tick labels.
-const LEFT_MARGIN: f32 = 52.0;
+const LEFT_MARGIN: f32 = 60.0;
 /// Room right of the axes for the last horizontal tick label, centred on the
 /// axes' right edge, to reach past it.
 const RIGHT_MARGIN: f32 = 24.0;

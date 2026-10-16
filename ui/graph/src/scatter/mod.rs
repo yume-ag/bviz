@@ -30,11 +30,12 @@ use crate::point::{
     configuration_readings, identify, mnemonic, point_label, primary_output, unit_names,
 };
 use crate::reveal;
+use crate::spawn_bytes::{NodeBytes, Unsized};
 use crate::timing::{NodeTimes, Untimed};
 use crate::toolbar::PickerGroup;
 use crate::unit_picker::CyclePoints;
 use crate::unit_picker::UnitPicker;
-use axis::{Axes, Axis, Clocks};
+use axis::{Axes, Axis, Carried, Clocks, Overlay, Reported, Sizes};
 use bviz_bazel_flags::TRANSITIONS;
 use bviz_graph_layout::metrics::{Measurement, Metrics, Scope, Sizing, Unit};
 use bviz_graph_layout::select::Verdicts;
@@ -205,7 +206,7 @@ impl ScatterPanel {
     pub(crate) fn new(model: Entity<GraphModel>, cx: &mut Context<Self>) -> Self {
         let changed = cx.observe(&model, |view, _, cx| {
             if let Some(choice) = &view.choice {
-                choice.explain_times(&view.model, cx);
+                choice.explain(&view.model, cx);
             }
             view.replot(cx);
             cx.notify();
@@ -600,7 +601,7 @@ impl ScatterPanel {
     fn choose_unit(&mut self, cx: &mut Context<Self>) {
         if let Some(choice) = &self.choice {
             choice.name_colourings(cx);
-            choice.explain_times(&self.model, cx);
+            choice.explain(&self.model, cx);
         }
         self.measure(cx);
         cx.notify();
@@ -636,14 +637,15 @@ impl ScatterPanel {
         cx.notify();
     }
 
-    /// Offers the choices reading action time only where the unit plotted is
-    /// `timed`, taking down a list of points drawn by one it falls back from.
-    fn offer_times(&mut self, timed: bool, cx: &mut Context<Self>) {
+    /// Offers the choices reading an overlay only where the unit plotted
+    /// carries it as `carried` says, taking down a list of points drawn by one
+    /// it falls back from.
+    fn offer(&mut self, carried: Carried, cx: &mut Context<Self>) {
         let Some(choice) = &mut self.choice else {
             return;
         };
-        let fell_back = choice.offer_times(timed, cx);
-        choice.explain_times(&self.model, cx);
+        let fell_back = choice.offer(carried, cx);
+        choice.explain(&self.model, cx);
         if fell_back {
             self.close_pick(cx);
             cx.notify();
@@ -670,9 +672,9 @@ impl ScatterPanel {
 
     /// Plots the measured points through the verdicts of the document's
     /// filter, where the plot drawn is not of the chosen scope, axes and
-    /// colouring, not drawn through those verdicts, or not of the action times
-    /// the graph holds, once the choices reading action time are offered as the
-    /// unit's measure has any. A hidden panel waits until it is shown, and a
+    /// colouring, not drawn through those verdicts, or not of the overlays the
+    /// graph holds, once the choices reading an overlay are offered as the
+    /// unit's measure carries it. A hidden panel waits until it is shown, and a
     /// plotting running replots once it lands. Plotting passes over every
     /// point, so this runs off the UI thread, and the plot drawn stays until
     /// the new one lands.
@@ -684,12 +686,12 @@ impl ScatterPanel {
             return;
         };
         let model = self.model.read(cx);
-        let timed = model
+        let carried = model
             .loaded()
             .zip(model.metrics(reference))
-            .map(|(loaded, reference)| any_timed(loaded.times(), reference));
-        if let Some(timed) = timed {
-            self.offer_times(timed, cx);
+            .map(|(loaded, reference)| carried(loaded, reference));
+        if let Some(carried) = carried {
+            self.offer(carried, cx);
         }
         let Some(((scope, reference), choice)) = self.scopes(cx).zip(self.choice.as_ref()) else {
             return;
@@ -702,7 +704,7 @@ impl ScatterPanel {
         let Some(loaded) = model.loaded() else {
             return;
         };
-        let timed = loaded.timed();
+        let (timed, logged) = (loaded.timed(), loaded.logged());
         let (Some(metrics), Some(reference)) = (model.metrics(scope), model.metrics(reference))
         else {
             return;
@@ -713,10 +715,12 @@ impl ScatterPanel {
                 && plot.plotted.axes == axes
                 && plot.colour == colour
                 && plot.timed == timed
+                && plot.logged == logged
         }) {
             return;
         }
         let clocks = Clocks::of(loaded.times(), &reference.points);
+        let sizes = Sizes::of(loaded.bytes(), &reference.points);
         let (metrics, reference) = (Arc::clone(metrics), Arc::clone(reference));
         let shared = loaded.shared.clone();
         let Some(writers) = model.writers() else {
@@ -729,14 +733,17 @@ impl ScatterPanel {
                 let colouring = Colouring::of(colour, scope.unit(), &reference, &shared.facets);
                 let hue = |point: &Metrics| colouring.hue(point, &shared.facets, &clocks);
                 let verdict = |id| verdicts.get(id);
-                let time = |id| clocks.time(id);
-                let plotted = Plotted::of(&metrics, &reference, axes, time, plots, verdict, hue);
+                let reported = |id| Reported {
+                    time: clocks.time(id),
+                    bytes: sizes.get(id),
+                };
+                let plotted =
+                    Plotted::of(&metrics, &reference, axes, reported, plots, verdict, hue);
                 let writers = Arc::clone(writers.wait());
                 let index = PointIndex::of(&metrics, &plotted, plots, &shared.base, writers);
-                let points = metrics
-                    .points
-                    .iter()
-                    .filter(|point| plots(point) && axes.place(point, time(point.id)).is_some());
+                let points = metrics.points.iter().filter(|point| {
+                    plots(point) && axes.place(point, reported(point.id)).is_some()
+                });
                 let legend = colouring.legend(points, &shared.facets, &clocks);
                 (plotted, index, legend, verdicts)
             },
@@ -745,7 +752,8 @@ impl ScatterPanel {
                 if view.plot.as_ref().is_none_or(|plot| {
                     plot.scope.unit() != scope.unit()
                         || plot.plotted.axes != axes
-                        || (plot.timed != timed && axes.reads_time())
+                        || (plot.timed != timed && axes.reads(Overlay::Times))
+                        || (plot.logged != logged && axes.reads(Overlay::Bytes))
                 }) {
                     view.zoom = Zoom::WHOLE;
                 }
@@ -758,6 +766,7 @@ impl ScatterPanel {
                     scope,
                     colour,
                     timed,
+                    logged,
                     selection: None,
                     previewed: Vec::new(),
                 });
@@ -1102,7 +1111,7 @@ impl ScatterPanel {
                     mnemonic: mnemonic.map(|mnemonic| mnemonic.to_owned().into()),
                     label: label.clone().into(),
                     hint: hint.map(SharedString::from),
-                    measures: plot.plotted.axes.values(point, drawn.time).into(),
+                    measures: plot.plotted.axes.values(point, drawn.reported).into(),
                     x: drawn.x,
                     y: drawn.y,
                     tooltip: describe(drawn, unit, &plot.plotted, 0, loaded),
@@ -1205,9 +1214,9 @@ struct Choice {
     loaded: InputSet,
     picker: UnitPicker,
     axes: Axes,
-    /// Whether any point of the unit plotted has an action time, which the
-    /// choices reading it are offered by.
-    timed: bool,
+    /// Which overlays some point of the unit plotted carries, by which the
+    /// choices reading them are offered.
+    carried: Carried,
     across_picker: Entity<Dropdown>,
     _across_picked: Subscription,
     up_picker: Entity<Dropdown>,
@@ -1227,9 +1236,12 @@ impl Choice {
     ) -> Option<Self> {
         let loaded = model.read(cx).loaded()?;
         let inputs = loaded.shared.inputs;
-        // Until the unit is measured, whether any of its points is timed is
-        // taken from whether any node of the graph is.
-        let timed = loaded.times().is_ok();
+        // Until the unit is measured, which overlays any of its points carries
+        // is taken from which any node of the graph does.
+        let carried = Carried {
+            times: loaded.times().is_ok(),
+            bytes: loaded.bytes().is_ok(),
+        };
         let picker = UnitPicker::new(
             "scatter-unit",
             "Point unit",
@@ -1280,26 +1292,34 @@ impl Choice {
             _across_picked: across_picked,
             up_picker,
             _up_picked: up_picked,
-            timed,
+            carried,
             colour: ColourBy::OPENING,
             colour_picker,
             _colour_picked: colour_picked,
         };
-        choice.offer_times(timed, cx);
-        choice.explain_times(model, cx);
+        choice.offer(carried, cx);
+        choice.explain(model, cx);
         Some(choice)
     }
 
-    /// Has each picker offering a choice that reads action time say what the
-    /// graph `model` holds of them.
-    fn explain_times(&self, model: &Entity<GraphModel>, cx: &mut Context<ScatterPanel>) {
+    /// Has each picker offering a choice that reads an overlay say what the
+    /// graph `model` holds of it.
+    fn explain(&self, model: &Entity<GraphModel>, cx: &mut Context<ScatterPanel>) {
         let unit = self.picker.chosen(cx).unit();
-        let times = (model.read(cx).loaded()).map_or(Err(Untimed::NoProfile), Loaded::times);
-        let note = |name| times_note(times, self.timed, unit, name);
+        let overlays = Overlays::of(model.read(cx).loaded());
         let notes = [
-            (&self.across_picker, note(ACROSS_HINT)),
-            (&self.up_picker, note(UP_HINT)),
-            (&self.colour_picker, note(COLOUR_HINT)),
+            (
+                &self.across_picker,
+                axis_note(overlays, self.carried, unit, ACROSS_HINT),
+            ),
+            (
+                &self.up_picker,
+                axis_note(overlays, self.carried, unit, UP_HINT),
+            ),
+            (
+                &self.colour_picker,
+                times_note(overlays.times, self.carried.times, unit, COLOUR_HINT),
+            ),
         ];
         for (picker, note) in notes {
             picker.update(cx, |picker, cx| picker.set_tooltip(note, cx));
@@ -1326,15 +1346,16 @@ impl Choice {
         }
     }
 
-    /// Offers the choices reading action time only where the unit plotted is
-    /// `timed`, falling back from any of them chosen where it is not, and
-    /// shows what is chosen as chosen. Whether a choice fell back.
-    fn offer_times(&mut self, timed: bool, cx: &mut Context<ScatterPanel>) -> bool {
-        self.timed = timed;
-        let axes_fall = !timed && self.axes.reads_time();
-        if axes_fall {
-            self.axes = self.axes.untimed();
-        }
+    /// Offers the choices reading an overlay only where the unit plotted
+    /// carries it as `carried` says, falling back from any of them chosen
+    /// where it does not, and shows what is chosen as chosen. Whether a
+    /// choice fell back.
+    fn offer(&mut self, carried: Carried, cx: &mut Context<ScatterPanel>) -> bool {
+        self.carried = carried;
+        let timed = carried.times;
+        let available = self.axes.available(carried);
+        let axes_fall = available != self.axes;
+        self.axes = available;
         let colour_falls = !timed && self.colour == ColourBy::Runner;
         if colour_falls {
             self.colour = ColourBy::Identity;
@@ -1342,8 +1363,7 @@ impl Choice {
         for picker in [&self.across_picker, &self.up_picker] {
             picker.update(cx, |picker, cx| {
                 for offered in Axis::ALL {
-                    let available = timed || !offered.reads_time();
-                    picker.set_available(offered.index(), available, cx);
+                    picker.set_available(offered.index(), offered.available(carried), cx);
                 }
             });
         }
@@ -1420,6 +1440,8 @@ struct Plot {
     colour: ColourBy,
     /// Which of its session's timings `plotted` was drawn with.
     timed: Revision,
+    /// Which of its session's logged spawns `plotted` was drawn with.
+    logged: Revision,
     /// What the node selected lands on in this plot, and that node.
     selection: Option<(Id, Landing)>,
     /// The marks standing for the node the palette's keys are on.
@@ -1596,11 +1618,11 @@ fn describe(
     others: usize,
     loaded: &Loaded,
 ) -> Vec<String> {
-    let (point, time) = (&mark.target, mark.time);
+    let (point, reported) = (&mark.target, mark.reported);
     let mut lines = Vec::with_capacity(TOOLTIP_LINES);
     identify(point.id, point.kind, unit, &loaded.shared, &mut lines);
-    lines.push(plotted.axes.readings(point, time));
-    lines.extend(plotted.axes.unplaced(point, time));
+    lines.push(plotted.axes.readings(point, reported));
+    lines.extend(plotted.axes.unplaced(point, reported));
     if let Hue::Ran(ran) = mark.hue {
         lines.push(ran.label().to_owned());
     }
@@ -1798,12 +1820,9 @@ impl Render for ScatterPanel {
                 .plot
                 .as_ref()
                 .is_some_and(|plot| plot.scope != scope || plot.plotted.axes != choice.axes);
-            let times = model
-                .loaded()
-                .map_or(Err(Untimed::NoProfile), Loaded::times);
             let shown = Shown {
                 scope,
-                times,
+                overlays: Overlays::of(model.loaded()),
                 measuring,
             };
             strip(choice, shown, legend, &self.focus, window, cx)
@@ -2264,8 +2283,8 @@ const SWATCH_DIAMETER: f32 = 4.0 * MIN_RADIUS;
 /// What the strip reads of the plot it chooses.
 struct Shown<'a> {
     scope: Scope,
-    /// The action times its time-reading pickers explain themselves by.
-    times: Result<&'a NodeTimes, Untimed>,
+    /// What its overlay-reading pickers explain themselves by.
+    overlays: Overlays<'a>,
     /// Whether a new choice is measured over the plot drawn for the last.
     measuring: bool,
 }
@@ -2284,8 +2303,8 @@ const UP_NAME: &str = "up";
 const COLOUR_NAME: &str = "colour";
 const INPUTS_NAME: &str = "inputs";
 
-/// What each time-reading picker's hint names it where the graph places time
-/// on its points.
+/// What each overlay-reading picker's hint names it where the graph places
+/// the overlay on its points.
 const ACROSS_HINT: &str = "Horizontal axis";
 const UP_HINT: &str = "Vertical axis";
 const COLOUR_HINT: &str = "Point colouring";
@@ -2302,11 +2321,11 @@ fn strip(
 ) -> OneRow {
     let Shown {
         scope,
-        times,
+        overlays,
         measuring,
     } = shown;
     let points = (choice.picker).group(POINTS, focus, window, cx);
-    let note = |name: &str| Some(times_note(times, choice.timed, scope.unit(), name));
+    let note = |name: &str| Some(axis_note(overlays, choice.carried, scope.unit(), name));
     let opening = Axes::OPENING;
     let across = PickerGroup {
         name: ACROSS_NAME,
@@ -2326,7 +2345,12 @@ fn strip(
         name: COLOUR_NAME,
         dropdown: &choice.colour_picker,
         action: &CycleColouring,
-        note: note(COLOUR_HINT),
+        note: Some(times_note(
+            overlays.times,
+            choice.carried.times,
+            scope.unit(),
+            COLOUR_HINT,
+        )),
         set: choice.colour != ColourBy::OPENING,
     };
     let grouped = |picker: PickerGroup, priority| picker.group(priority, focus, window, cx);
@@ -2419,19 +2443,58 @@ fn unplaced(plot: &Plot) -> Option<String> {
     let axes = plot.plotted.axes;
     let lacked: Vec<&str> = [axes.x(), axes.y()]
         .into_iter()
-        .filter(|axis| axis.reads_time())
+        .filter(|axis| axis.overlay().is_some())
         .map(Axis::name)
         .collect();
     let lacked = lacked.join(" or ");
     Some(format!("{unplaced} {many} without {lacked} left out"))
 }
 
-/// Whether `times` places action time on any point `reference` measures.
-fn any_timed(times: Result<&NodeTimes, Untimed>, reference: &Measurement) -> bool {
-    times.is_ok_and(|times| {
-        let mut points = reference.points.iter();
-        points.any(|point| times.get(point.id).is_some())
-    })
+/// The overlays a graph places on its nodes.
+#[derive(Clone, Copy)]
+struct Overlays<'a> {
+    times: Result<&'a NodeTimes, Untimed>,
+    bytes: Result<&'a NodeBytes, Unsized>,
+}
+
+impl<'a> Overlays<'a> {
+    fn of(loaded: Option<&'a Loaded>) -> Self {
+        Overlays {
+            times: loaded.map_or(Err(Untimed::NoProfile), Loaded::times),
+            bytes: loaded.map_or(Err(Unsized::NoExecLog), Loaded::bytes),
+        }
+    }
+}
+
+/// Which overlays `loaded` places on any point `reference` measures.
+fn carried(loaded: &Loaded, reference: &Measurement) -> Carried {
+    let points = || reference.points.iter();
+    Carried {
+        times: (loaded.times()).is_ok_and(|times| points().any(|p| times.get(p.id).is_some())),
+        bytes: (loaded.bytes()).is_ok_and(|bytes| points().any(|p| bytes.get(p.id).is_some())),
+    }
+}
+
+/// The hint of an axis picker `name`d, which `carried` says of which overlays
+/// the graph places on some point of `unit`, as [`colour::overlays_hint`]
+/// words it.
+fn axis_note(overlays: Overlays, carried: Carried, unit: Unit, name: &str) -> SharedString {
+    colour::overlays_hint(
+        name,
+        [
+            (!carried.times).then(|| times_note(overlays.times, false, unit, name)),
+            (!carried.bytes).then(|| bytes_note(overlays.bytes, unit, name)),
+        ],
+    )
+}
+
+/// Why the graph places spawn bytes on none of the points of `unit`, as
+/// [`times_note`] says for action time placed on none.
+fn bytes_note(bytes: Result<&NodeBytes, Unsized>, unit: Unit, name: &str) -> SharedString {
+    match bytes {
+        Ok(_) => format!("No spawn bytes on {}", unit_names(unit).many).into(),
+        Err(_) => colour::bytes_note(bytes, name),
+    }
 }
 
 /// The hint of the picker `name`d, offering action time: as the graph's

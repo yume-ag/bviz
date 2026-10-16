@@ -1,13 +1,13 @@
 //! Where the scatter plot's marks and ticks fall: measures on logarithmic
 //! axes, and a mark's size by the count its measurement sizes points by.
 
-use super::axis::{Axes, Axis};
+use super::axis::{Axes, Axis, Reported};
 use crate::hue::Hue;
 use bviz_graph_layout::Id;
 use bviz_graph_layout::metrics::{Measurement, Metrics, Sizing};
 use bviz_graph_layout::select::Verdict;
+use bviz_ui_components::amount;
 use gpui::{Bounds, Pixels, Point, point, px};
-use std::time::Duration;
 
 /// An axis scaled by `log10(1 + n)`, so a value of zero sits at the origin and
 /// every decade past it spans the same length.
@@ -36,6 +36,10 @@ pub(crate) enum Ladder {
     /// stepping [as a clock does](CLOCK_BANDS) from ten seconds to the minute
     /// and from ten minutes to the hour.
     Millis,
+    /// Round amounts in kibibytes: as [`Counts`](Self::Counts) within each
+    /// binary unit, from once the unit to five hundred times it, the next
+    /// band starting at the next unit.
+    Kibibytes,
 }
 
 /// The multiples of a band's unit its ticks fall on, but for a clock band.
@@ -48,6 +52,12 @@ pub(super) const SECOND_MS: u32 = 1_000;
 pub(super) const MINUTE_MS: u32 = 60 * SECOND_MS;
 pub(super) const HOUR_MS: u32 = 60 * MINUTE_MS;
 
+const PER_BINARY_UNIT: u32 = amount::PER_BINARY_UNIT as u32;
+
+/// The unit of the last band of [`Ladder::Kibibytes`] within one binary unit,
+/// as a multiple of that unit.
+const LAST_BAND_PER_BINARY_UNIT: u32 = 100;
+
 /// The units of the bands of [`Ladder::Millis`] stepping as a clock does:
 /// ten seconds, followed by the minute, and ten minutes, by the hour.
 const CLOCK_BANDS: [u32; 2] = [10 * SECOND_MS, 10 * MINUTE_MS];
@@ -59,6 +69,13 @@ impl Ladder {
         let next = move |&unit: &u32| match self {
             Ladder::Millis if unit == CLOCK_BANDS[0] => Some(MINUTE_MS),
             Ladder::Millis if unit == CLOCK_BANDS[1] => Some(HOUR_MS),
+            Ladder::Kibibytes => {
+                let binary = binary_unit(unit);
+                match binary.checked_mul(LAST_BAND_PER_BINARY_UNIT) == Some(unit) {
+                    true => binary.checked_mul(PER_BINARY_UNIT),
+                    false => unit.checked_mul(10),
+                }
+            }
             Ladder::Millis | Ladder::Counts => unit.checked_mul(10),
         };
         std::iter::successors(Some(1u32), next).map(move |unit| {
@@ -84,6 +101,19 @@ impl Ladder {
             })
             .map_while(|tick| tick)
     }
+}
+
+/// The largest binary unit, in kibibytes, at or below `kibibytes`, which is
+/// at least one.
+fn binary_unit(kibibytes: u32) -> u32 {
+    let mut unit: u32 = 1;
+    while let Some(next) = unit
+        .checked_mul(PER_BINARY_UNIT)
+        .filter(|&next| next <= kibibytes)
+    {
+        unit = next;
+    }
+    unit
 }
 
 impl LogScale {
@@ -149,9 +179,8 @@ pub(crate) struct Mark {
     pub(crate) target: Metrics,
     pub(crate) x: u32,
     pub(crate) y: u32,
-    /// How long the actions the point stands for took, where any time lands
-    /// on them.
-    pub(crate) time: Option<Duration>,
+    /// What the overlays place on the point.
+    pub(crate) reported: Reported,
     pub(crate) radius: f32,
     /// Whether the filter draws the point as no part of what it selects.
     pub(crate) faded: bool,
@@ -187,35 +216,35 @@ pub(crate) struct Plotted {
 
 impl Plotted {
     /// The marks of those points `measured` that `plots` takes, placed by
-    /// `axes` with the action time `time` gives a node, as the filter whose
+    /// `axes` with what `reported` says the overlays place on a node, as the filter whose
     /// verdict on a node `verdict` gives draws them, in the hue `hue` gives,
     /// scaled to `measured` and `reference` alike.
     pub(crate) fn of(
         measured: &Measurement,
         reference: &Measurement,
         axes: Axes,
-        time: impl Fn(Id) -> Option<Duration>,
+        reported: impl Fn(Id) -> Reported,
         plots: impl Fn(&Metrics) -> bool,
         verdict: impl Fn(Id) -> Verdict,
         hue: impl Fn(&Metrics) -> Hue,
     ) -> Self {
         let (targets, sizing) = (&measured.points, measured.sizing);
         let place = |t: &Metrics| {
-            let time = time(t.id);
-            let (x, y) = axes.place(t, time)?;
-            Some((x, y, time))
+            let reported = reported(t.id);
+            let (x, y) = axes.place(t, reported)?;
+            Some((x, y, reported))
         };
         let scaled = || targets.iter().chain(&reference.points).filter(|t| plots(t));
         let largest = scaled().map(|t| sizing.of(t)).max().unwrap_or(0);
         let top = |axis: Axis| {
-            let values = scaled().filter_map(|t| axis.position(t, time(t.id)));
+            let values = scaled().filter_map(|t| axis.position(t, reported(t.id)));
             LogScale::covering(values.max().unwrap_or(0), axis.ladder())
         };
         let (mut plotted, mut unplaced) = (0, 0);
         let mut marks: Vec<Mark> = Vec::with_capacity(targets.len());
         marks.extend(targets.iter().filter(|t| plots(t)).filter_map(|&target| {
             let verdict = verdict(target.id);
-            let Some((x, y, time)) = place(&target) else {
+            let Some((x, y, reported)) = place(&target) else {
                 unplaced += usize::from(verdict != Verdict::Hidden);
                 return None;
             };
@@ -231,7 +260,7 @@ impl Plotted {
                 target,
                 x,
                 y,
-                time,
+                reported,
                 radius: radius(sizing.of(&target), largest),
                 faded,
                 hue: hue(&target),
@@ -571,6 +600,7 @@ mod tests {
     use bviz_graph_layout::metrics::{Count, Scope, Unit};
     use bviz_graph_layout::{InputSet, Kind};
     use gpui::size;
+    use std::time::Duration;
 
     fn target(closure: u32, blast_radius: u32, fan_in: u32) -> Metrics {
         Metrics {
@@ -591,8 +621,8 @@ mod tests {
         area.point_at(target.closure.value(), target.blast_radius.value())
     }
 
-    fn untimed(_: Id) -> Option<Duration> {
-        None
+    fn unreported(_: Id) -> Reported {
+        Reported::default()
     }
 
     fn no_hue(_: &Metrics) -> Hue {
@@ -615,7 +645,7 @@ mod tests {
             &measured,
             &measured,
             AXES,
-            untimed,
+            unreported,
             |_| true,
             |_| Verdict::Shown,
             no_hue,
@@ -695,6 +725,37 @@ mod tests {
                 (2 * h, false),
             ]
         );
+    }
+
+    #[test]
+    fn byte_ticks_step_within_each_binary_unit_and_start_a_band_at_the_next() {
+        const MIB: u32 = 1 << 10;
+        let ticks: Vec<(u32, bool)> = LogScale::covering(3 * MIB, Ladder::Kibibytes)
+            .ticks()
+            .into_iter()
+            .map(|t| (t.value, t.major))
+            .collect();
+        assert_eq!(
+            ticks,
+            [
+                (0, true),
+                (1, true),
+                (2, false),
+                (5, false),
+                (10, true),
+                (20, false),
+                (50, false),
+                (100, true),
+                (200, false),
+                (500, false),
+                (MIB, true),
+                (2 * MIB, false),
+                (5 * MIB, false),
+            ]
+        );
+        let top = LogScale::covering(u32::MAX, Ladder::Kibibytes).top;
+        assert_eq!(top, u32::MAX, "a scale past the last tick a u32 holds");
+        assert_eq!(binary_unit(MIB * MIB + 1), MIB * MIB);
     }
 
     #[test]
@@ -790,7 +851,7 @@ mod tests {
             &measured,
             &measured,
             AXES,
-            untimed,
+            unreported,
             |_| true,
             verdict,
             no_hue,
@@ -820,7 +881,7 @@ mod tests {
             &measured,
             &measured,
             AXES,
-            untimed,
+            unreported,
             |_| true,
             |id| match id {
                 id if id == hidden => Verdict::Hidden,
@@ -857,7 +918,7 @@ mod tests {
             &measured,
             &measured,
             AXES,
-            untimed,
+            unreported,
             |t| t.id != unplotted,
             |_| Verdict::Shown,
             no_hue,
@@ -879,7 +940,7 @@ mod tests {
             &narrower,
             &whole,
             AXES,
-            untimed,
+            unreported,
             |_| true,
             |_| Verdict::Shown,
             no_hue,
@@ -888,7 +949,7 @@ mod tests {
             &whole,
             &whole,
             AXES,
-            untimed,
+            unreported,
             |_| true,
             |_| Verdict::Shown,
             no_hue,
@@ -1012,10 +1073,13 @@ mod tests {
         }
         let reference = measured(&targets);
         let measured = measured(&targets[..2]);
-        let time = |id: Id| match id.0 {
-            0 => Some(Duration::from_millis(40)),
-            2 => Some(Duration::from_secs(9)),
-            _ => None,
+        let time = |id: Id| Reported {
+            time: match id.0 {
+                0 => Some(Duration::from_millis(40)),
+                2 => Some(Duration::from_secs(9)),
+                _ => None,
+            },
+            bytes: None,
         };
         let axes = AXES.across(Axis::ActionTime);
         let plotted = Plotted::of(
@@ -1072,10 +1136,13 @@ mod tests {
         }
         let reference = measured(&targets);
         let measured = measured(&targets[..2]);
-        let time = |id: Id| match id.0 {
-            0 => Some(Duration::from_millis(40)),
-            2 => Some(Duration::from_secs(9)),
-            _ => None,
+        let time = |id: Id| Reported {
+            time: match id.0 {
+                0 => Some(Duration::from_millis(40)),
+                2 => Some(Duration::from_secs(9)),
+                _ => None,
+            },
+            bytes: None,
         };
         let plot = |axes, verdict: fn(Id) -> Verdict| {
             Plotted::of(&measured, &reference, axes, time, |_| true, verdict, no_hue)
@@ -1111,7 +1178,7 @@ mod tests {
             &measured,
             &measured,
             AXES,
-            untimed,
+            unreported,
             |_| true,
             |_| Verdict::Shown,
             hue,

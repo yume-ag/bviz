@@ -1,27 +1,58 @@
 //! How an amount of file content reads on screen.
 
+use std::ops::Div;
+
 use bviz_invocation::spawn::{ByteMeasure, Bytes, SpawnBytes};
 
-const BYTES_PER_KIB: u64 = 1024;
-/// The binary units past the byte, each [`BYTES_PER_KIB`] of the one before.
+/// The number of each binary unit in the next, from bytes in a kibibyte.
+pub const PER_BINARY_UNIT: u64 = 1 << 10;
+
+/// The binary units past the byte, each [`PER_BINARY_UNIT`] of the one before.
 const BINARY_UNITS: [&str; 6] = ["KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
 
 /// `amount` to a tenth of the largest binary unit that leaves it at least
 /// one, and in bytes below a kibibyte.
 pub fn bytes(amount: Bytes) -> String {
     let amount = amount.get();
-    if amount < BYTES_PER_KIB {
+    if amount < PER_BINARY_UNIT {
         return format!("{amount} B");
     }
-    let per_unit = BYTES_PER_KIB as f64;
-    let mut value = amount as f64 / per_unit;
-    let mut unit = 0;
+    let per_unit = PER_BINARY_UNIT as f64;
     // A value that rounds up to a whole unit reads in that unit.
-    while (value * 10.0).round() >= per_unit * 10.0 && unit + 1 < BINARY_UNITS.len() {
-        value /= per_unit;
+    let (value, unit) = in_binary_unit(amount as f64 / per_unit, per_unit, |value| {
+        (value * 10.0).round() >= per_unit * 10.0
+    });
+    format!("{value:.1} {unit}")
+}
+
+/// `amount` in the largest binary unit that leaves it at least one, rounded
+/// down to a whole number of it, and in bytes below a kibibyte: as a round
+/// amount, such as a tick on a scale, reads.
+pub fn whole_bytes(amount: Bytes) -> String {
+    let amount = amount.get();
+    if amount < PER_BINARY_UNIT {
+        return format!("{amount} B");
+    }
+    let (value, unit) = in_binary_unit(amount / PER_BINARY_UNIT, PER_BINARY_UNIT, |value| {
+        value >= PER_BINARY_UNIT
+    });
+    format!("{value} {unit}")
+}
+
+/// `kibibytes`, divided by `per_unit` into each next binary unit while
+/// `fills_next` holds of it in the unit before, with the unit it ends in.
+fn in_binary_unit<T: Copy + Div<Output = T>>(
+    kibibytes: T,
+    per_unit: T,
+    fills_next: impl Fn(T) -> bool,
+) -> (T, &'static str) {
+    let mut value = kibibytes;
+    let mut unit = 0;
+    while unit + 1 < BINARY_UNITS.len() && fills_next(value) {
+        value = value / per_unit;
         unit += 1;
     }
-    format!("{value:.1} {}", BINARY_UNITS[unit])
+    (value, BINARY_UNITS[unit])
 }
 
 /// How a line of text names `measure`.
@@ -83,5 +114,16 @@ mod tests {
             moved_by(2 << 10, 3 << 20, 1 << 20),
             "wrote 2.0 KiB · read 4.0 MiB (tools 1.0 MiB)"
         );
+    }
+
+    #[test]
+    fn a_round_amount_reads_as_a_whole_number_of_its_largest_unit() {
+        let read = |amount| whole_bytes(Bytes::new(amount));
+        assert_eq!(read(0), "0 B");
+        assert_eq!(read(1 << 10), "1 KiB");
+        assert_eq!(read(500 << 10), "500 KiB");
+        assert_eq!(read(1 << 20), "1 MiB");
+        assert_eq!(read(200 << 30), "200 GiB");
+        assert_eq!(read(u64::MAX), "15 EiB");
     }
 }
