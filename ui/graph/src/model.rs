@@ -10,6 +10,7 @@ use crate::jump::Candidates;
 use crate::playback::NodeStates;
 use crate::point::ConfigNames;
 use crate::report::Report;
+use crate::spawn_bytes::{self, NodeBytes, Unsized};
 use crate::stand_in::Writers;
 use crate::status::{Landings, Nodes, Statuses};
 use crate::timecard::Timecard;
@@ -136,6 +137,10 @@ pub(crate) struct Loaded {
     /// as the card over the graph lists it.
     timecard: Timecard,
     timed: Revision,
+    /// What the spawns the invocation's execution log recorded read and
+    /// wrote, placed on the graph's nodes.
+    bytes: Result<NodeBytes, Unsized>,
+    logged: Revision,
     /// Where the steps of the invocation's critical path land.
     critical: CriticalNodes,
     traced: Revision,
@@ -193,6 +198,8 @@ impl Loaded {
             times: Err(Untimed::NoProfile),
             timecard: Timecard::default(),
             timed: Revision::default(),
+            bytes: Err(Unsized::NoExecLog),
+            logged: Revision::default(),
             critical: CriticalNodes::default(),
             traced: Revision::default(),
             chosen: Revision::default(),
@@ -233,6 +240,10 @@ impl Loaded {
         &self.timecard
     }
 
+    pub(crate) fn bytes(&self) -> Result<&NodeBytes, Unsized> {
+        self.bytes.as_ref().map_err(|why| *why)
+    }
+
     /// Which of its session's attempts the [states](Self::states) are read
     /// from, as [`taken_up`](Self::taken_up) is for outcomes.
     pub(crate) fn attempted(&self) -> Revision {
@@ -253,15 +264,36 @@ impl Loaded {
         self.traced
     }
 
-    /// Takes up what the build and the profile of `session` report of the
-    /// graph's nodes, and says whether that changed anything a view of the
-    /// graph shows. Each is read again only once it is reported anew.
+    /// Takes up what the build, the profile and the execution log of
+    /// `session` report of the graph's nodes, and says whether that changed
+    /// anything a view of the graph shows. Each is read again only once it is
+    /// reported anew.
     fn report(&mut self, session: &Session) -> bool {
         let outcomes = self.take_up_outcomes(session);
         let timings = self.take_up_timings(session);
         let attempts = self.take_up_attempts(session);
         let critical = self.take_up_critical_path(session);
-        outcomes || timings || attempts || critical
+        let bytes = self.take_up_logged_spawns(session);
+        outcomes || timings || attempts || critical || bytes
+    }
+
+    fn take_up_logged_spawns(&mut self, session: &Session) -> bool {
+        let revision = session.logged_spawns_revision();
+        if self.logged == revision {
+            return false;
+        }
+        self.logged = revision;
+        let base = &self.shared.base;
+        let bytes = match session.logged_spawns() {
+            Some(logged) => {
+                let landings = spawn_bytes::landings(base, &self.shared.names, logged);
+                NodeBytes::resolve(&landings, base, logged)
+            }
+            None => Err(Unsized::NoExecLog),
+        };
+        let changed = self.bytes != bytes;
+        self.bytes = bytes;
+        changed
     }
 
     fn take_up_attempts(&mut self, session: &Session) -> bool {
@@ -1575,6 +1607,32 @@ mod tests {
         assert_eq!(loaded.taken_up, taken_up);
         assert_eq!(loaded.times, Err(Untimed::Unplaced));
         assert_ne!(loaded.statuses, Statuses::default());
+    }
+
+    /// Logged spawns are taken up apart from timings, and once per report of
+    /// them.
+    #[test]
+    fn a_graph_takes_up_the_logged_spawns_its_session_holds_once_per_report_of_them() {
+        let mut loaded = loaded();
+        let mut session = Session::default();
+        let by = session.reporter();
+        assert!(!loaded.report(&session));
+        assert_eq!(loaded.bytes, Err(Unsized::NoExecLog));
+
+        let spawn = (Some("bazel-out/bin/app/bin"), "//app:bin", 5, 6, 7);
+        session.report_logged_spawns(by, crate::spawn_bytes::tests::logged(&[spawn]));
+        assert!(loaded.report(&session));
+        assert!(loaded.bytes.is_ok());
+        assert!(!loaded.report(&session));
+
+        session.report_timings(by, timing("bazel-out/bin/app/bin"));
+        let logged = loaded.logged;
+        assert!(loaded.report(&session));
+        assert_eq!(loaded.logged, logged);
+
+        session.report_logged_spawns(by, crate::spawn_bytes::tests::logged(&[]));
+        assert!(loaded.report(&session));
+        assert_eq!(loaded.bytes, Err(Unsized::NoSpawns));
     }
 
     /// Attempts are taken up apart from timings, and once per report of them.

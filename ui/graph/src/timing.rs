@@ -190,7 +190,7 @@ impl Tally for Timed {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use bviz_graph_layout::graph::Node;
     use bviz_graph_layout::{Kind, Names};
@@ -200,13 +200,13 @@ mod tests {
     const CONFIG: &str = "a7a71f";
 
     #[derive(Default)]
-    struct Built {
-        graph: Graph,
-        names: Names,
+    pub(crate) struct Built {
+        pub(crate) graph: Graph,
+        pub(crate) names: Names,
     }
 
     impl Built {
-        fn node(&mut self, name: &str, kind: Kind, parent: Option<Id>) -> Id {
+        pub(crate) fn node(&mut self, name: &str, kind: Kind, parent: Option<Id>) -> Id {
             let id = self.names.intern(name);
             self.graph.add_node(Node::new(id, name, kind, parent));
             id
@@ -214,7 +214,7 @@ mod tests {
 
         /// The package `//{package}` with the target `name` in it, configured
         /// under [`CONFIG`]: the package, the target and the configured target.
-        fn target(&mut self, package: &str, name: &str) -> (Id, Id, Id) {
+        pub(crate) fn target(&mut self, package: &str, name: &str) -> (Id, Id, Id) {
             let label = format!("//{package}:{name}");
             let package = match self.names.get(&format!("pkg:{package}")) {
                 Some(package) => package,
@@ -229,7 +229,7 @@ mod tests {
             (package, target, configured)
         }
 
-        fn action(&mut self, primary_output: &str, owner: Id) -> Id {
+        pub(crate) fn action(&mut self, primary_output: &str, owner: Id) -> Id {
             self.node(
                 &format!("action:{primary_output}"),
                 Kind::Action,

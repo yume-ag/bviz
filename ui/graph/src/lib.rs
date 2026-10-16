@@ -74,6 +74,7 @@ mod scatter;
 mod scroll;
 mod selection;
 mod spatial;
+mod spawn_bytes;
 mod stand_in;
 mod status;
 mod timecard;

@@ -4,12 +4,13 @@ use crate::GraphPanel;
 use crate::jump::{container, node_text, shown};
 use crate::model::Loaded;
 use crate::point::{configuration, kind_names};
+use crate::spawn_bytes::{Sized, Spawned};
 use crate::status::Statuses;
 use crate::timecard::part_of;
 use crate::timing::{Ran, Slowest, Timed};
 use bviz_graph_layout::{Id, Kind};
 use bviz_label::shown::written_line;
-use bviz_ui_components::{CardAnchor, HoverCard, ShownCard, hover_card_canvas};
+use bviz_ui_components::{CardAnchor, HoverCard, ShownCard, amount, hover_card_canvas};
 use gpui::{
     App, Context, Entity, IntoElement, Pixels, Point, Render, WeakEntity, Window, prelude::*,
 };
@@ -197,10 +198,11 @@ impl GraphPanel {
 }
 
 /// The most lines a card reads.
-const CARD_LINES: usize = 8;
+const CARD_LINES: usize = 9;
 
 /// What the card describing `pointed` reads of what `loaded` knows: its name,
-/// then what it is, how its build went and what its actions took.
+/// then what it is, how its build went, what its actions took and what their
+/// spawns wrote and read.
 fn describe(pointed: &Pointed, loaded: &Loaded) -> Vec<String> {
     let shared = &loaded.shared;
     let (id, kind) = (pointed.id, pointed.kind);
@@ -231,6 +233,8 @@ fn describe(pointed: &Pointed, loaded: &Loaded) -> Vec<String> {
     lines.extend(outcome(id, loaded.statuses()));
     let timed = loaded.times().ok().and_then(|times| times.get(id));
     lines.extend(timed.into_iter().flat_map(|timed| time_taken(id, timed)));
+    let sized = loaded.bytes().ok().and_then(|bytes| bytes.get(id));
+    lines.extend(sized.map(|sized| bytes_moved(kind, sized)));
     if loaded.critical().marks(id, !pointed.open) {
         lines.push("critical path".to_owned());
     }
@@ -266,6 +270,18 @@ fn time_taken(id: Id, timed: &Timed) -> Vec<String> {
         .map(|(runner, share)| format!("{} {}", Ran::On(runner).label(), part_of(share, held)))
         .collect();
     vec![format!("{actions} · {took}"), shares.join(" · ")]
+}
+
+/// What the spawns landing on a box of `kind`, which `sized` sizes, wrote
+/// and read, counted unless the box is an action only one lands on.
+fn bytes_moved(kind: Kind, sized: &Sized) -> String {
+    let Spawned { spawns, bytes } = sized.held;
+    let moved = amount::moved(bytes);
+    match spawns {
+        1 if kind == Kind::Action => moved,
+        1 => format!("1 spawn · {moved}"),
+        _ => format!("{spawns} spawns · {moved}"),
+    }
 }
 
 #[cfg(test)]
@@ -347,5 +363,44 @@ mod tests {
             slowest: Some(slowest),
         };
         assert_eq!(time_taken(Id(7), &action), ["9.0s · remote execution"]);
+    }
+
+    #[test]
+    fn a_card_reads_what_a_boxs_spawns_wrote_and_read() {
+        use bviz_invocation::spawn::{Bytes, InputBytes, SpawnBytes};
+        let spawned = |spawns, outputs, others, tools| Spawned {
+            spawns,
+            bytes: SpawnBytes {
+                outputs: Bytes::new(outputs),
+                inputs: InputBytes {
+                    tools: Bytes::new(tools),
+                    others: Bytes::new(others),
+                },
+            },
+        };
+        let action = Sized {
+            own: spawned(1, 3 << 20, 512, 0),
+            held: spawned(1, 3 << 20, 512, 0),
+        };
+        assert_eq!(
+            bytes_moved(Kind::Action, &action),
+            "wrote 3.0 MiB · read 512 B"
+        );
+        let target = Sized {
+            own: Spawned::default(),
+            held: spawned(4, 2 << 10, 3 << 20, 1 << 20),
+        };
+        assert_eq!(
+            bytes_moved(Kind::Target, &target),
+            "4 spawns · wrote 2.0 KiB · read 4.0 MiB (tools 1.0 MiB)"
+        );
+        let retried = Sized {
+            own: spawned(2, 1 << 10, 0, 0),
+            held: spawned(2, 1 << 10, 0, 0),
+        };
+        assert_eq!(
+            bytes_moved(Kind::Action, &retried),
+            "2 spawns · wrote 1.0 KiB · read 0 B"
+        );
     }
 }

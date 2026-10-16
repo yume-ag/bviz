@@ -1,6 +1,6 @@
 //! How an amount of file content reads on screen.
 
-use bviz_invocation::spawn::{ByteMeasure, Bytes};
+use bviz_invocation::spawn::{ByteMeasure, Bytes, SpawnBytes};
 
 const BYTES_PER_KIB: u64 = 1024;
 /// The binary units past the byte, each [`BYTES_PER_KIB`] of the one before.
@@ -33,9 +33,21 @@ pub fn measure_name(measure: ByteMeasure) -> &'static str {
     }
 }
 
+/// What spawns wrote and read, every input counted as read and the share of
+/// it their tools take named only where they read any.
+pub fn moved(by_spawns: SpawnBytes) -> String {
+    let wrote = bytes(by_spawns.outputs);
+    let read = bytes(by_spawns.inputs.all());
+    match by_spawns.inputs.tools {
+        Bytes::ZERO => format!("wrote {wrote} · read {read}"),
+        tools => format!("wrote {wrote} · read {read} (tools {})", bytes(tools)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bviz_invocation::spawn::InputBytes;
 
     #[test]
     fn an_amount_reads_in_the_largest_binary_unit_it_fills() {
@@ -53,5 +65,23 @@ mod tests {
     fn an_amount_that_rounds_to_a_whole_unit_reads_in_it() {
         assert_eq!(bytes(Bytes::new((1 << 20) - 1)), "1.0 MiB");
         assert_eq!(bytes(Bytes::new((1 << 20) - 60)), "1023.9 KiB");
+    }
+
+    #[test]
+    fn what_spawns_read_counts_their_tools_named_only_where_they_read_any() {
+        let moved_by = |outputs, others, tools| {
+            moved(SpawnBytes {
+                outputs: Bytes::new(outputs),
+                inputs: InputBytes {
+                    tools: Bytes::new(tools),
+                    others: Bytes::new(others),
+                },
+            })
+        };
+        assert_eq!(moved_by(3 << 20, 512, 0), "wrote 3.0 MiB · read 512 B");
+        assert_eq!(
+            moved_by(2 << 10, 3 << 20, 1 << 20),
+            "wrote 2.0 KiB · read 4.0 MiB (tools 1.0 MiB)"
+        );
     }
 }
