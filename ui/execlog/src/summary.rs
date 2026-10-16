@@ -13,6 +13,7 @@ pub(crate) struct GroupRow {
     pub(crate) name: SharedString,
     pub(crate) spawns: usize,
     pub(crate) timing: PhaseTiming,
+    pub(crate) bytes: SpawnBytes,
 }
 
 impl From<Group<'_>> for GroupRow {
@@ -21,6 +22,7 @@ impl From<Group<'_>> for GroupRow {
             name: group.name.to_owned().into(),
             spawns: group.spawns,
             timing: group.timing,
+            bytes: group.bytes,
         }
     }
 }

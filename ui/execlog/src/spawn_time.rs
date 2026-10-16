@@ -57,6 +57,7 @@ const GESTURES: Gestures<SpawnTimeIntent> = Gestures::new(&[sort_gesture(SpawnTi
 enum SortBy {
     Name,
     Spawns,
+    Bytes(ByteMeasure),
     Time,
 }
 
@@ -78,6 +79,7 @@ fn compare(sort: Sort<SortBy>, a: &GroupRow, b: &GroupRow) -> Ordering {
     let by = match sort.by {
         SortBy::Name => a.name.cmp(&b.name),
         SortBy::Spawns => a.spawns.cmp(&b.spawns),
+        SortBy::Bytes(measure) => a.bytes.measure(measure).cmp(&b.bytes.measure(measure)),
         SortBy::Time => a.timing.total().cmp(&b.timing.total()),
     };
     let by = if sort.descending { by.reverse() } else { by };
@@ -401,15 +403,67 @@ const fn number(width: Width) -> Column {
     }
 }
 
-/// The columns of a table of summed spawn time: its name, spawns, spawn time,
-/// the bar of its phases, and a note on what the bar can show.
-const GROUP_COLUMNS: [Column; 5] = [
-    text(Width::Fixed(NAME_WIDTH)),
-    number(Width::Fixed(NUMBER_WIDTH)),
-    number(Width::Fixed(NUMBER_WIDTH)),
-    text(Width::Rest),
-    text(Width::Fixed(NOTE_WIDTH)),
+/// A column of a table of summed spawns.
+#[derive(Clone, Copy)]
+enum GroupColumn {
+    Name,
+    Spawns,
+    Bytes(ByteMeasure),
+    Time,
+    /// The bar of the phases of the spawn time.
+    Bar,
+    /// A note on what the bar can show.
+    Note,
+}
+
+const GROUP_COLUMNS: [GroupColumn; 8] = [
+    GroupColumn::Name,
+    GroupColumn::Spawns,
+    GroupColumn::Bytes(ByteMeasure::Outputs),
+    GroupColumn::Bytes(ByteMeasure::Inputs),
+    GroupColumn::Bytes(ByteMeasure::Tools),
+    GroupColumn::Time,
+    GroupColumn::Bar,
+    GroupColumn::Note,
 ];
+
+impl GroupColumn {
+    fn layout(self) -> Column {
+        match self {
+            GroupColumn::Name => text(Width::Fixed(NAME_WIDTH)),
+            GroupColumn::Spawns | GroupColumn::Time => number(Width::Fixed(NUMBER_WIDTH)),
+            GroupColumn::Bytes(_) => BYTES_COLUMN,
+            GroupColumn::Bar => text(Width::Rest),
+            GroupColumn::Note => text(Width::Fixed(NOTE_WIDTH)),
+        }
+    }
+
+    /// The column's title, the name's being `name_title`.
+    fn title(self, name_title: &'static str) -> &'static str {
+        match self {
+            GroupColumn::Name => name_title,
+            GroupColumn::Spawns => "Spawns",
+            GroupColumn::Bytes(measure) => measure_title(measure),
+            GroupColumn::Time => "Spawn time",
+            GroupColumn::Bar => "By phase",
+            GroupColumn::Note => "",
+        }
+    }
+
+    /// What a click on the column's title sorts a table of mnemonics by, and
+    /// what the hint names it.
+    fn sorts(self) -> Option<(SortBy, &'static str)> {
+        match self {
+            GroupColumn::Name => Some((SortBy::Name, "mnemonic")),
+            GroupColumn::Spawns => Some((SortBy::Spawns, "spawn count")),
+            GroupColumn::Bytes(measure) => {
+                Some((SortBy::Bytes(measure), amount::measure_name(measure)))
+            }
+            GroupColumn::Time => Some((SortBy::Time, "spawn time")),
+            GroupColumn::Bar | GroupColumn::Note => None,
+        }
+    }
+}
 
 /// One cell, header or body, laid out by its column so the header and every
 /// row agree on the column's width at any window width.
@@ -440,10 +494,6 @@ fn row(id: impl Into<ElementId>, cells: impl IntoIterator<Item = Div>) -> Statef
         .children(cells)
 }
 
-/// The titles of [`GROUP_COLUMNS`] after the first, which names what the
-/// table groups by.
-const GROUP_TITLES: [&str; GROUP_COLUMNS.len() - 1] = ["Spawns", "Spawn time", "By phase", ""];
-
 fn header_row(cells: impl IntoIterator<Item = impl IntoElement>, palette: &Palette) -> Div {
     div()
         .flex()
@@ -456,12 +506,8 @@ fn header_row(cells: impl IntoIterator<Item = impl IntoElement>, palette: &Palet
 
 /// The header of a table no title of which sorts it.
 fn plain_header(name_title: &'static str, palette: &Palette) -> Div {
-    let titles = std::iter::once(name_title).chain(GROUP_TITLES);
     header_row(
-        GROUP_COLUMNS
-            .into_iter()
-            .zip(titles)
-            .map(|(column, title)| cell(column, title)),
+        GROUP_COLUMNS.map(|column| cell(column.layout(), column.title(name_title))),
         palette,
     )
 }
@@ -504,29 +550,22 @@ fn sorting_cell(
 /// The header of a table of mnemonics, whose titles but the bar's and the
 /// note's sort it.
 fn sorting_header(sort: Sort<SortBy>, palette: &Palette, cx: &mut Context<SpawnTimePanel>) -> Div {
-    let [name, spawns, time, bar, note] = GROUP_COLUMNS;
-    let [spawns_title, time_title, bar_title, note_title] = GROUP_TITLES;
-    let mut sorting = |column: Column, title: &'static str, by: SortBy, what: &str| {
-        sorting_cell(
-            column,
-            title,
-            sort_hint(what),
-            sort.of(by),
-            palette,
-            cx,
-            move |panel, cx| panel.sort_mnemonics(by, cx),
-        )
-    };
-    header_row(
-        [
-            sorting(name, "Mnemonic", SortBy::Name, "mnemonic"),
-            sorting(spawns, spawns_title, SortBy::Spawns, "spawn count"),
-            sorting(time, time_title, SortBy::Time, "spawn time"),
-            cell(bar, bar_title).into_any_element(),
-            cell(note, note_title).into_any_element(),
-        ],
-        palette,
-    )
+    let cells = GROUP_COLUMNS.map(|column| {
+        let (layout, title) = (column.layout(), column.title("Mnemonic"));
+        match column.sorts() {
+            Some((by, what)) => sorting_cell(
+                layout,
+                title,
+                sort_hint(what),
+                sort.of(by),
+                palette,
+                cx,
+                move |panel, cx| panel.sort_mnemonics(by, cx),
+            ),
+            None => cell(layout, title).into_any_element(),
+        }
+    });
+    header_row(cells, palette)
 }
 
 /// One row per group of `rows` under `header`, each bar as long against the
@@ -543,23 +582,26 @@ fn group_table(
         .max()
         .unwrap_or_default();
     let body = rows.iter().enumerate().map(|(index, group)| {
-        let [name, spawns, total, bar, note] = GROUP_COLUMNS;
         let execution_only = group.timing.reports_execution_only();
-        row(
-            (id, index),
-            [
-                cell(name, TruncatingLabel::new("name", group.name.clone())),
-                cell(spawns, group.spawns.to_string()),
-                cell(total, duration(group.timing.total())),
-                cell(bar, phase_bar(&group.timing, longest, palette)),
-                cell(
-                    note,
-                    div()
-                        .text_color(palette.colors.text_muted)
-                        .when(execution_only, |note| note.child("execution only")),
-                ),
-            ],
-        )
+        let cells = GROUP_COLUMNS.map(|column| {
+            let content = match column {
+                GroupColumn::Name => {
+                    TruncatingLabel::new("name", group.name.clone()).into_any_element()
+                }
+                GroupColumn::Spawns => group.spawns.to_string().into_any_element(),
+                GroupColumn::Bytes(measure) => {
+                    bytes(group.bytes.measure(measure)).into_any_element()
+                }
+                GroupColumn::Time => duration(group.timing.total()).into_any_element(),
+                GroupColumn::Bar => phase_bar(&group.timing, longest, palette).into_any_element(),
+                GroupColumn::Note => div()
+                    .text_color(palette.colors.text_muted)
+                    .when(execution_only, |note| note.child("execution only"))
+                    .into_any_element(),
+            };
+            cell(column.layout(), content)
+        });
+        row((id, index), cells)
     });
     div().id(id).flex().flex_col().child(header).children(body)
 }
@@ -871,6 +913,7 @@ impl Render for SpawnTimePanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bviz_execlog::{Bytes, SpawnBytes};
 
     #[test]
     fn every_gesture_is_reachable() {
@@ -889,6 +932,7 @@ mod tests {
                 name: name.to_owned().into(),
                 spawns,
                 timing: PhaseTiming::default(),
+                bytes: SpawnBytes::default(),
             })
             .collect()
     }
@@ -938,5 +982,22 @@ mod tests {
         assert_eq!(names(&table), ["a", "b", "c"]);
         apply(clicked(ascending, SortBy::Spawns), &mut table);
         assert_eq!(names(&table), ["c", "a", "b"]);
+    }
+
+    #[test]
+    fn rows_sort_by_the_amount_a_byte_title_names() {
+        let mut table = rows(&[("a", 1), ("b", 1), ("c", 1)]);
+        let tools = [5, 9, 0];
+        for (row, tools) in table.iter_mut().zip(tools) {
+            row.bytes.inputs.tools = Bytes::new(tools);
+        }
+        let by_tools = clicked(DEFAULT_SORT, SortBy::Bytes(ByteMeasure::Tools));
+        apply(by_tools, &mut table);
+        assert_eq!(names(&table), ["b", "a", "c"]);
+        apply(
+            clicked(by_tools, SortBy::Bytes(ByteMeasure::Outputs)),
+            &mut table,
+        );
+        assert_eq!(names(&table), ["a", "b", "c"]);
     }
 }
