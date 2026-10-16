@@ -1,8 +1,8 @@
 //! Where the execution attempts a profile recorded stood at each instant,
 //! placed on the nodes of a graph.
 
+use crate::node_table::Slot;
 use crate::status::Landings;
-use crate::timing::Slot;
 use bviz_graph_layout::{Graph, Id, Kind};
 use bviz_invocation::{Attempt, Attempts, Done, EpochMicros, Phase, Venue};
 

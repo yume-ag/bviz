@@ -60,6 +60,7 @@ mod mode;
 mod model;
 mod morph;
 mod neighborhood;
+mod node_table;
 mod paint;
 mod pan_bench;
 mod pins;

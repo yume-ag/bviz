@@ -3,16 +3,18 @@ use crate::colour::Colouring;
 use crate::critical::CriticalNodes;
 use crate::derive::{Drawn, ViewKey};
 use crate::duration::lasted;
+use crate::node_table::Extent;
 use crate::paint::{BADGE_FLOOR, Fills, STATUS_FLOOR, paint_diamond, paint_status};
 use crate::playback::{NodeState, NodeStates, States};
 use crate::status::{Status, Statuses};
-use crate::timing::{Extent, NodeTimes, Ran};
+use crate::timing::{NodeTimes, Ran};
 use bviz_graph_layout::transition::Transition;
 use bviz_graph_layout::{EdgeKind, Kind, LaidOut};
 use bviz_invocation::{Revision, Runner};
 use bviz_ui_components::{LegendEntry, LegendState, Swatch};
 use gpui::{Entity, Rgba};
 use std::rc::Rc;
+use std::time::Duration;
 
 /// Steps the time ramp is shown in, each a fill a box can wear.
 const RAMP_STEPS: usize = 12;
@@ -117,7 +119,7 @@ enum Reading {
     Times {
         /// The scale of each kind some box of the view holds time of, in
         /// enum order.
-        scales: Vec<(Kind, Extent)>,
+        scales: Vec<(Kind, Extent<Duration>)>,
         /// Whether some box of the view wears the untimed fill.
         untimed: bool,
     },

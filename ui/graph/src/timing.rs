@@ -1,10 +1,10 @@
 //! How long the actions a profile recorded took, placed on the nodes of a
 //! graph.
 
+use crate::node_table::{Extent, Landed, NodeTable, Tally, extent, extents};
 use crate::status::Landings;
 use bviz_graph_layout::{Graph, Id, Kind, Names};
 use bviz_invocation::{Runner, Share, Spent, Timings};
-use std::num::NonZeroU32;
 use std::time::Duration;
 
 mod words;
@@ -50,54 +50,6 @@ pub(crate) struct Timed {
     pub(crate) slowest: Option<Slowest>,
 }
 
-/// The time every shorter one is placed as on a log scale: an action that
-/// short is all but instant, and a scale reaching down toward no time at all
-/// would crowd every other time against its top.
-const SHORTEST_PLACED: Duration = Duration::from_millis(1);
-
-/// The least and the most time a node of one kind holds, of those that hold
-/// any.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Extent {
-    least: Duration,
-    most: Duration,
-}
-
-impl Extent {
-    fn of(wall: Duration) -> Self {
-        Extent {
-            least: wall,
-            most: wall,
-        }
-    }
-
-    fn widen(&mut self, wall: Duration) {
-        self.least = self.least.min(wall);
-        self.most = self.most.max(wall);
-    }
-
-    pub(crate) fn least(self) -> Duration {
-        self.least
-    }
-
-    pub(crate) fn most(self) -> Duration {
-        self.most
-    }
-
-    /// Where `wall` stands in the extent on a log scale, from 0 at its least
-    /// to 1 at its most, clamped to that range, with every time shorter than
-    /// [`SHORTEST_PLACED`] placed as that. An extent of one time places it at
-    /// its most.
-    pub(crate) fn place(self, wall: Duration) -> f32 {
-        let log = |wall: Duration| wall.max(SHORTEST_PLACED).as_secs_f64().ln();
-        let span = log(self.most) - log(self.least);
-        if span <= 0.0 {
-            return 1.0;
-        }
-        ((log(wall) - log(self.least)) / span).clamp(0.0, 1.0) as f32
-    }
-}
-
 /// The share of a box's action time one runner has to hold for the box to
 /// count as that runner's: well over half, so a box shown as one runner's
 /// spent most of its time there.
@@ -134,33 +86,13 @@ impl Ran {
     }
 }
 
-/// A node's place in a table holding what only some nodes of a graph carry,
-/// such as [`NodeTimes::timed`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Slot(NonZeroU32);
-
-impl Slot {
-    /// The slot of `table[index]`. Only nodes take a slot, so `index` is
-    /// below the node ids, which fit a `u32`.
-    pub(crate) fn at(index: usize) -> Self {
-        Slot(NonZeroU32::MIN.saturating_add(index as u32))
-    }
-
-    pub(crate) fn index(self) -> usize {
-        self.0.get() as usize - 1
-    }
-}
-
-/// The time spent on every node of one graph. Only the nodes an action lands
-/// on and those containing them are timed, so a node's time is held apart
-/// from the dense table finding it.
+/// The time spent on every node of one graph that an action lands on or
+/// that contains one.
 #[derive(Debug, PartialEq)]
 pub(crate) struct NodeTimes {
-    /// By node id, where in `timed` the node's time is.
-    slots: Vec<Option<Slot>>,
-    timed: Vec<Timed>,
+    timed: NodeTable<Timed>,
     /// By node kind, the extent of the time its nodes hold.
-    extents: Vec<(Kind, Extent)>,
+    extents: Vec<(Kind, Extent<Duration>)>,
     coverage: Coverage,
 }
 
@@ -188,71 +120,44 @@ impl NodeTimes {
             return Err(Untimed::Unnamed);
         }
         let landing = timings.actions().len() + timings.by_owner().count();
-        let mut landed = Landed {
-            slots: vec![None; landings.ids()],
-            timed: Vec::with_capacity(landing),
-        };
+        let mut landed = Landed::<Timed>::with_capacity(landings.ids(), landing);
         let mut coverage = Coverage {
             placed: 0,
             profiled: timings.spent().total().actions,
         };
         for (primary_output, owner, timing) in timings.actions() {
             if let Some(node) = landings.action(primary_output, owner) {
-                landed.timed(node).own.add_action(timing);
+                landed.on(node).own.add_action(timing);
                 coverage.placed += 1;
             }
         }
         for (owner, spent) in timings.by_owner() {
             if let Some(node) = landings.landing(owner).node() {
-                landed.timed(node).own.add(spent);
+                landed.on(node).own.add(spent);
                 coverage.placed += spent.total().actions;
             }
         }
         if coverage.placed == 0 {
             return Err(Untimed::Unplaced);
         }
-        let (slots, timed) = landed.roll_up(graph);
-        let mut times = NodeTimes {
-            slots,
+        let timed = landed.roll_up(graph);
+        let extents = extents(&timed, graph, |timed| timed.held.total().wall);
+        Ok(NodeTimes {
             timed,
-            extents: Vec::new(),
+            extents,
             coverage,
-        };
-        times.extents = times.measure(graph);
-        Ok(times)
-    }
-
-    /// The extent of each kind's time over the timed nodes of `graph`.
-    fn measure(&self, graph: &Graph) -> Vec<(Kind, Extent)> {
-        let mut extents: Vec<(Kind, Extent)> = Vec::new();
-        for node in &graph.nodes {
-            let Some(timed) = self.get(node.id) else {
-                continue;
-            };
-            let wall = timed.held.total().wall;
-            match extents.iter_mut().find(|(kind, _)| *kind == node.kind) {
-                Some((_, extent)) => extent.widen(wall),
-                None => extents.push((node.kind, Extent::of(wall))),
-            }
-        }
-        extents
+        })
     }
 
     /// The extent of the time the nodes of `kind` hold, absent where none of
     /// them holds any.
-    pub(crate) fn extent(&self, kind: Kind) -> Option<Extent> {
-        self.extents
-            .iter()
-            .find(|(of, _)| *of == kind)
-            .map(|(_, extent)| *extent)
+    pub(crate) fn extent(&self, kind: Kind) -> Option<Extent<Duration>> {
+        extent(&self.extents, kind)
     }
 
-    /// The time spent on the node `id` names, absent where no action lands on
-    /// it or on anything it contains. An id past the graph's own, as a merge
-    /// group's is, reads as an untimed node.
+    /// The time spent on the node `id` names, by [`NodeTable::get`].
     pub(crate) fn get(&self, id: Id) -> Option<&Timed> {
-        let slot = (*self.slots.get(id.0 as usize)?)?;
-        Some(&self.timed[slot.index()])
+        self.timed.get(id)
     }
 
     pub(crate) fn coverage(&self) -> Coverage {
@@ -260,83 +165,28 @@ impl NodeTimes {
     }
 }
 
-/// The time landing on the nodes of a graph, each node timed only with what
-/// lands on it itself.
-struct Landed {
-    /// By node id, where in `timed` the node's time is.
-    slots: Vec<Option<Slot>>,
-    timed: Vec<Timed>,
-}
+impl Tally for Timed {
+    /// The time landing on the node itself, and the node where it is an
+    /// action.
+    type Carried = (Spent, Option<Slowest>);
 
-impl Landed {
-    /// The time of `node`, timed from now on if it was not.
-    fn timed(&mut self, node: Id) -> &mut Timed {
-        let slot = &mut self.slots[node.0 as usize];
-        let slot = *slot.get_or_insert_with(|| {
-            self.timed.push(Timed::default());
-            Slot::at(self.timed.len() - 1)
+    fn carried(&self, node: Id, kind: Kind) -> Self::Carried {
+        let slowest = (kind == Kind::Action).then(|| Slowest {
+            action: node,
+            wall: self.own.total().wall,
         });
-        &mut self.timed[slot.index()]
+        (self.own.clone(), slowest)
     }
 
-    /// Adds each node's own time to its own held time and to that of every
-    /// node of `graph` containing it, timing those containers.
-    fn roll_up(mut self, graph: &Graph) -> (Vec<Option<Slot>>, Vec<Timed>) {
-        let mut parent = vec![None; self.slots.len()];
-        let mut action = vec![false; self.slots.len()];
-        for node in &graph.nodes {
-            parent[node.id.0 as usize] = node.parent;
-            action[node.id.0 as usize] = node.kind == Kind::Action;
-        }
-        let mut owners: Vec<Id> = Vec::with_capacity(self.timed.len());
-        for (id, slot) in self.slots.iter().enumerate() {
-            if slot.is_some() {
-                owners.push(Id(id as u32));
+    fn hold(&mut self, (own, slowest): &Self::Carried) {
+        self.held.add(own);
+        if let Some(slowest) = *slowest {
+            let slower = self.slowest.is_none_or(|held| held.wall < slowest.wall);
+            if slower {
+                self.slowest = Some(slowest);
             }
-        }
-        self.timed
-            .reserve(untimed_containers(&owners, &parent, &self.slots));
-        for owner in owners {
-            let own = self.timed(owner).own.clone();
-            let slowest = action[owner.0 as usize].then(|| Slowest {
-                action: owner,
-                wall: own.total().wall,
-            });
-            let mut at = Some(owner);
-            while let Some(node) = at {
-                let timed = self.timed(node);
-                timed.held.add(&own);
-                if let Some(slowest) = slowest {
-                    let slower = timed.slowest.is_none_or(|held| held.wall < slowest.wall);
-                    if slower {
-                        timed.slowest = Some(slowest);
-                    }
-                }
-                at = parent[node.0 as usize];
-            }
-        }
-        (self.slots, self.timed)
-    }
-}
-
-/// How many nodes containing one of `owners`, by `parent`, have no slot.
-fn untimed_containers(owners: &[Id], parent: &[Option<Id>], slots: &[Option<Slot>]) -> usize {
-    let mut counted = vec![false; slots.len()];
-    let mut untimed = 0;
-    for owner in owners {
-        let mut at = parent[owner.0 as usize];
-        while let Some(node) = at {
-            let index = node.0 as usize;
-            // A container with a slot is an owner, and counts its own.
-            if slots[index].is_some() || counted[index] {
-                break;
-            }
-            counted[index] = true;
-            untimed += 1;
-            at = parent[index];
         }
     }
-    untimed
 }
 
 #[cfg(test)]
