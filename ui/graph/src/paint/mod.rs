@@ -187,7 +187,12 @@ pub(crate) fn canvas_body(
             return;
         };
         let statuses = loaded.statuses();
-        let fills = Fills::of(scene.colouring, loaded.times().ok(), loaded.states());
+        let fills = Fills::of(
+            scene.colouring,
+            loaded.times().ok(),
+            loaded.bytes().ok(),
+            loaded.states(),
+        );
         let critical = scene.critical_path.then(|| loaded.critical());
         let drawn: Vec<(PaintBox, Bounds<Pixels>)> = indexed
             .boxes_near(&visible, morph.as_ref())

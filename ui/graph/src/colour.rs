@@ -2,9 +2,11 @@
 
 use crate::GraphPanel;
 use crate::model::GraphModel;
+use crate::spawn_bytes::{NodeBytes, Unsized};
 use crate::timing::{NodeTimes, Untimed};
 use bviz_bazel_flags::{PROFILE_PRIMARY_OUTPUT, PROFILE_TARGET_LABEL};
-use bviz_ui_components::Dropdown;
+use bviz_invocation::spawn::ByteMeasure;
+use bviz_ui_components::{Dropdown, amount};
 use gpui::{Context, SharedString};
 
 /// What a box's fill says.
@@ -17,6 +19,10 @@ pub(crate) enum Colouring {
     Time,
     /// Where those actions ran.
     Runner,
+    /// The bytes the spawns landing on the box and on all it contains wrote.
+    Written,
+    /// The bytes those spawns read, their tools' among them.
+    Read,
     /// Where the execution attempts of those actions stand at the document's
     /// playback time.
     Playback,
@@ -24,13 +30,22 @@ pub(crate) enum Colouring {
 
 impl Colouring {
     /// Every colouring, in the order the picker offers them.
-    pub(crate) const ALL: [Self; 4] = [Self::Kind, Self::Time, Self::Runner, Self::Playback];
+    pub(crate) const ALL: [Self; 6] = [
+        Self::Kind,
+        Self::Time,
+        Self::Runner,
+        Self::Written,
+        Self::Read,
+        Self::Playback,
+    ];
 
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Kind => "kind",
             Self::Time => "time",
             Self::Runner => "runner",
+            Self::Written => amount::measure_name(ByteMeasure::Outputs),
+            Self::Read => amount::measure_name(ByteMeasure::Inputs),
             Self::Playback => "playback",
         }
     }
@@ -43,6 +58,16 @@ impl Colouring {
 
     pub(crate) fn at(index: usize) -> Option<Self> {
         Self::ALL.get(index).copied()
+    }
+
+    /// What the colouring reads of the bytes of a box's spawns, where it
+    /// reads them.
+    pub(crate) fn measure(self) -> Option<ByteMeasure> {
+        match self {
+            Self::Written => Some(ByteMeasure::Outputs),
+            Self::Read => Some(ByteMeasure::Inputs),
+            Self::Kind | Self::Time | Self::Runner | Self::Playback => None,
+        }
     }
 
     /// The colouring offered after this one, wrapping round to the first,
@@ -61,6 +86,7 @@ impl Colouring {
         match self {
             Self::Kind => true,
             Self::Time | Self::Runner => offered.timed,
+            Self::Written | Self::Read => offered.sized,
             Self::Playback => offered.playable,
         }
     }
@@ -71,6 +97,8 @@ impl Colouring {
 pub(crate) struct Offered {
     /// Its nodes carry the time of the actions landing on them.
     timed: bool,
+    /// Its nodes carry the bytes of the spawns landing on them.
+    sized: bool,
     /// Its nodes carry the execution attempts landing on them, which its
     /// document's clock plays back.
     playable: bool,
@@ -81,6 +109,7 @@ impl Offered {
         let loaded = model.loaded();
         Offered {
             timed: loaded.is_some_and(|loaded| loaded.times().is_ok()),
+            sized: loaded.is_some_and(|loaded| loaded.bytes().is_ok()),
             playable: loaded.is_some_and(|loaded| loaded.states().is_some()),
         }
     }
@@ -97,6 +126,19 @@ pub(crate) fn note(times: Result<&NodeTimes, Untimed>, name: &str) -> SharedStri
             format!("Needs {PROFILE_PRIMARY_OUTPUT} or {PROFILE_TARGET_LABEL}")
         }
         Err(Untimed::Unplaced) => "No profiled action in graph".to_owned(),
+    }
+    .into()
+}
+
+/// The hint of a control reading the bytes of the graph's spawns, which
+/// `name`s it where the graph places any, and says why it places none
+/// otherwise.
+pub(crate) fn bytes_note(bytes: Result<&NodeBytes, Unsized>, name: &str) -> SharedString {
+    match bytes {
+        Ok(_) => name.to_owned(),
+        Err(Unsized::NoExecLog) => "No execution log loaded".to_owned(),
+        Err(Unsized::NoSpawns) => "Execution log records no spawns".to_owned(),
+        Err(Unsized::Unplaced) => "No logged spawn in graph".to_owned(),
     }
     .into()
 }
@@ -141,17 +183,50 @@ pub(crate) fn cycle(view: &mut GraphPanel, cx: &mut Context<GraphPanel>) {
     set(view, view.colouring.next(offered), cx);
 }
 
-/// What the picker's hint says of the action times `model` holds.
+/// What the picker's hint says of the action times and the spawn bytes
+/// `model` holds, as [`overlays_hint`] words it.
 pub(crate) fn hint(model: &GraphModel) -> SharedString {
-    let times = model
-        .loaded()
-        .map_or(Err(Untimed::NoProfile), |loaded| loaded.times());
-    note(times, "Box colouring")
+    const NAME: &str = "Box colouring";
+    let loaded = model.loaded();
+    let times = loaded.map_or(Err(Untimed::NoProfile), |loaded| loaded.times());
+    let bytes = loaded.map_or(Err(Unsized::NoExecLog), |loaded| loaded.bytes());
+    overlays_hint(
+        NAME,
+        [
+            times.is_err().then(|| note(times, NAME)),
+            bytes.is_err().then(|| bytes_note(bytes, NAME)),
+        ],
+    )
+}
+
+/// The hint of a picker `name`d offering choices that read overlays, each of
+/// `lacking` saying why the graph offers none of that overlay's, `None` where
+/// it offers some: the picker's name while it offers any overlay's choice, so
+/// an overlay the session simply lacks goes unremarked, and otherwise why it
+/// offers none.
+pub(crate) fn overlays_hint(name: &str, lacking: [Option<SharedString>; 2]) -> SharedString {
+    if lacking.iter().any(Option::is_none) {
+        return name.to_owned().into();
+    }
+    let lacking: Vec<SharedString> = lacking.into_iter().flatten().collect();
+    lacking.join(" · ").into()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_picker_complains_of_a_lacking_overlay_only_while_it_offers_none() {
+        let why = |text: &str| Some(SharedString::from(text.to_owned()));
+        assert_eq!(overlays_hint("Pick", [None, None]), "Pick");
+        assert_eq!(overlays_hint("Pick", [None, why("no log")]), "Pick");
+        assert_eq!(overlays_hint("Pick", [why("no profile"), None]), "Pick");
+        assert_eq!(
+            overlays_hint("Pick", [why("no profile"), why("no log")]),
+            "no profile · no log"
+        );
+    }
 
     #[test]
     fn every_colouring_sits_at_the_index_it_reports() {
@@ -167,17 +242,27 @@ mod tests {
     fn cycling_passes_over_the_colourings_the_graph_cannot_answer() {
         let timed = Offered {
             timed: true,
+            sized: false,
             playable: false,
         };
         assert_eq!(Colouring::Kind.next(timed), Colouring::Time);
         assert_eq!(Colouring::Runner.next(timed), Colouring::Kind);
+        let sized = Offered {
+            timed: false,
+            sized: true,
+            playable: false,
+        };
+        assert_eq!(Colouring::Kind.next(sized), Colouring::Written);
+        assert_eq!(Colouring::Read.next(sized), Colouring::Kind);
         let bare = Offered {
             timed: false,
+            sized: false,
             playable: false,
         };
         assert_eq!(Colouring::Kind.next(bare), Colouring::Kind);
         let playable = Offered {
             timed: false,
+            sized: false,
             playable: true,
         };
         assert_eq!(Colouring::Kind.next(playable), Colouring::Playback);

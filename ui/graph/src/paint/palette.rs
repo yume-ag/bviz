@@ -1,10 +1,12 @@
 use crate::Palette;
 use crate::colour::Colouring;
 use crate::playback::{NodeState, NodeStates, Running, Stage};
+use crate::spawn_bytes::NodeBytes;
 use crate::status::Status;
 use crate::timing::{NodeTimes, Ran};
 use bviz_graph_layout::transition::Transition;
 use bviz_graph_layout::{EdgeKind, Kind};
+use bviz_invocation::spawn::ByteMeasure;
 use bviz_invocation::{Done, EpochMicros, Runner, Venue};
 use gpui::{Hsla, Rgba};
 
@@ -37,11 +39,11 @@ const SPLIT_BLEND: f32 = 0.5;
 const KIND_BLEND: f32 = 0.6;
 
 /// How far the canvas is carried toward the yellow slot to fill the box
-/// holding the least time of its kind.
+/// holding the least of a figure its kind holds.
 const RAMP_LEAST: f32 = 0.225;
 
 /// How far the canvas is carried toward the blue slot to fill the box holding
-/// the most time of its kind.
+/// the most of a figure its kind holds.
 const RAMP_MOST: f32 = 0.45;
 
 /// How far an open container's fill is tinted toward the reading it wears
@@ -180,14 +182,14 @@ impl Palette {
         }
     }
 
-    /// Fill for a box holding time, `place` being where that time stands from
-    /// 0 for the least its kind holds to 1 for the most: a ramp from a pale
-    /// yellow to a deeper blue, which stands further off the canvas the more
-    /// time it says. Within the bounds every fill is held to — a name legible
+    /// Fill for a box holding a figure, `place` being where that figure stands
+    /// from 0 for the least its kind holds to 1 for the most: a ramp from a
+    /// pale yellow to a deeper blue, which stands further off the canvas the
+    /// more it says. Within the bounds every fill is held to — a name legible
     /// on it, the connectors and the marks drawn over it clear of it — and the
-    /// least-timed box apart from an untimed one, its ends stand as far apart
-    /// as the bounds let them.
-    pub(crate) fn time_fill(&self, place: f32) -> Rgba {
+    /// least box apart from an [unread](Self::unread_fill) one, its ends stand
+    /// as far apart as the bounds let them.
+    pub(crate) fn ramp_fill(&self, place: f32) -> Rgba {
         let least = bviz_ui_theme::mix(self.background, self.data.yellow, RAMP_LEAST);
         let most = bviz_ui_theme::mix(self.background, self.data.blue, RAMP_MOST);
         bviz_ui_theme::mix(least, most, place)
@@ -292,9 +294,10 @@ impl Palette {
         bviz_ui_theme::lighten(carried, tint.lift * self.mark_lift().signum())
     }
 
-    /// Fill for a box no time lands on: a container keeps the fill it wears
-    /// by kind, and a leaf takes the [slot](Self::ran_slot) of no time at all.
-    pub(crate) fn untimed_fill(&self, kind: Kind, compound: bool) -> Rgba {
+    /// Fill for a box on which nothing its colouring reads lands: a container
+    /// keeps the fill it wears by kind, and a leaf takes the
+    /// [slot](Self::ran_slot) of no time at all.
+    pub(crate) fn unread_fill(&self, kind: Kind, compound: bool) -> Rgba {
         match compound {
             true => self.container_fill(kind),
             false => bviz_ui_theme::mix(self.ran_slot(None), self.background, KIND_BLEND),
@@ -380,23 +383,28 @@ pub(crate) enum Fills<'a> {
     Kind,
     Time(&'a NodeTimes),
     Runner(&'a NodeTimes),
+    Bytes(&'a NodeBytes, ByteMeasure),
     Playback(&'a NodeStates),
 }
 
 impl<'a> Fills<'a> {
     /// The fills `colouring` gives the boxes of a graph whose nodes carry
-    /// `times` and `states`. A colouring by what the graph does not carry
-    /// fills by kind.
+    /// `times`, `bytes` and `states`. A colouring by what the graph does not
+    /// carry fills by kind.
     pub(crate) fn of(
         colouring: Colouring,
         times: Option<&'a NodeTimes>,
+        bytes: Option<&'a NodeBytes>,
         states: Option<&'a NodeStates>,
     ) -> Self {
         match (colouring, times, states) {
             (Colouring::Time, Some(times), _) => Fills::Time(times),
             (Colouring::Runner, Some(times), _) => Fills::Runner(times),
             (Colouring::Playback, _, Some(states)) => Fills::Playback(states),
-            _ => Fills::Kind,
+            _ => match colouring.measure().zip(bytes) {
+                Some((measure, bytes)) => Fills::Bytes(bytes, measure),
+                None => Fills::Kind,
+            },
         }
     }
 
@@ -411,21 +419,31 @@ impl<'a> Fills<'a> {
             Fills::Kind => palette.kind_fill(b.kind, b.compound),
             Fills::Time(times) => match times.get(b.id).zip(times.extent(b.kind)) {
                 Some((timed, extent)) => {
-                    let fill = palette.time_fill(extent.place(timed.held.total().wall));
+                    let fill = palette.ramp_fill(extent.place(timed.held.total().wall));
                     palette.held_fill(b.kind, b.compound, fill)
                 }
-                None => palette.untimed_fill(b.kind, b.compound),
+                None => palette.unread_fill(b.kind, b.compound),
             },
             Fills::Runner(times) => match times.get(b.id) {
                 Some(timed) => {
                     let fill = palette.ran_fill(Ran::of(&timed.held));
                     palette.held_fill(b.kind, b.compound, fill)
                 }
-                None => palette.untimed_fill(b.kind, b.compound),
+                None => palette.unread_fill(b.kind, b.compound),
             },
+            Fills::Bytes(bytes, measure) => {
+                let sized = bytes.get(b.id).zip(bytes.extent(*measure, b.kind));
+                match sized {
+                    Some((sized, extent)) => {
+                        let place = extent.place(sized.held.bytes.measure(*measure));
+                        palette.held_fill(b.kind, b.compound, palette.ramp_fill(place))
+                    }
+                    None => palette.unread_fill(b.kind, b.compound),
+                }
+            }
             Fills::Playback(states) => match at.and_then(|at| states.at(b.id, at)) {
                 Some(state) => palette.held_fill(b.kind, b.compound, palette.state_fill(state)),
-                None => palette.untimed_fill(b.kind, b.compound),
+                None => palette.unread_fill(b.kind, b.compound),
             },
         }
     }
@@ -481,7 +499,7 @@ mod colors {
             .iter()
             .map(|kind| p.leaf_fill(*kind))
             .chain(CONTAINER_KINDS.iter().map(|kind| p.container_fill(*kind)))
-            .chain([p.untimed_fill(Kind::Action, false)])
+            .chain([p.unread_fill(Kind::Action, false)])
             .chain(readings(p).into_iter().flat_map(|fill| {
                 TIMED_CONTAINER_KINDS
                     .map(|kind| p.held_fill(kind, true, fill))
@@ -506,11 +524,11 @@ mod colors {
         NodeState::ALL.map(|state| p.state_fill(state)).into()
     }
 
-    /// Every fill a closed box coloured by time, by runner or by playback
-    /// wears.
+    /// Every fill a closed box coloured on the ramp, by runner or by
+    /// playback wears.
     fn readings(p: &Palette) -> Vec<Rgba> {
         RAMP_PLACES
-            .map(|place| p.time_fill(place))
+            .map(|place| p.ramp_fill(place))
             .into_iter()
             .chain(ran_fills(p))
             .chain(state_fills(p))
@@ -575,11 +593,11 @@ mod colors {
     #[test]
     fn the_time_ramp_is_told_from_an_untimed_box_and_steps_off_the_canvas() {
         for (theme, p) in palettes() {
-            let least = p.time_fill(0.0);
+            let least = p.ramp_fill(0.0);
             for untimed in [
-                p.untimed_fill(Kind::Action, false),
-                p.untimed_fill(Kind::Target, true),
-                p.untimed_fill(Kind::Package, true),
+                p.unread_fill(Kind::Action, false),
+                p.unread_fill(Kind::Target, true),
+                p.unread_fill(Kind::Package, true),
             ] {
                 let apart = distance(least, untimed);
                 assert!(apart >= MIN_DISTINCT_COLOR, "{theme}: {apart}");
@@ -587,7 +605,7 @@ mod colors {
             let canvas = luminance(p.background);
             let off_canvas: Vec<f32> = RAMP_PLACES
                 .iter()
-                .map(|place| (luminance(p.time_fill(*place)) - canvas).abs())
+                .map(|place| (luminance(p.ramp_fill(*place)) - canvas).abs())
                 .collect();
             assert!(off_canvas.is_sorted(), "{theme}: {off_canvas:?}");
         }
@@ -620,9 +638,9 @@ mod colors {
             let fills = ran_fills(&p);
             for (i, fill) in fills.iter().enumerate() {
                 for untimed in [
-                    p.untimed_fill(Kind::Action, false),
-                    p.untimed_fill(Kind::Target, true),
-                    p.untimed_fill(Kind::Package, true),
+                    p.unread_fill(Kind::Action, false),
+                    p.unread_fill(Kind::Target, true),
+                    p.unread_fill(Kind::Package, true),
                     p.background,
                 ] {
                     let apart = distance(*fill, untimed);
@@ -689,9 +707,9 @@ mod colors {
             let fills = state_fills(&p);
             for (state, fill) in NodeState::ALL.iter().zip(&fills) {
                 for untimed in [
-                    p.untimed_fill(Kind::Action, false),
-                    p.untimed_fill(Kind::Target, true),
-                    p.untimed_fill(Kind::Package, true),
+                    p.unread_fill(Kind::Action, false),
+                    p.unread_fill(Kind::Target, true),
+                    p.unread_fill(Kind::Package, true),
                 ] {
                     let apart = distance(*fill, untimed);
                     assert!(apart >= MIN_DISTINCT_COLOR, "{theme} {state:?}: {apart}");

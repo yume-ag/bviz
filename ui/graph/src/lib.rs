@@ -876,6 +876,8 @@ impl GraphPanel {
             colouring: self.colouring,
             times: loaded.times().ok(),
             timed: loaded.timed(),
+            bytes: loaded.bytes().ok(),
+            logged: loaded.logged(),
             states: loaded.states(),
             attempted: loaded.attempted(),
         };

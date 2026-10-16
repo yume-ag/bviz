@@ -1,11 +1,11 @@
 //! The bytes the spawns an execution log records read and wrote, placed on
 //! the nodes of a graph.
 
-use crate::node_table::{Landed, NodeTable, Tally};
+use crate::node_table::{Extent, Landed, NodeTable, Tally, extent, extents};
 use crate::status::Landings;
 use bviz_graph_layout::{Graph, Id, Kind, Names};
 use bviz_invocation::ConfiguredTarget;
-use bviz_invocation::spawn::{LoggedSpawn, LoggedSpawns, SpawnBytes};
+use bviz_invocation::spawn::{ByteMeasure, Bytes, LoggedSpawn, LoggedSpawns, SpawnBytes};
 use std::ops::AddAssign;
 
 /// Why a graph's nodes carry no spawn bytes.
@@ -18,6 +18,38 @@ pub(crate) enum Unsized {
     /// None of the spawns the log records writes an action of the graph or
     /// belongs to one of its targets.
     Unplaced,
+}
+
+/// Of the spawns an execution log recorded, how many land on a node of a
+/// graph, and how.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Coverage {
+    /// Those landing on the action writing their primary output.
+    pub(crate) on_actions: u32,
+    /// Those landing on their target, the graph holding no action writing
+    /// their primary output.
+    pub(crate) on_targets: u32,
+    pub(crate) logged: u32,
+}
+
+impl Coverage {
+    /// How many spawns are placed, and how many of them on their target
+    /// where any are.
+    pub(crate) fn lines(self) -> impl Iterator<Item = String> {
+        let placed = self.on_actions + self.on_targets;
+        let on_targets = match self.on_targets {
+            0 => None,
+            1 => Some("1 of them on its target, its action not in the graph".to_owned()),
+            many => Some(format!(
+                "{many} of them on their targets, their actions not in the graph"
+            )),
+        };
+        let placed = format!(
+            "{placed} of {} logged spawns placed on this graph",
+            self.logged
+        );
+        std::iter::once(placed).chain(on_targets)
+    }
 }
 
 /// Some spawns, counted, and the bytes they read and wrote in sum.
@@ -70,6 +102,10 @@ impl Tally for Sized {
 #[derive(Debug, PartialEq)]
 pub(crate) struct NodeBytes {
     sized: NodeTable<Sized>,
+    /// By [`ByteMeasure::index`], then by node kind, the extent of the bytes
+    /// its nodes hold.
+    extents: [Vec<(Kind, Extent<Bytes>)>; ByteMeasure::ALL.len()],
+    coverage: Coverage,
 }
 
 /// Where in `graph`, which `names` names, the spawns `logged` recorded land,
@@ -93,25 +129,42 @@ impl NodeBytes {
             return Err(Unsized::NoSpawns);
         }
         let mut landed = Landed::<Sized>::with_capacity(landings.ids(), logged.len());
-        let mut placed = false;
+        let mut coverage = Coverage {
+            logged: u32::try_from(logged.len()).unwrap_or(u32::MAX),
+            ..Coverage::default()
+        };
         for spawn in logged.iter() {
             let on_action = spawn
                 .primary_output()
                 .and_then(|output| landings.action(output, None));
-            let node = on_action.or_else(|| {
-                let target = ConfiguredTarget::new(spawn.target_label()?, None);
-                landings.landing(target).node()
-            });
-            if let Some(node) = node {
-                landed.on(node).own += Spawned::of(&spawn);
-                placed = true;
-            }
+            let node = match on_action {
+                Some(action) => {
+                    coverage.on_actions += 1;
+                    action
+                }
+                None => {
+                    let target = spawn.target_label().and_then(|label| {
+                        landings.landing(ConfiguredTarget::new(label, None)).node()
+                    });
+                    let Some(target) = target else {
+                        continue;
+                    };
+                    coverage.on_targets += 1;
+                    target
+                }
+            };
+            landed.on(node).own += Spawned::of(&spawn);
         }
-        if !placed {
+        if coverage.on_actions + coverage.on_targets == 0 {
             return Err(Unsized::Unplaced);
         }
+        let sized = landed.roll_up(graph);
+        let extents = ByteMeasure::ALL
+            .map(|measure| extents(&sized, graph, |sized| sized.held.bytes.measure(measure)));
         Ok(NodeBytes {
-            sized: landed.roll_up(graph),
+            sized,
+            extents,
+            coverage,
         })
     }
 
@@ -119,15 +172,23 @@ impl NodeBytes {
     pub(crate) fn get(&self, id: Id) -> Option<&Sized> {
         self.sized.get(id)
     }
+
+    /// The extent of the bytes in `measure` the nodes of `kind` hold, absent
+    /// where none of them holds any.
+    pub(crate) fn extent(&self, measure: ByteMeasure, kind: Kind) -> Option<Extent<Bytes>> {
+        extent(&self.extents[measure.index()], kind)
+    }
+
+    pub(crate) fn coverage(&self) -> Coverage {
+        self.coverage
+    }
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use crate::timing::tests::Built;
-    use bviz_invocation::spawn::{
-        Builder, ByteMeasure, Bytes, InputBytes, Logged, MeasuredInputs, PhaseTiming,
-    };
+    use bviz_invocation::spawn::{Builder, InputBytes, Logged, MeasuredInputs, PhaseTiming};
 
     /// A spawn as an execution log records it: by primary output, target
     /// label, and the bytes it wrote, read and read of its tools.
@@ -209,6 +270,14 @@ pub(crate) mod tests {
             assert_eq!(bytes.get(container).unwrap().own, Spawned::default());
         }
         assert_eq!(bytes.get(idle), None);
+        assert_eq!(
+            bytes.coverage(),
+            Coverage {
+                on_actions: 2,
+                on_targets: 0,
+                logged: 2
+            }
+        );
     }
 
     /// The log names no configuration, so the target is where a spawn the
@@ -233,5 +302,70 @@ pub(crate) mod tests {
         assert_eq!(held(&bytes, package), Some((3, 507, 333, 200)));
         assert_eq!(held(&bytes, configured), Some((1, 500, 100, 0)));
         assert_eq!(held(&bytes, link), Some((1, 500, 100, 0)));
+        assert_eq!(
+            bytes.coverage(),
+            Coverage {
+                on_actions: 1,
+                on_targets: 2,
+                logged: 4
+            }
+        );
+    }
+
+    #[test]
+    fn coverage_names_the_spawns_placed_on_their_target_only_where_any_are() {
+        let lines = |on_actions, on_targets| -> Vec<String> {
+            let coverage = Coverage {
+                on_actions,
+                on_targets,
+                logged: 9,
+            };
+            coverage.lines().collect()
+        };
+        assert_eq!(lines(4, 0), ["4 of 9 logged spawns placed on this graph"]);
+        assert_eq!(
+            lines(4, 1),
+            [
+                "5 of 9 logged spawns placed on this graph",
+                "1 of them on its target, its action not in the graph"
+            ]
+        );
+        assert_eq!(
+            lines(0, 3)[1],
+            "3 of them on their targets, their actions not in the graph"
+        );
+    }
+
+    #[test]
+    fn each_measure_spans_the_least_to_the_most_bytes_a_kind_holds() {
+        let mut built = Built::default();
+        let (_, _, bin) = built.target("app", "bin");
+        built.action("bazel-out/small", bin);
+        built.action("bazel-out/large", bin);
+        let recorded = logged(&[
+            (Some("bazel-out/small"), "//app:bin", 4 << 10, 5, 9),
+            (Some("bazel-out/large"), "//app:bin", 4 << 20, (1 << 20) - 9, 9),
+        ]);
+
+        let bytes = resolve(&built, &recorded).expect("sized");
+        let span = |measure, kind| {
+            let extent = bytes.extent(measure, kind).expect("sized kind");
+            (extent.least().get(), extent.most().get())
+        };
+
+        assert_eq!(span(ByteMeasure::Outputs, Kind::Action), (4 << 10, 4 << 20));
+        assert_eq!(span(ByteMeasure::Inputs, Kind::Action), (14, 1 << 20));
+        assert_eq!(span(ByteMeasure::Tools, Kind::Action), (9, 9));
+        assert_eq!(
+            span(ByteMeasure::Outputs, Kind::ConfiguredTarget),
+            ((4 << 20) + (4 << 10), (4 << 20) + (4 << 10))
+        );
+        let inputs = bytes.extent(ByteMeasure::Inputs, Kind::Action).unwrap();
+        assert_eq!(
+            inputs.place(Bytes::new(5)),
+            inputs.place(Bytes::new(1 << 10)),
+            "a size under the least placed is placed as that"
+        );
+        assert!((inputs.place(Bytes::new(32 << 10)) - 0.5).abs() < 1e-6);
     }
 }

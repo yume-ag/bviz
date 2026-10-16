@@ -240,6 +240,12 @@ impl Loaded {
         &self.timecard
     }
 
+    /// Which of its session's logged spawns the [bytes](Self::bytes) are
+    /// read from, as [`taken_up`](Self::taken_up) is for outcomes.
+    pub(crate) fn logged(&self) -> Revision {
+        self.logged
+    }
+
     pub(crate) fn bytes(&self) -> Result<&NodeBytes, Unsized> {
         self.bytes.as_ref().map_err(|why| *why)
     }

@@ -3,15 +3,17 @@ use crate::colour::Colouring;
 use crate::critical::CriticalNodes;
 use crate::derive::{Drawn, ViewKey};
 use crate::duration::lasted;
-use crate::node_table::Extent;
+use crate::node_table::{Extent, Magnitude};
 use crate::paint::{BADGE_FLOOR, Fills, STATUS_FLOOR, paint_diamond, paint_status};
 use crate::playback::{NodeState, NodeStates, States};
+use crate::spawn_bytes::NodeBytes;
 use crate::status::{Status, Statuses};
 use crate::timing::{NodeTimes, Ran};
 use bviz_graph_layout::transition::Transition;
-use bviz_graph_layout::{EdgeKind, Kind, LaidOut};
+use bviz_graph_layout::{EdgeKind, Id, Kind, LaidOut};
+use bviz_invocation::spawn::{ByteMeasure, Bytes};
 use bviz_invocation::{Revision, Runner};
-use bviz_ui_components::{LegendEntry, LegendState, Swatch};
+use bviz_ui_components::{LegendEntry, LegendState, Swatch, amount};
 use gpui::{Entity, Rgba};
 use std::rc::Rc;
 use std::time::Duration;
@@ -71,7 +73,7 @@ fn halo(palette: &Palette) -> Swatch {
 /// most.
 fn ramp(palette: &Palette) -> Swatch {
     let last = (RAMP_STEPS - 1) as f32;
-    let steps = (0..RAMP_STEPS).map(|step| palette.time_fill(step as f32 / last).into());
+    let steps = (0..RAMP_STEPS).map(|step| palette.ramp_fill(step as f32 / last).into());
     Swatch::Ramp(steps.collect())
 }
 
@@ -89,14 +91,16 @@ fn kind_name(kind: Kind) -> &'static str {
     }
 }
 
-/// How a view's boxes are filled, and what they are filled from. `timed` and
-/// `attempted` are the revisions of the session's timings and attempts
-/// `times` and `states` were read from.
+/// How a view's boxes are filled, and what they are filled from. `timed`,
+/// `logged` and `attempted` are the revisions of the session's timings,
+/// logged spawns and attempts `times`, `bytes` and `states` were read from.
 #[derive(Clone, Copy)]
 pub(crate) struct Coloured<'a> {
     pub(crate) colouring: Colouring,
     pub(crate) times: Option<&'a NodeTimes>,
     pub(crate) timed: Revision,
+    pub(crate) bytes: Option<&'a NodeBytes>,
+    pub(crate) logged: Revision,
     pub(crate) states: Option<&'a NodeStates>,
     pub(crate) attempted: Revision,
 }
@@ -122,6 +126,16 @@ enum Reading {
         scales: Vec<(Kind, Extent<Duration>)>,
         /// Whether some box of the view wears the untimed fill.
         untimed: bool,
+    },
+    /// The bytes in `measure` of each box's spawns, each kind of box placed
+    /// on a scale of its own.
+    Bytes {
+        measure: ByteMeasure,
+        /// The scale of each kind some box of the view holds bytes of, in
+        /// enum order.
+        scales: Vec<(Kind, Extent<Bytes>)>,
+        /// Whether some box of the view wears the fill of a box holding none.
+        unlogged: bool,
     },
     /// Where each box's actions ran.
     Runners {
@@ -150,7 +164,13 @@ impl Reading {
                 .iter()
                 .any(|b| !b.compound && times.get(b.id).is_none())
         };
-        match Fills::of(coloured.colouring, coloured.times, coloured.states) {
+        let fills = Fills::of(
+            coloured.colouring,
+            coloured.times,
+            coloured.bytes,
+            coloured.states,
+        );
+        match fills {
             Fills::Kind => Reading::Kinds,
             Fills::Playback(states) => {
                 let reached = g.boxes.iter().fold(States::default(), |reached, b| {
@@ -168,21 +188,25 @@ impl Reading {
                 }
             }
             Fills::Time(times) => {
-                let mut kinds: Vec<Kind> = g
-                    .boxes
-                    .iter()
-                    .filter(|b| times.get(b.id).is_some())
-                    .map(|b| b.kind)
-                    .collect();
-                kinds.sort_unstable();
-                kinds.dedup();
-                let scales = kinds
-                    .into_iter()
+                let scales = kinds_holding(g, |id| times.get(id).is_some())
                     .filter_map(|kind| Some((kind, times.extent(kind)?)))
                     .collect();
                 Reading::Times {
                     scales,
                     untimed: untimed_leaf(times),
+                }
+            }
+            Fills::Bytes(bytes, measure) => {
+                let scales = kinds_holding(g, |id| bytes.get(id).is_some())
+                    .filter_map(|kind| Some((kind, bytes.extent(measure, kind)?)))
+                    .collect();
+                Reading::Bytes {
+                    measure,
+                    scales,
+                    unlogged: g
+                        .boxes
+                        .iter()
+                        .any(|b| !b.compound && bytes.get(b.id).is_none()),
                 }
             }
             Fills::Runner(times) => {
@@ -207,6 +231,15 @@ impl Reading {
     }
 }
 
+/// Each kind of which some box of `g` `holds` a figure, in enum order.
+fn kinds_holding(g: &LaidOut, holds: impl Fn(Id) -> bool) -> impl Iterator<Item = Kind> {
+    let mut kinds: Vec<Kind> = Vec::with_capacity(g.boxes.len());
+    kinds.extend(g.boxes.iter().filter(|b| holds(b.id)).map(|b| b.kind));
+    kinds.sort_unstable();
+    kinds.dedup();
+    kinds.into_iter()
+}
+
 /// The key to what a view draws: the edge kinds, transitions and statuses
 /// present in it and what its fills say, found once per view so that a frame
 /// drawn over an unchanged view does not scan it again.
@@ -223,6 +256,8 @@ struct Found {
     resolved: Revision,
     /// Which of a session's timings the reading was found from.
     timed: Revision,
+    /// Which of a session's logged spawns the reading was found from.
+    logged: Revision,
     /// Which of a session's attempts the reading was found from.
     attempted: Revision,
     colouring: Colouring,
@@ -270,7 +305,7 @@ impl Legend {
         palette: &Palette,
     ) -> Option<bviz_ui_components::Legend> {
         let found = self.found(drawn, zoom, statuses, resolved, coloured, haloed)?;
-        strip(found, coloured.times, state, palette)
+        strip(found, coloured, state, palette)
     }
 
     fn found(
@@ -290,6 +325,7 @@ impl Legend {
                 if found.view == view
                     && found.resolved == resolved
                     && found.timed == coloured.timed
+                    && found.logged == coloured.logged
                     && found.attempted == coloured.attempted
                     && found.colouring == coloured.colouring
                     && found.haloed == halo_key =>
@@ -302,6 +338,7 @@ impl Legend {
                     view,
                     resolved,
                     timed: coloured.timed,
+                    logged: coloured.logged,
                     attempted: coloured.attempted,
                     colouring: coloured.colouring,
                     haloed: halo_key,
@@ -349,54 +386,94 @@ fn crossed(g: &LaidOut) -> Vec<Transition> {
 }
 
 /// The entries explaining what the fills read as `reading` says, and the notes
-/// on how to read them and how much of the profile `times` places; none for
-/// fills by kind.
+/// on how to read them and how much of the profile or the execution log
+/// `coloured` reads from places; none for fills by kind.
 fn reading(
     reading: &Reading,
-    times: Option<&NodeTimes>,
+    coloured: Coloured,
     palette: &Palette,
 ) -> (Vec<LegendEntry>, Vec<String>) {
     let untimed = |said: &'static str| {
         LegendEntry::new(
-            fill(palette.untimed_fill(Kind::Action, false), palette),
+            fill(palette.unread_fill(Kind::Action, false), palette),
             said,
         )
     };
-    let mut notes = Vec::with_capacity(2);
-    let entries = match reading {
+    let mut notes = Vec::with_capacity(3);
+    let times_placed = coloured.times.map(|times| times.coverage().line());
+    let (entries, placed) = match reading {
         Reading::Kinds => return (Vec::new(), notes),
         Reading::Times {
             scales,
             untimed: any,
         } => {
             notes.push("action time, on a log scale per kind".to_owned());
-            let ramps = scales.iter().map(|&(kind, extent)| {
-                let (least, most) = (lasted(extent.least()), lasted(extent.most()));
-                LegendEntry::new(
-                    ramp(palette),
-                    format!("{}: {least} to {most}", kind_name(kind)),
-                )
-            });
-            ramps
+            let entries = ramps(scales, lasted, palette)
                 .chain(any.then(|| untimed("no action time")))
-                .collect()
+                .collect();
+            (entries, times_placed)
         }
-        Reading::Runners { ran, untimed: any } => ran
-            .iter()
-            .map(|&ran| LegendEntry::new(self::ran(ran, palette), ran.label()))
-            .chain(any.then(|| untimed("no action time")))
-            .collect(),
+        Reading::Bytes {
+            measure,
+            scales,
+            unlogged: any,
+        } => {
+            let read = match measure {
+                ByteMeasure::Outputs => "bytes their spawns wrote",
+                ByteMeasure::Inputs => "bytes their spawns read",
+                ByteMeasure::Tools => "bytes of their spawns' tools",
+            };
+            notes.push(format!("{read}, on a log scale per kind"));
+            let entries = ramps(scales, amount::bytes, palette)
+                .chain(any.then(|| untimed("no logged spawn")))
+                .collect();
+            notes.extend(
+                coloured
+                    .bytes
+                    .into_iter()
+                    .flat_map(|b| b.coverage().lines()),
+            );
+            (entries, None)
+        }
+        Reading::Runners { ran, untimed: any } => {
+            let entries = ran
+                .iter()
+                .map(|&ran| LegendEntry::new(self::ran(ran, palette), ran.label()))
+                .chain(any.then(|| untimed("no action time")))
+                .collect();
+            (entries, times_placed)
+        }
         Reading::States {
             reached,
             untimed: any,
-        } => reached
-            .iter()
-            .map(|&state| LegendEntry::new(fill(palette.state_fill(state), palette), state.label()))
-            .chain(any.then(|| untimed("no record")))
-            .collect(),
+        } => {
+            let entries = reached
+                .iter()
+                .map(|&state| {
+                    LegendEntry::new(fill(palette.state_fill(state), palette), state.label())
+                })
+                .chain(any.then(|| untimed("no record")))
+                .collect();
+            (entries, times_placed)
+        }
     };
-    notes.extend(times.map(|times| times.coverage().line()));
+    notes.extend(placed);
     (entries, notes)
+}
+
+/// The ramp each kind's `scales` is read off, its ends as `read` says them.
+fn ramps<'s, M: Magnitude>(
+    scales: &'s [(Kind, Extent<M>)],
+    read: fn(M) -> String,
+    palette: &'s Palette,
+) -> impl Iterator<Item = LegendEntry> + 's {
+    scales.iter().map(move |&(kind, extent)| {
+        let (least, most) = (read(extent.least()), read(extent.most()));
+        LegendEntry::new(
+            ramp(palette),
+            format!("{}: {least} to {most}", kind_name(kind)),
+        )
+    })
 }
 
 /// The key's id, the same whether it keys a drawing or stands blank.
@@ -412,11 +489,11 @@ pub(crate) fn blank(state: &Entity<LegendState>) -> bviz_ui_components::Legend {
 /// the marks boxes wear, then the routes.
 fn strip(
     found: &Found,
-    times: Option<&NodeTimes>,
+    coloured: Coloured,
     state: &Entity<LegendState>,
     palette: &Palette,
 ) -> Option<bviz_ui_components::Legend> {
-    let (fills, notes) = reading(&found.reading, times, palette);
+    let (fills, notes) = reading(&found.reading, coloured, palette);
     let statuses = found
         .standing
         .iter()
@@ -456,6 +533,7 @@ mod tests {
     use bviz_graph_layout::graph::Node;
     use bviz_graph_layout::reduce::transitive_reduction;
     use bviz_graph_layout::{Connector, Graph, Id, Kind, Names, map_layout};
+    use bviz_invocation::spawn::LoggedSpawns;
     use bviz_invocation::{
         Attempts, BuildOutcome, ConfiguredTarget, Done, Outcomes, Phase, Profiled, Session, Spawns,
         Timings, Venue,
@@ -469,6 +547,8 @@ mod tests {
             colouring: Colouring::Kind,
             times: None,
             timed: Revision::default(),
+            bytes: None,
+            logged: Revision::default(),
             states: None,
             attempted: Revision::default(),
         }
@@ -612,8 +692,9 @@ mod tests {
     /// A package holding a target that holds a fast remotely executed action
     /// and a slow remote cache hit, beside a target no action lands on, laid
     /// out each as a box of one layered drawing; with the times its profile
-    /// places on them and the states their attempts stand at.
-    fn timed() -> (Drawn, NodeTimes, NodeStates) {
+    /// places on them, the states their attempts stand at and the bytes their
+    /// logged spawns wrote, one of them landing on the target by label.
+    fn timed() -> (Drawn, NodeTimes, NodeStates, NodeBytes) {
         let mut graph = Graph::new();
         let mut names = Names::default();
         let mut add = |name: &str, kind, parent| {
@@ -649,6 +730,13 @@ mod tests {
             attempts.record(Some(primary_output), None, tried);
         }
         let states = NodeStates::resolve(&landings, &graph, &attempts).expect("landed");
+        let spawns = crate::spawn_bytes::tests::logged(&[
+            (Some("fast"), "//app:bin", 4 << 10, 0, 0),
+            (Some("slow"), "//app:bin", 4 << 20, 0, 0),
+            (Some("fast.lint"), "//app:bin", 7, 0, 0),
+        ]);
+        let spawn_landings = crate::spawn_bytes::landings(&graph, &names, &spawns);
+        let bytes = NodeBytes::resolve(&spawn_landings, &graph, &spawns).expect("sized");
         let laid = |id: Id, kind, compound| bviz_graph_layout::Box {
             id,
             label: String::new(),
@@ -674,7 +762,7 @@ mod tests {
             view: Arc::new(view),
             drawing: 1,
         };
-        (drawn, times, states)
+        (drawn, times, states, bytes)
     }
 
     fn reading_of(
@@ -688,6 +776,8 @@ mod tests {
             colouring,
             times: Some(times),
             timed,
+            bytes: None,
+            logged: Revision::default(),
             states: None,
             attempted: Revision::default(),
         };
@@ -704,7 +794,7 @@ mod tests {
 
     #[test]
     fn the_fills_of_a_view_are_explained_as_its_colouring_reads_them() {
-        let (drawn, times, _) = timed();
+        let (drawn, times, _, _) = timed();
         let mut legend = Legend::default();
         let timed = Revision::default();
         let extent = |kind| times.extent(kind).expect("a timed kind");
@@ -746,7 +836,7 @@ mod tests {
     /// alone does not say the legend is still right.
     #[test]
     fn a_view_is_scanned_again_once_its_times_are_read_from_other_timings() {
-        let (drawn, times, _) = timed();
+        let (drawn, times, _, _) = timed();
         let mut session = Session::default();
         let by = session.reporter();
         let untimed = session.timings_revision();
@@ -757,6 +847,8 @@ mod tests {
             colouring: Colouring::Runner,
             times: None,
             timed: untimed,
+            bytes: None,
+            logged: Revision::default(),
             states: None,
             attempted: Revision::default(),
         };
@@ -774,6 +866,59 @@ mod tests {
         assert!(matches!(read, Reading::Runners { .. }), "{read:?}");
     }
 
+    /// Logged spawns land without the view changing, so the view's key alone
+    /// does not say the legend is still right.
+    #[test]
+    fn a_view_coloured_by_bytes_reads_each_kinds_scale_from_the_spawns_logged() {
+        let (drawn, _, _, bytes) = timed();
+        let mut session = Session::default();
+        let by = session.reporter();
+        let unlogged = session.logged_spawns_revision();
+        session.report_logged_spawns(by, LoggedSpawns::default());
+        let logged = session.logged_spawns_revision();
+        let mut legend = Legend::default();
+        let mut read = |bytes, logged| {
+            let coloured = Coloured {
+                colouring: Colouring::Written,
+                times: None,
+                timed: Revision::default(),
+                bytes,
+                logged,
+                states: None,
+                attempted: Revision::default(),
+            };
+            let found = legend.found(
+                &drawn,
+                1.0,
+                &Statuses::default(),
+                Revision::default(),
+                coloured,
+                unhaloed(),
+            );
+            found.expect("a derived view").reading.clone()
+        };
+        assert_eq!(read(None, unlogged), Reading::Kinds);
+
+        let extent = |kind| bytes.extent(ByteMeasure::Outputs, kind).expect("a kind");
+        assert_eq!(
+            read(Some(&bytes), logged),
+            Reading::Bytes {
+                measure: ByteMeasure::Outputs,
+                scales: vec![
+                    (Kind::Package, extent(Kind::Package)),
+                    (Kind::Target, extent(Kind::Target)),
+                    (Kind::Action, extent(Kind::Action)),
+                ],
+                unlogged: true,
+            }
+        );
+        assert_eq!(extent(Kind::Action).least(), Bytes::new(4 << 10));
+        assert_eq!(
+            extent(Kind::Target).most(),
+            Bytes::new((4 << 20) + (4 << 10) + 7)
+        );
+    }
+
     /// What the legend reads off a view coloured by playback, the states its
     /// nodes stand at read from the session's attempts at `attempted`.
     fn played(
@@ -786,6 +931,8 @@ mod tests {
             colouring: Colouring::Playback,
             times: None,
             timed: Revision::default(),
+            bytes: None,
+            logged: Revision::default(),
             states,
             attempted,
         };
@@ -802,7 +949,7 @@ mod tests {
 
     #[test]
     fn a_view_coloured_by_playback_lists_every_state_its_boxes_may_stand_at() {
-        let (drawn, _, states) = timed();
+        let (drawn, _, states, _) = timed();
         let mut legend = Legend::default();
         assert_eq!(
             played(&mut legend, &drawn, Some(&states), Revision::default()),
@@ -826,7 +973,7 @@ mod tests {
     /// plays no part in it.
     #[test]
     fn a_view_coloured_by_playback_is_scanned_again_once_other_attempts_land() {
-        let (drawn, _, states) = timed();
+        let (drawn, _, states, _) = timed();
         let mut session = Session::default();
         let by = session.reporter();
         let unattempted = session.attempts_revision();
