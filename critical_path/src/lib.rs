@@ -13,7 +13,7 @@ mod schedule;
 mod spans;
 
 use bviz_invocation::ActionGraph;
-use bviz_invocation::spawn::LoggedSpawns;
+use bviz_invocation::spawn::{LoggedSpawns, SpawnBytes};
 pub use bviz_invocation::spawn::{Phase, SpawnRunner};
 use bviz_trace_profile::{LaneClass, OptStr, Profile, SliceAt, TimeSpan};
 pub use modeled::{Modeled, NEARLY_CRITICAL_KEPT, NearlyCritical, StepModel};
@@ -154,6 +154,10 @@ pub struct SpanSplit {
 /// The time an action ran for on the path, and the spawns the execution log
 /// records of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "one per step of a critical path, too few for the unlogged ones' room to matter"
+)]
 pub enum Ran {
     /// The log records no spawn of the action, or no log was given.
     Unlogged(Duration),
@@ -168,6 +172,7 @@ pub struct Spawned {
     spawns: usize,
     logged: Duration,
     phases: [Duration; Phase::ALL.len()],
+    bytes: SpawnBytes,
     fit: Fit,
 }
 
@@ -290,6 +295,7 @@ impl Spawned {
             spawns: tally.spawns,
             logged: tally.logged,
             phases,
+            bytes: tally.bytes,
             fit,
         }
     }
@@ -315,6 +321,11 @@ impl Spawned {
     /// The time on the path in `phase`.
     pub fn phase(&self, phase: Phase) -> Duration {
         self.phases[phase.index()]
+    }
+
+    /// What the spawns wrote and read, summed.
+    pub fn bytes(&self) -> SpawnBytes {
+        self.bytes
     }
 
     pub fn fit(&self) -> Fit {

@@ -1,5 +1,5 @@
 use crate::{Phase, SpawnRunner, Step, Work};
-use bviz_invocation::spawn::{LoggedSpawn, LoggedSpawns};
+use bviz_invocation::spawn::{LoggedSpawn, LoggedSpawns, SpawnBytes};
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -17,6 +17,7 @@ pub(crate) struct Tally {
     pub(crate) spawns: usize,
     pub(crate) logged: Duration,
     pub(crate) phases: [Duration; Phase::ALL.len()],
+    pub(crate) bytes: SpawnBytes,
 }
 
 impl Tally {
@@ -27,6 +28,7 @@ impl Tally {
             spawns: 0,
             logged: Duration::ZERO,
             phases: [Duration::ZERO; Phase::ALL.len()],
+            bytes: SpawnBytes::default(),
         };
         tally.add(spawn);
         tally
@@ -49,6 +51,7 @@ impl Tally {
         for (sum, phase) in self.phases.iter_mut().zip(Phase::ALL) {
             *sum = sum.saturating_add(timing.phase(phase));
         }
+        self.bytes += SpawnBytes::of(&spawn);
     }
 
     /// What answered the step's action, by the rule [`crate::Spawned::runner`]

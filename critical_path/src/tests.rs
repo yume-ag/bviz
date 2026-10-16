@@ -1,5 +1,5 @@
 use super::*;
-use bviz_invocation::spawn::LoggedSpawns;
+use bviz_invocation::spawn::{Bytes, InputBytes, LoggedSpawns, SpawnBytes};
 
 const CRITICAL_PATH_TID: i64 = 0;
 const MAIN_TID: i64 = 1;
@@ -501,6 +501,7 @@ struct LogSpawn<'a> {
     outputs: &'a [&'a str],
     total_us: u64,
     phases: &'a [(Phase, u64)],
+    bytes: SpawnBytes,
 }
 
 fn logged<'a>(
@@ -517,17 +518,21 @@ fn logged<'a>(
         outputs,
         total_us,
         phases,
+        bytes: SpawnBytes::default(),
     }
 }
 
+/// The spawns `spawns` describes, each one's first output holding all it
+/// wrote.
 fn log(spawns: &[LogSpawn]) -> LoggedSpawns {
     use bviz_invocation::spawn::{
-        Builder, Bytes, InputBytes, Logged, MeasuredInputs, PhaseTiming, REPORTED_PHASES,
+        Builder, Bytes, Logged, MeasuredInputs, PhaseTiming, REPORTED_PHASES,
     };
     let mut builder = Builder::with_capacity(spawns.len(), 0, 0);
     for spawn in spawns {
-        for output in spawn.outputs {
-            builder.output(output, Bytes::ZERO);
+        let wrote = std::iter::once(spawn.bytes.outputs).chain(std::iter::repeat(Bytes::ZERO));
+        for (output, bytes) in spawn.outputs.iter().zip(wrote) {
+            builder.output(output, bytes);
         }
         let mut reported = [Duration::ZERO; REPORTED_PHASES];
         for &(phase, time) in spawn.phases {
@@ -541,10 +546,8 @@ fn log(spawns: &[LogSpawn]) -> LoggedSpawns {
             timing: PhaseTiming::new(us(spawn.total_us), reported),
         });
     }
-    builder.finish(MeasuredInputs::new(vec![
-        InputBytes::default();
-        spawns.len()
-    ]))
+    let read = spawns.iter().map(|spawn| spawn.bytes.inputs);
+    builder.finish(MeasuredInputs::new(read.collect()))
 }
 
 /// The spawns joined to `step`.
@@ -660,6 +663,33 @@ fn a_test_is_joined_to_the_spawns_writing_beside_its_log() {
     let spawned = spawned(step);
     assert_eq!((spawned.spawns(), spawned.logged()), (2, us(2500)));
     assert_eq!(spawned.phase(Phase::Other), us(2500));
+}
+
+#[test]
+fn a_step_sums_what_its_spawns_wrote_and_read() {
+    let p = profile(
+        5000,
+        &[event(STEP_COMPILE, 100, 1000).with_out("bazel-out/a.o")],
+        &[],
+    );
+    let moved = |outputs, others, tools| SpawnBytes {
+        outputs: Bytes::new(outputs),
+        inputs: InputBytes {
+            tools: Bytes::new(tools),
+            others: Bytes::new(others),
+        },
+    };
+    let spawn = |outputs, bytes| LogSpawn {
+        bytes,
+        ..logged("remote", outputs, 100, &[])
+    };
+    let spawns = log(&[
+        spawn(&["bazel-out/a.o", "bazel-out/a.d"], moved(10, 200, 3000)),
+        spawn(&["bazel-out/b.o"], moved(40_000, 500_000, 6_000_000)),
+        spawn(&["bazel-out/a.o"], moved(20, 400, 5000)),
+    ]);
+    let path = CriticalPath::of(&p, Some(&spawns), None).expect("critical path");
+    assert_eq!(spawned(&path.steps()[0]).bytes(), moved(30, 600, 8000));
 }
 
 #[test]
