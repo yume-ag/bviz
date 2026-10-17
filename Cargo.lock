@@ -742,6 +742,7 @@ dependencies = [
 name = "bviz_execlog"
 version = "0.1.0"
 dependencies = [
+ "bviz_input",
  "bviz_invocation",
  "bviz_parallel",
  "prost",
@@ -905,6 +906,7 @@ version = "0.1.0"
 dependencies = [
  "bviz_alloc",
  "bviz_execlog",
+ "bviz_input",
  "bviz_invocation",
  "bviz_label",
  "bviz_ui_assets",

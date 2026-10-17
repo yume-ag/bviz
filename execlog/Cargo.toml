@@ -11,6 +11,7 @@ name = "bviz_execlog"
 path = "src/lib.rs"
 
 [dependencies]
+bviz_input = { workspace = true }
 bviz_invocation = { workspace = true }
 bviz_parallel = { workspace = true }
 prost = { workspace = true }

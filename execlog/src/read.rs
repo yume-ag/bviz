@@ -1,12 +1,11 @@
-use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::Read;
 use std::ops::Range;
-use std::path::Path;
 use std::time::Duration;
 
 use bazel_spawn_proto::duration_proto::google::protobuf::Duration as ProtoDuration;
 use bazel_spawn_proto::tools::protos::SpawnMetrics;
 use bazel_spawn_proto::tools::protos::exec_log_entry::Invocation;
+use bviz_input::Input;
 use bviz_invocation::spawn::{self, Logged, PhaseTiming, REPORTED_PHASES};
 use bviz_invocation::{InvocationId, Recorded};
 use bviz_parallel::worker_count;
@@ -42,10 +41,9 @@ const OUTPUT_BYTES_PER_COMPRESSED_KIB: u64 = 192;
 /// Decoded bytes read from the log at a time.
 const READ_CHUNK_BYTES: usize = 256 << 10;
 
-pub(crate) fn read_path(path: &Path) -> Result<Recorded<ExecLog>, LoadError> {
-    let file = File::open(path).map_err(LoadError::Io)?;
-    let compressed = file.metadata().map_err(LoadError::Io)?.len();
-    read_compressed(file, compressed)
+pub(crate) fn read_input(input: Input) -> Result<Recorded<ExecLog>, LoadError> {
+    let compressed = input.size().unwrap_or(0);
+    read_compressed(input.into_reader(), compressed)
 }
 
 /// Reads a log of `compressed` bytes from `log`.
@@ -317,17 +315,11 @@ fn duration(proto: Option<ProtoDuration>) -> Duration {
 /// times the invocation entry a log opens with.
 const PROBE_HEAD_BYTES: usize = 64 << 10;
 
-/// The invocation that wrote the execution log at `path`, from the invocation
-/// entry it opens with, decompressing no more than a bounded head of the file.
-/// `None` when the log opens with no such entry, the file cannot be read, or
-/// `path` is not a regular file: reading a pipe could block, and would take
-/// from it bytes it yields only once.
-pub fn probe_invocation_id(path: &Path) -> Option<InvocationId> {
-    if !std::fs::metadata(path).ok()?.is_file() {
-        return None;
-    }
-    let file = File::open(path).ok()?;
-    invocation_id_at_head(BufReader::new(file), PROBE_HEAD_BYTES)
+/// The invocation that wrote the execution log `input` holds, from the
+/// invocation entry it opens with in the input's head. `None` when the head
+/// opens with no such entry.
+pub fn probe_invocation_id(input: &Input) -> Option<InvocationId> {
+    invocation_id_at_head(input.head()?, PROBE_HEAD_BYTES)
 }
 
 /// [`probe_invocation_id`] over the first `head_bytes` decoded bytes of a log.
@@ -580,12 +572,10 @@ mod tests {
     }
 
     #[test]
-    fn probe_reads_a_regular_file_only() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("bviz_execlog_probe.binpb.zst");
+    fn probe_reads_an_opened_file() {
+        let path = std::env::temp_dir().join("bviz_execlog_probe.binpb.zst");
         std::fs::write(&path, encode(&[invocation("abc")])).unwrap();
-        assert_eq!(probe_invocation_id(&path), InvocationId::new("abc"));
-        assert_eq!(probe_invocation_id(&path.with_extension("missing")), None);
-        assert_eq!(probe_invocation_id(&dir), None);
+        let input = Input::open(&path).unwrap();
+        assert_eq!(probe_invocation_id(&input), InvocationId::new("abc"));
     }
 }

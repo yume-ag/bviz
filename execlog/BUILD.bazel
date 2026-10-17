@@ -22,6 +22,7 @@ rust_library(
     visibility = ["//ui/execlog:__pkg__"],
     deps = [
         "//invocation",
+        "//util/input",
         "//util/parallel",
         "@bazel_spawn_proto//:bazel_spawn_rust_proto",
         "@crates//:prost",

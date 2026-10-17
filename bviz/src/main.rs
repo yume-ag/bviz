@@ -40,11 +40,13 @@ impl Load {
                 invocation: bviz_ui_console::invocation_id(&source),
                 file: Self::Console(source.into()),
             },
-            Source::ExecLog(source) => File {
-                kind: Kind::ExecLog,
-                invocation: bviz_ui_execlog::invocation_id(&source),
-                file: Self::ExecLog(source.into()),
-            },
+            Source::ExecLog(source) => Self::read(
+                Kind::ExecLog,
+                Input::open(&source.path),
+                source,
+                bviz_ui_execlog::invocation_id,
+                Self::ExecLog,
+            ),
         }
     }
 
