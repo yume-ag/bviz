@@ -26,6 +26,7 @@ rust_library(
     deps = [
         "//bazel_flags",
         "//label",
+        "//util/input",
         "//util/parallel",
         "@bazel_query_proto//:bazel_query_rust_proto",
         "@crates//:fixedbitset",
@@ -52,4 +53,15 @@ rust_binary(
     srcs = ["bench/relayout.rs"],
     crate_name = "bench_relayout",
     deps = [":layout"],
+)
+
+rust_binary(
+    name = "bench_load",
+    srcs = ["bench/load.rs"],
+    crate_name = "bench_load",
+    deps = [
+        ":layout",
+        "//alloc",
+        "//util/input",
+    ],
 )

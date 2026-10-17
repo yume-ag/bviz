@@ -106,7 +106,7 @@ fn evaluates_as_bazel_does() {
         let mut rng = Rng::with_seed(seed);
         let graph = Graph::draw(&mut rng);
         let path = graph.write(seed);
-        let targets = read_query_targets(&std::fs::read(&path).unwrap()).unwrap();
+        let targets = read_query_targets(std::fs::File::open(&path).unwrap(), None).unwrap();
         let joint = build_joint(None, None, Some(&targets), false);
         let universe = Universe::new(
             &joint.graph,

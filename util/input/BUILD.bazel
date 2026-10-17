@@ -8,10 +8,12 @@ rust_library(
     visibility = [
         "//bviz:__pkg__",
         "//execlog:__pkg__",
+        "//graph/layout:__pkg__",
         "//terminal:__pkg__",
         "//trace/profile:__pkg__",
         "//ui/console:__pkg__",
         "//ui/execlog:__pkg__",
+        "//ui/graph:__pkg__",
         "//ui/trace:__pkg__",
     ],
     deps = ["@crates//:prost"],

@@ -755,6 +755,7 @@ name = "bviz_graph_layout"
 version = "0.1.0"
 dependencies = [
  "bviz_bazel_flags",
+ "bviz_input",
  "bviz_label",
  "bviz_parallel",
  "fastrand",
@@ -937,6 +938,7 @@ version = "0.1.0"
 dependencies = [
  "bviz_bazel_flags",
  "bviz_graph_layout",
+ "bviz_input",
  "bviz_invocation",
  "bviz_label",
  "bviz_parallel",
