@@ -1914,6 +1914,7 @@ impl Render for ScatterPanel {
                         view.end_press(e.position, DragEnd::Released, cx);
                     }),
                 )
+                .hover_listener_mode(gpui::HoverListenerMode::InputModalityIndependent)
                 .on_hover(cx.listener(|view, hovered: &bool, _, cx| {
                     if !hovered {
                         view.clear_hover(cx);

@@ -7,7 +7,7 @@ filegroup(
     srcs = ["src/text_input.rs"],
     package_metadata = [
         "//:package_metadata",
-        "//LICENSES:gpui",
+        "//LICENSES:gpui_derived_source",
     ],
 )
 

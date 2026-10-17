@@ -6,12 +6,13 @@ again. Have Escape, pressed without modifiers, put away a tooltip that
 is showing or waiting out its delay, as a press on its element does,
 until the pointer leaves the element.
 
-License: Apache-2.0 (Zed v1.6.3)
+License: Apache-2.0 (Zed v1.24.3)
 
 diff --git a/crates/gpui/src/elements/div.rs b/crates/gpui/src/elements/div.rs
+index 0a1d590..55c3085 100644
 --- a/crates/gpui/src/elements/div.rs
 +++ b/crates/gpui/src/elements/div.rs
-@@ -3140,8 +3140,8 @@ pub(crate) enum ActiveTooltip {
+@@ -3661,8 +3661,8 @@ pub(crate) enum ActiveTooltip {
          tooltip: AnyTooltip,
          _task: Task<()>,
      },
@@ -22,15 +23,15 @@ diff --git a/crates/gpui/src/elements/div.rs b/crates/gpui/src/elements/div.rs
      Dismissed,
  }
  
-@@ -3342,6 +3342,7 @@ fn handle_tooltip_mouse_move(
-             cx,
-         ),
+@@ -3910,6 +3910,7 @@ fn handle_tooltip_mouse_move(
+             );
+         }
          Action::ScheduleShow => {
 +            let escapes = window.tooltip_escapes;
              let delayed_show_task = window.spawn(cx, {
                  let weak_active_tooltip = Rc::downgrade(active_tooltip);
                  let build_tooltip = build_tooltip.clone();
-@@ -3352,6 +3353,10 @@ fn handle_tooltip_mouse_move(
+@@ -3920,6 +3921,10 @@ fn handle_tooltip_mouse_move(
                          return;
                      };
                      cx.update(|window, cx| {
@@ -41,7 +42,7 @@ diff --git a/crates/gpui/src/elements/div.rs b/crates/gpui/src/elements/div.rs
                          show_tooltip(
                              &active_tooltip,
                              &build_tooltip,
-@@ -3395,6 +3400,7 @@ fn show_tooltip(
+@@ -3965,6 +3970,7 @@ fn show_tooltip(
      let new_tooltip = build_tooltip(window, cx).map(|(view, tooltip_is_hoverable)| {
          let weak_active_tooltip = Rc::downgrade(active_tooltip);
          let check_is_hovered_during_prepaint = check_is_hovered_during_prepaint.clone();
@@ -49,7 +50,7 @@ diff --git a/crates/gpui/src/elements/div.rs b/crates/gpui/src/elements/div.rs
          ActiveTooltip::Visible {
              tooltip: AnyTooltip {
                  view,
-@@ -3403,6 +3409,10 @@ fn show_tooltip(
+@@ -3979,6 +3985,10 @@ fn show_tooltip(
                      let Some(active_tooltip) = weak_active_tooltip.upgrade() else {
                          return false;
                      };
@@ -61,19 +62,20 @@ diff --git a/crates/gpui/src/elements/div.rs b/crates/gpui/src/elements/div.rs
                          &active_tooltip,
                          tooltip_is_hoverable,
 diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
+index cce5063..8f7cb31 100644
 --- a/crates/gpui/src/window.rs
 +++ b/crates/gpui/src/window.rs
-@@ -995,6 +995,9 @@ pub struct Window {
+@@ -1255,6 +1255,9 @@ pub struct Window {
      next_hitbox_id: HitboxId,
      pub(crate) next_tooltip_id: TooltipId,
      pub(crate) tooltip_bounds: Option<TooltipBounds>,
 +    /// Counts presses of Escape without modifiers. A tooltip shown or scheduled before the count
 +    /// last rose is put away until the pointer leaves its element.
 +    pub(crate) tooltip_escapes: usize,
-     next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
+     pub(crate) next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
      pub(crate) dirty_views: FxHashSet<EntityId>,
      focus_listeners: SubscriberSet<(), AnyWindowFocusListener>,
-@@ -1695,6 +1698,7 @@ impl Window {
+@@ -2150,6 +2153,7 @@ impl Window {
              next_hitbox_id: HitboxId(0),
              next_tooltip_id: TooltipId::default(),
              tooltip_bounds: None,
@@ -81,7 +83,7 @@ diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
              dirty_views: FxHashSet::default(),
              focus_listeners: SubscriberSet::new(),
              focus_lost_listeners: SubscriberSet::new(),
-@@ -4600,7 +4604,17 @@ impl Window {
+@@ -5684,7 +5688,17 @@ impl Window {
                  }
                  PlatformInput::PlatformDrag(drag)
              }

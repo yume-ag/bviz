@@ -1,8 +1,9 @@
 Offer a drag to the window system
 
-gpui carries a drag to its own views and never to the window system, so
-nothing outside the window a gesture started in hears of one, and
-nothing it draws is reachable past that window's edge. Give a window the
+gpui carries a drag to its own views, and hands the window system only a
+drag of files, once the pointer leaves the window, so nothing outside the
+window a gesture started in hears of any other drag, and nothing it draws
+is reachable past that window's edge. Give a window the
 requests to offer a gesture to the window system, to say which mime type
 it takes a drag under, and to hear what a drag the window system carries
 does; a backend that implements none of them takes no gesture and says
@@ -10,12 +11,13 @@ so. Rasterizing a glyph goes with them: what a window system draws for a
 drag is an image, and gpui's text system is where the application's own
 faces are loaded.
 
-License: Apache-2.0 (Zed v1.6.3)
+License: Apache-2.0 (Zed v1.24.3)
 
 diff --git a/crates/gpui/src/interactive.rs b/crates/gpui/src/interactive.rs
+index 913cf1b..4023eb3 100644
 --- a/crates/gpui/src/interactive.rs
 +++ b/crates/gpui/src/interactive.rs
-@@ -645,6 +645,50 @@ impl InputEvent for FileDropEvent {
+@@ -766,6 +766,50 @@ impl InputEvent for FileDropEvent {
  }
  impl MouseEvent for FileDropEvent {}
  
@@ -66,37 +68,46 @@ diff --git a/crates/gpui/src/interactive.rs b/crates/gpui/src/interactive.rs
  /// An enum corresponding to all kinds of platform input events.
  #[derive(Clone, Debug)]
  pub enum PlatformInput {
-@@ -670,6 +714,9 @@ pub enum PlatformInput {
-     Pinch(PinchEvent),
-     /// Files were dragged and dropped onto the window.
+@@ -797,6 +841,9 @@ pub enum PlatformInput {
      FileDrop(FileDropEvent),
+     /// A raw touch event on a touch screen.
+     Touch(TouchEvent),
 +    /// The window system carried a drag over the window, or ended the one the
 +    /// window handed it.
 +    PlatformDrag(PlatformDragEvent),
  }
  
  impl PlatformInput {
-@@ -686,6 +733,7 @@ impl PlatformInput {
-             PlatformInput::ScrollWheel(event) => Some(event),
-             PlatformInput::Pinch(event) => Some(event),
+@@ -816,6 +863,7 @@ impl PlatformInput {
+             PlatformInput::TouchDrag(event) => Some(event),
              PlatformInput::FileDrop(event) => Some(event),
+             PlatformInput::Touch(_) => None,
 +            PlatformInput::PlatformDrag(_) => None,
          }
      }
  
-@@ -702,6 +750,7 @@ impl PlatformInput {
-             PlatformInput::ScrollWheel(_) => None,
-             PlatformInput::Pinch(_) => None,
+@@ -835,6 +883,7 @@ impl PlatformInput {
+             PlatformInput::TouchDrag(_) => None,
              PlatformInput::FileDrop(_) => None,
+             PlatformInput::Touch(_) => None,
 +            PlatformInput::PlatformDrag(_) => None,
          }
      }
- }
+ 
+@@ -856,6 +905,7 @@ impl PlatformInput {
+             PlatformInput::TouchDrag(_) => "touch_drag",
+             PlatformInput::FileDrop(_) => "file_drop",
+             PlatformInput::Touch(_) => "touch",
++            PlatformInput::PlatformDrag(_) => "platform_drag",
+         }
+     }
+ 
 diff --git a/crates/gpui/src/platform.rs b/crates/gpui/src/platform.rs
+index e47fd00..5682659 100644
 --- a/crates/gpui/src/platform.rs
 +++ b/crates/gpui/src/platform.rs
-@@ -610,6 +610,88 @@ pub struct RequestFrameOptions {
-     pub force_render: bool,
+@@ -1140,6 +1140,88 @@ pub enum TextInputStateChange {
+     ContentChanged,
  }
  
 +/// How many pixels of a drag icon's image go to one of the window's, so that an
@@ -184,10 +195,10 @@ diff --git a/crates/gpui/src/platform.rs b/crates/gpui/src/platform.rs
  #[expect(missing_docs)]
  pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
      fn bounds(&self) -> Bounds<Pixels>;
-@@ -695,6 +777,10 @@ pub trait PlatformWindow: HasWindowHandl
-     fn show_window_menu(&self, _position: Point<Pixels>) {}
-     fn start_window_move(&self) {}
-     fn start_window_resize(&self, _edge: ResizeEdge) {}
+@@ -1281,6 +1363,10 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
+     #[cfg(all(target_os = "linux", feature = "wayland"))]
+     fn set_exclusive_edge(&self, _edge: layer_shell::Anchor) {}
+     fn set_input_region(&self, _region: Option<&[Bounds<Pixels>]>) {}
 +    fn start_platform_drag(&self, _mime_type: &str, _icon: DragIcon) -> bool {
 +        false
 +    }
@@ -196,9 +207,10 @@ diff --git a/crates/gpui/src/platform.rs b/crates/gpui/src/platform.rs
          Decorations::Server
      }
 diff --git a/crates/gpui/src/text_system.rs b/crates/gpui/src/text_system.rs
+index cf6bb10..6030dcb 100644
 --- a/crates/gpui/src/text_system.rs
 +++ b/crates/gpui/src/text_system.rs
-@@ -321,7 +321,7 @@ impl TextSystem {
+@@ -559,7 +559,7 @@ impl TextSystem {
      }
  
      /// Get the rasterized size and location of a specific, rendered glyph.
@@ -207,7 +219,7 @@ diff --git a/crates/gpui/src/text_system.rs b/crates/gpui/src/text_system.rs
          let raster_bounds = self.raster_bounds.upgradable_read();
          if let Some(bounds) = raster_bounds.get(params) {
              Ok(*bounds)
-@@ -333,7 +333,10 @@ impl TextSystem {
+@@ -571,7 +571,10 @@ impl TextSystem {
          }
      }
  
@@ -220,32 +232,35 @@ diff --git a/crates/gpui/src/text_system.rs b/crates/gpui/src/text_system.rs
          params: &RenderGlyphParams,
      ) -> Result<(Size<DevicePixels>, Vec<u8>)> {
 diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
+index e892ea2..a4815fb 100644
 --- a/crates/gpui/src/window.rs
 +++ b/crates/gpui/src/window.rs
-@@ -4,13 +4,14 @@ use crate::{
+@@ -8,14 +8,15 @@ use crate::{
      Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App, AppContext, Arena, Asset,
-     AsyncWindowContext, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow, Capslock,
-     Context, Corners, CursorHideMode, CursorStyle, Decorations, DevicePixels,
+     AsyncWindowContext, AtlasTile, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow,
+     Capslock, Context, Corners, CursorHideMode, CursorStyle, Decorations, DevicePixels,
 -    DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity,
 -    EntityId, EventEmitter, FileDropEvent, FontId, Global, GlobalElementId, GlyphId, GpuSpecs,
--    Hsla, InputHandler, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke,
--    KeystrokeEvent, LayoutId, LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite,
--    MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels, PlatformAtlas,
--    PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PolychromeSprite,
--    Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams, RenderImage,
+-    Hsla, InputHandler, InputPreference, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent,
+-    Keystroke, KeystrokeEvent, LayoutId, LineLayoutIndex, Modifiers, ModifiersChangedEvent,
+-    MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels,
+-    PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
+-    PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams,
+-    RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
 +    DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, DragIcon, Edges, Effect,
 +    Entity, EntityId, EventEmitter, FileDropEvent, FontId, Global, GlobalElementId, GlyphId,
-+    GpuSpecs, Hsla, InputHandler, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent,
-+    Keystroke, KeystrokeEvent, LayoutId, LineLayoutIndex, Modifiers, ModifiersChangedEvent,
-+    MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels,
-+    PlatformAtlas, PlatformDisplay, PlatformDragEvent, PlatformInput, PlatformInputHandler,
-+    PlatformWindow, Point, PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render,
-+    RenderGlyphParams, RenderImage,
-     RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
++    GpuSpecs, Hsla, InputHandler, InputPreference, IsZero, KeyBinding, KeyContext, KeyDownEvent,
++    KeyEvent, Keystroke, KeystrokeEvent, LayoutId, LineLayoutIndex, Modifiers,
++    ModifiersChangedEvent, MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent,
++    Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformDragEvent, PlatformInput,
++    PlatformInputHandler, PlatformWindow, Point, PolychromeSprite, Priority, PromptButton,
++    PromptLevel, Quad, Render, RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams,
++    Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
      SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow, SharedString, Size,
      StrikethroughStyle, Style, SubpixelSprite, SubscriberSet, Subscription, SystemWindowTab,
-@@ -957,6 +958,11 @@ enum InputModality {
-     Keyboard,
+     SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task, TextInputConfiguration,
+@@ -1210,6 +1211,11 @@ enum InputModality {
+     Touch,
  }
  
 +/// Held behind an [`Rc`] so that dispatching to it leaves it registered: a
@@ -256,7 +271,7 @@ diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
  /// Holds the state for a specific window.
  pub struct Window {
      pub(crate) handle: AnyWindowHandle,
-@@ -1024,6 +1030,9 @@ pub struct Window {
+@@ -1295,6 +1301,9 @@ pub struct Window {
      /// The hitbox that has captured the pointer, if any.
      /// While captured, mouse events route to this hitbox regardless of hit testing.
      captured_hitbox: Option<HitboxId>,
@@ -265,16 +280,16 @@ diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
 +    platform_drag_handler: Option<PlatformDragHandler>,
      #[cfg(any(feature = "inspector", debug_assertions))]
      inspector: Option<Entity<Inspector>>,
-     pub(crate) a11y: A11y,
-@@ -1717,6 +1726,7 @@ impl Window {
+     #[cfg(feature = "profiler")]
+@@ -2184,6 +2193,7 @@ impl Window {
              client_inset: None,
              image_cache_stack: Vec::new(),
              captured_hitbox: None,
 +            platform_drag_handler: None,
              #[cfg(any(feature = "inspector", debug_assertions))]
              inspector: None,
-             a11y: A11y::new(a11y_active_flag, accessibility_force_disabled),
-@@ -2286,6 +2296,39 @@ impl Window {
+             #[cfg(feature = "profiler")]
+@@ -2937,6 +2947,39 @@ impl Window {
          self.platform_window.start_window_move()
      }
  
@@ -314,10 +329,10 @@ diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
      /// When using client side decorations, set this to the width of the invisible decorations (Wayland and X11)
      pub fn set_client_inset(&mut self, inset: Pixels) {
          self.client_inset = Some(inset);
-@@ -4547,6 +4590,12 @@ impl Window {
-                     PlatformInput::FileDrop(FileDropEvent::Exited)
-                 }
-             },
+@@ -5631,6 +5674,12 @@ impl Window {
+                 self.mouse_position = touch_drag.start_position;
+                 PlatformInput::TouchDrag(touch_drag)
+             }
 +            PlatformInput::PlatformDrag(drag) => {
 +                if let Some(position) = drag.position() {
 +                    self.mouse_position = position;
@@ -327,10 +342,10 @@ diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
              PlatformInput::KeyDown(_) | PlatformInput::KeyUp(_) => event,
          };
  
-@@ -4554,6 +4603,13 @@ impl Window {
-             self.dispatch_mouse_event(any_mouse_event, cx);
-         } else if let Some(any_key_event) = event.keyboard_event() {
+@@ -5640,6 +5689,13 @@ impl Window {
              self.dispatch_key_event(any_key_event, cx);
+         } else if let Some(touch_event) = event.touch_event() {
+             self.dispatch_touch_event(touch_event, cx);
 +        } else if let PlatformInput::PlatformDrag(drag) = event {
 +            // The window's own handler takes this and no element does: the
 +            // pointer belongs to the window system while it carries a drag, so
@@ -339,5 +354,5 @@ diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
 +                handler(drag, self, cx);
 +            }
          }
- 
-         if self.invalidator.update_count() > update_count_before {
+         if let PlatformInput::LongPress(long_press) = &event {
+             match long_press.phase {

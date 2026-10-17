@@ -929,6 +929,7 @@ impl FlamePanel {
                 });
             }
         }))
+        .hover_listener_mode(gpui::HoverListenerMode::InputModalityIndependent)
         .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
             if !*hovered && this.card.leave() {
                 cx.notify();

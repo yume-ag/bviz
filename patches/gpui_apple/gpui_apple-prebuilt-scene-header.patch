@@ -1,39 +1,37 @@
-License: Apache-2.0 (Zed v1.6.3)
+License: Apache-2.0 (Zed v1.24.3)
 
-diff --git a/crates/gpui_macos/Cargo.toml b/crates/gpui_macos/Cargo.toml
-index 2c94464..1561336 100644
---- a/crates/gpui_macos/Cargo.toml
-+++ b/crates/gpui_macos/Cargo.toml
-@@ -60,10 +60,6 @@ strum.workspace = true
- util.workspace = true
- uuid.workspace = true
+diff --git a/crates/gpui_apple/Cargo.toml b/crates/gpui_apple/Cargo.toml
+index 6b53075..c6338e2 100644
+--- a/crates/gpui_apple/Cargo.toml
++++ b/crates/gpui_apple/Cargo.toml
+@@ -43,8 +43,5 @@ objc2-foundation = { workspace = true, features = ["NSThread"] }
+ objc2-quartz-core.workspace = true
+ parking_lot.workspace = true
  
--[target.'cfg(target_os = "macos")'.build-dependencies]
--cbindgen = { version = "0.28.0", default-features = false }
--gpui.workspace = true
+-[target.'cfg(any(target_os = "macos", target_os = "ios"))'.build-dependencies]
+-cbindgen.workspace = true
 -
- # When this crate is itself being tested (cargo test -p gpui_macos), its own
- # cfg(test) flag enables impls of test-only traits like PlatformHeadlessRenderer
- # and PlatformWindow::render_to_image. Those traits/methods only exist in gpui
-diff --git a/crates/gpui_macos/build.rs b/crates/gpui_macos/build.rs
-index d5c1893..1cc9927 100644
---- a/crates/gpui_macos/build.rs
-+++ b/crates/gpui_macos/build.rs
+ [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dev-dependencies]
+ gpui = { workspace = true, features = ["test-support"] }
+diff --git a/crates/gpui_apple/build.rs b/crates/gpui_apple/build.rs
+index 5309594..9db673f 100644
+--- a/crates/gpui_apple/build.rs
++++ b/crates/gpui_apple/build.rs
 @@ -1,21 +1,24 @@
  #![allow(clippy::disallowed_methods, reason = "build scripts are exempt")]
  
  fn main() {
--    #[cfg(target_os = "macos")]
--    macos_build::run();
+-    #[cfg(any(target_os = "macos", target_os = "ios"))]
+-    apple_build::run();
 +    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
 +
-+    if target_os == "macos" {
-+        macos_build::run();
++    if target_os == "macos" || target_os == "ios" {
++        apple_build::run();
 +    }
  }
  
--#[cfg(target_os = "macos")]
- mod macos_build {
+-#[cfg(any(target_os = "macos", target_os = "ios"))]
+ mod apple_build {
      use std::{
          env,
          path::{Path, PathBuf},
@@ -49,7 +47,7 @@ index d5c1893..1cc9927 100644
  
          #[cfg(feature = "runtime_shaders")]
          emit_stitched_shaders(&header_path);
-@@ -23,82 +26,15 @@ mod macos_build {
+@@ -23,84 +26,15 @@ mod apple_build {
          compile_metal_shaders(&header_path);
      }
  
@@ -99,9 +97,7 @@ index d5c1893..1cc9927 100644
 -        let mut builder = cbindgen::Builder::new();
 -
 -        let crate_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-+    fn scene_header_path() -> PathBuf {
-+        println!("cargo:rerun-if-env-changed={SCENE_HEADER_ENV}");
- 
+-
 -        // Source files from gpui that define types used in shaders
 -        let gpui_src_paths = [
 -            gpui_dir.join("src/scene.rs"),
@@ -118,7 +114,9 @@ index d5c1893..1cc9927 100644
 -            println!("cargo:rerun-if-changed={}", src_path.display());
 -            builder = builder.with_src(src_path);
 -        }
--
++    fn scene_header_path() -> PathBuf {
++        println!("cargo:rerun-if-env-changed={SCENE_HEADER_ENV}");
+ 
 -        builder
 -            .with_config(config)
 -            .generate()
@@ -132,9 +130,11 @@ index d5c1893..1cc9927 100644
 +        }));
 +        println!("cargo:rerun-if-changed={}", header_path.display());
  
--    /// Locate the gpui crate directory relative to this crate.
+-    /// Locate the gpui crate directory relative to this crate. Resolved at
+-    /// build-script runtime against this crate's manifest dir, so no checkout
+-    /// path is baked into a compiled artifact (which corgi rejects).
 -    fn find_gpui_crate_dir() -> PathBuf {
--        gpui::GPUI_MANIFEST_DIR.into()
+-        PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("../gpui")
 +        header_path
      }
  

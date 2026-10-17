@@ -1,76 +1,45 @@
 Read the portal color scheme before the first window opens
 
-gpui starts every Linux client with a Light appearance and learns the
+gpui starts its Linux platform with a Light appearance and learns the
 desktop's color scheme only once an asynchronous xdg-desktop-portal reply
 reaches the event loop. The app's launch closure runs before that loop, so
 on a dark desktop the first window is drawn light and then repainted dark: a
-visible light flash at startup. Reading the setting once, synchronously and
-bounded by a short timeout, seeds the appearance the first frame uses; an
-absent or slow portal leaves the Light default, and the asynchronous
-subscription still follows later changes.
+visible light flash at startup. Reading the setting synchronously and
+bounded by a short timeout each time the platform connects to a display
+server seeds the appearance the first frame uses; an absent or slow
+portal leaves the Light default, and the asynchronous subscription still
+follows later changes.
 
-License: Apache-2.0 (Zed v1.6.3)
+License: Apache-2.0 (Zed v1.24.3)
 
-diff --git a/crates/gpui_linux/src/linux/wayland/client.rs b/crates/gpui_linux/src/linux/wayland/client.rs
---- a/crates/gpui_linux/src/linux/wayland/client.rs
-+++ b/crates/gpui_linux/src/linux/wayland/client.rs
-@@ -94,7 +94,7 @@ use crate::linux::{
-         to_shape,
-         window::WaylandWindow,
-     },
--    xdg_desktop_portal::{Event as XDPEvent, XDPEventSource},
-+    xdg_desktop_portal::{Event as XDPEvent, XDPEventSource, initial_window_appearance},
- };
- use gpui::{
-     AnyWindowHandle, Bounds, Capslock, CursorStyle, DevicePixels, DisplayId, DragIcon,
-@@ -762,7 +762,10 @@ impl WaylandClient {
- 
-         let event_loop = EventLoop::<WaylandClientStatePtr>::try_new().unwrap();
- 
--        let (common, main_receiver) = LinuxCommon::new(event_loop.get_signal());
-+        let (mut common, main_receiver) = LinuxCommon::new(event_loop.get_signal());
-+        if let Some(appearance) = initial_window_appearance() {
-+            common.appearance = appearance;
+diff --git a/crates/gpui_linux/src/linux/platform.rs b/crates/gpui_linux/src/linux/platform.rs
+index d9c903f..72d349c 100644
+--- a/crates/gpui_linux/src/linux/platform.rs
++++ b/crates/gpui_linux/src/linux/platform.rs
+@@ -394,6 +394,10 @@ impl LinuxPlatform {
+         environment: &GraphicalEnvironment,
+         startup: StartupEnvironment,
+     ) -> anyhow::Result<DisplayConnection> {
++        #[cfg(any(feature = "wayland", feature = "x11"))]
++        if let Some(appearance) = crate::linux::xdg_desktop_portal::initial_window_appearance() {
++            self.with_common(|common| common.appearance = appearance);
 +        }
- 
-         let handle = event_loop.handle();
-         handle
-diff --git a/crates/gpui_linux/src/linux/x11/client.rs b/crates/gpui_linux/src/linux/x11/client.rs
---- a/crates/gpui_linux/src/linux/x11/client.rs
-+++ b/crates/gpui_linux/src/linux/x11/client.rs
-@@ -54,7 +54,7 @@ use crate::linux::{
-     keystroke_underlying_dead_key, log_cursor_icon_warning, modifiers_from_xkb, open_uri_internal,
-     platform::{DOUBLE_CLICK_INTERVAL, SCROLL_LINES},
-     reveal_path_internal,
--    xdg_desktop_portal::{Event as XDPEvent, XDPEventSource},
-+    xdg_desktop_portal::{Event as XDPEvent, XDPEventSource, initial_window_appearance},
- };
- use crate::linux::{LinuxCommon, LinuxKeyboardLayout, X11Window, modifiers_from_xinput_info};
- 
-@@ -309,7 +309,10 @@ impl X11Client {
-     pub(crate) fn new() -> anyhow::Result<Self> {
-         let event_loop = EventLoop::try_new()?;
- 
--        let (common, main_receiver) = LinuxCommon::new(event_loop.get_signal());
-+        let (mut common, main_receiver) = LinuxCommon::new(event_loop.get_signal());
-+        if let Some(appearance) = initial_window_appearance() {
-+            common.appearance = appearance;
-+        }
- 
-         let handle = event_loop.handle();
- 
+         let loop_handle = self.loop_handle.clone();
+         let common = self.common.clone();
+         match backend {
 diff --git a/crates/gpui_linux/src/linux/xdg_desktop_portal.rs b/crates/gpui_linux/src/linux/xdg_desktop_portal.rs
+index 9b06836..fe38226 100644
 --- a/crates/gpui_linux/src/linux/xdg_desktop_portal.rs
 +++ b/crates/gpui_linux/src/linux/xdg_desktop_portal.rs
-@@ -6,6 +6,7 @@ use ashpd::desktop::settings::{ColorScheme, Settings};
- use calloop::channel::Channel;
+@@ -7,6 +7,7 @@ use calloop::channel::{Channel, Sender};
  use calloop::{EventSource, Poll, PostAction, Readiness, Token, TokenFactory};
+ use futures::future::BoxFuture;
  use smol::stream::StreamExt;
 +use std::time::Duration;
  
- use gpui::{BackgroundExecutor, WindowAppearance};
+ use gpui::{BackgroundExecutor, Task, WindowAppearance};
  
-@@ -18,6 +19,25 @@ pub enum Event {
+@@ -19,6 +20,25 @@ pub enum Event {
      ButtonLayout(String),
  }
  
@@ -93,6 +62,6 @@ diff --git a/crates/gpui_linux/src/linux/xdg_desktop_portal.rs b/crates/gpui_lin
 +    ))
 +}
 +
- pub struct XDPEventSource {
-     channel: Channel<Event>,
- }
+ /// Forwards desktop settings from the portal to the event loop.
+ ///
+ /// Owns the task that listens to the portal, so removing the source from the loop cancels it and
