@@ -340,20 +340,6 @@ crate.annotation(
     crate = "freetype-sys",
 )
 
-# wgpu's `vulkan` feature does not propagate to wgpu-core/wgpu-hal through wgpu's
-# platform shim under rules_rs resolution, so no GPU backend gets compiled and
-# surface creation fails. Enable the Vulkan backend on the crates that gate it.
-crate.annotation_select(
-    crate = "wgpu-core",
-    crate_features = ["vulkan"],
-    triples = LINUX_TRIPLES,
-)
-crate.annotation_select(
-    crate = "wgpu-hal",
-    crate_features = ["vulkan"],
-    triples = LINUX_TRIPLES,
-)
-
 # objc-sys locates its ObjFW compatibility headers through a build-time
 # env!("CARGO_MANIFEST_DIR"), which bakes the exec root into the compiled build
 # script. Only the ObjFW runtime reads those headers and this build targets
