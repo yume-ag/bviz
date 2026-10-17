@@ -99,7 +99,7 @@ register_toolchains("@llvm_toolchains//:all")
 
 # The macOS sysroot the llvm module fetches carries a small default set of
 # frameworks, which this tag replaces wholesale; the defaults are therefore
-# repeated alongside the ones gpui's macOS backend and the media crate bind.
+# repeated alongside the ones gpui's macOS backend binds.
 # ColorSync, FontServices and ImageIO come from the sysroot itself:
 # ApplicationServices symlinks into them, and Bazel refuses to act on a dangling
 # symlink. CFNetwork, CoreImage and CoreServices are re-exported by stub
@@ -114,7 +114,6 @@ osx.frameworks(names = [
     "CoreFoundation",
     "CoreGraphics",
     "CoreImage",
-    "CoreMedia",
     "CoreServices",
     "CoreText",
     "CoreVideo",
