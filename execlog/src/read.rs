@@ -1,4 +1,4 @@
-use std::io::Read;
+use std::io::{self, ErrorKind, Read};
 use std::ops::Range;
 use std::time::Duration;
 
@@ -46,11 +46,22 @@ pub(crate) fn read_input(input: Input) -> Result<Recorded<ExecLog>, LoadError> {
     read_compressed(input.into_reader(), compressed)
 }
 
+/// Opens every zstd frame, and so every execution log.
+const ZSTD_MAGIC: [u8; 4] = zstd::zstd_safe::MAGICNUMBER.to_le_bytes();
+
 /// Reads a log of `compressed` bytes from `log`.
 pub(crate) fn read_compressed(
-    log: impl Read + Send,
+    mut log: impl Read + Send,
     compressed: u64,
 ) -> Result<Recorded<ExecLog>, LoadError> {
+    let mut magic = [0u8; ZSTD_MAGIC.len()];
+    match log.read_exact(&mut magic) {
+        Ok(()) if magic == ZSTD_MAGIC => {}
+        Ok(()) => return Err(LoadError::NotALog),
+        Err(e) if e.kind() == ErrorKind::UnexpectedEof => return Err(LoadError::NotALog),
+        Err(e) => return Err(LoadError::Io(e)),
+    }
+    let log = io::Cursor::new(magic).chain(log);
     let decoder = zstd::stream::read::Decoder::new(log).map_err(LoadError::Io)?;
     let mut builder = Builder::with_capacity(compressed);
     let mut any_entry = false;
@@ -511,9 +522,23 @@ mod tests {
     }
 
     #[test]
-    fn a_log_that_is_no_zstd_stream_fails() {
+    fn a_file_that_is_no_zstd_stream_is_no_log() {
         let text = b"not an execution log at all";
-        assert!(read_compressed(&text[..], text.len() as u64).is_err());
+        assert!(matches!(
+            read_compressed(&text[..], text.len() as u64),
+            Err(LoadError::NotALog)
+        ));
+    }
+
+    #[test]
+    fn a_file_shorter_than_the_zstd_magic_is_no_log() {
+        for len in [0, 1, ZSTD_MAGIC.len() - 1] {
+            let short = &ZSTD_MAGIC[..len];
+            assert!(
+                matches!(read_compressed(short, len as u64), Err(LoadError::NotALog)),
+                "{len} bytes"
+            );
+        }
     }
 
     /// `fields` as one length-delimited entry of a compressed log.

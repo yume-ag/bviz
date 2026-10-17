@@ -26,7 +26,8 @@ pub enum LoadError {
     /// through one error.
     Io(std::io::Error),
     Decode(prost::DecodeError),
-    /// The file decodes to no entry: an execution log opens with one.
+    /// The file is no zstd stream, or decodes to no entry: an execution log
+    /// opens with one.
     NotALog,
 }
 
