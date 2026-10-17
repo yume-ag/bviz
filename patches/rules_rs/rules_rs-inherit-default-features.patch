@@ -1,0 +1,22 @@
+Let a member turn on the default features its workspace dependency turns off
+
+Cargo enables a dependency's default features when a member inheriting it
+from workspace.dependencies sets default-features = true, even where the
+workspace entry sets it false. Resolution here kept only the workspace
+entry's setting, so such a member was built without the features it asks
+for.
+
+License: Apache-2.0 (rules_rs 0.0.112)
+
+--- a/rs/private/cargo_workspace_graph.bzl
++++ b/rs/private/cargo_workspace_graph.bzl
+@@ -151,6 +151,9 @@
+         if spec.get("optional"):
+             inherited["optional"] = True
+ 
++        if spec.get("default_features", spec.get("default-features")):
++            inherited["default_features"] = True
++
+         if spec.get("package"):
+             inherited["package"] = spec["package"]
+ 
