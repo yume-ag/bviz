@@ -33,7 +33,6 @@ members = [
     "ui/workspace",
     "util/parallel",
 ]
-exclude = ["third_party/ztracing"]
 resolver = "2"
 
 [workspace.package]
@@ -79,9 +78,3 @@ protoc-gen-prost = "0.4"
 gpui = { git = "https://github.com/zed-industries/zed", tag = "v1.24.3" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", tag = "v1.24.3" }
 
-# gpui's sum_tree depends on ztracing, which with ztracing_macro and zlog is
-# GPL-3.0-or-later; linking them would put every bviz binary under the GPL.
-# Built without the `ztracing` cfg, sum_tree uses only its no-op `instrument`
-# attribute.
-[patch."https://github.com/zed-industries/zed"]
-ztracing = { path = "third_party/ztracing" }

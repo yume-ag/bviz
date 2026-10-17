@@ -7170,6 +7170,16 @@ dependencies = [
 [[package]]
 name = "ztracing"
 version = "0.1.0"
+source = "git+https://github.com/zed-industries/zed?tag=v1.24.3#2a857f5f2ec368745c1af5209d49836968fe75b8"
+dependencies = [
+ "tracing",
+ "ztracing_macro",
+]
+
+[[package]]
+name = "ztracing_macro"
+version = "0.1.0"
+source = "git+https://github.com/zed-industries/zed?tag=v1.24.3#2a857f5f2ec368745c1af5209d49836968fe75b8"
 
 [[package]]
 name = "zune-core"
