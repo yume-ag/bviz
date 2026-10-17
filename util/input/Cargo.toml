@@ -9,3 +9,6 @@ repository.workspace = true
 [lib]
 name = "bviz_input"
 path = "src/lib.rs"
+
+[dependencies]
+prost = { workspace = true }

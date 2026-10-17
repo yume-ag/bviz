@@ -12,6 +12,7 @@ rust_library(
         "//ui/execlog:__pkg__",
         "//ui/trace:__pkg__",
     ],
+    deps = ["@crates//:prost"],
 )
 
 rust_test(

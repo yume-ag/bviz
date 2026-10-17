@@ -8,6 +8,8 @@ use std::ops::Deref;
 #[cfg(any(unix, windows))]
 mod file;
 
+pub mod delimited;
+
 /// Bytes of an input read ahead as its [`head`](Input::head): every look a
 /// reader takes at a file's start, to tell what it holds or which invocation
 /// wrote it, reads within these.
