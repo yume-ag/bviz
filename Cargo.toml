@@ -10,6 +10,7 @@ members = [
     "graph/layout",
     "invocation",
     "label",
+    "sniff",
     "terminal",
     "tools/notices",
     "tools/proto_field_numbers",

@@ -1,0 +1,18 @@
+[package]
+name = "bviz_sniff"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[lib]
+name = "bviz_sniff"
+path = "src/lib.rs"
+
+[dependencies]
+flate2 = { workspace = true }
+prost = { workspace = true }
+
+[dev-dependencies]
+fastrand = { workspace = true }

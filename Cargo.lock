@@ -824,6 +824,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bviz_sniff"
+version = "0.1.0"
+dependencies = [
+ "fastrand 2.5.0",
+ "flate2",
+ "prost",
+]
+
+[[package]]
 name = "bviz_terminal"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,67 @@
+load("@bazel_lib//lib:run_binary.bzl", "run_binary")
+load("@rules_rs//rs:rust_library.bzl", "rust_library")
+load("@rules_rs//rs:rust_test.bzl", "rust_test")
+
+run_binary(
+    name = "query_fields",
+    srcs = ["@bazel_query_proto//:bazel_query_proto_descriptor_set"],
+    outs = ["src/query_fields.rs"],
+    args = [
+        "$(execpath @bazel_query_proto//:bazel_query_proto_descriptor_set)",
+        "src/main/protobuf/build.proto",
+        "$(execpath src/query_fields.rs)",
+    ],
+    tool = "//tools/proto_field_numbers:proto_field_numbers_gen",
+)
+
+run_binary(
+    name = "analysis_fields",
+    srcs = ["@bazel_query_proto//:bazel_query_proto_descriptor_set"],
+    outs = ["src/analysis_fields.rs"],
+    args = [
+        "$(execpath @bazel_query_proto//:bazel_query_proto_descriptor_set)",
+        "src/main/protobuf/analysis_v2.proto",
+        "$(execpath src/analysis_fields.rs)",
+    ],
+    tool = "//tools/proto_field_numbers:proto_field_numbers_gen",
+)
+
+run_binary(
+    name = "build_event_fields",
+    srcs = ["@bazel_build_event_proto//:bazel_build_event_proto_descriptor_set"],
+    outs = ["src/build_event_fields.rs"],
+    args = [
+        "$(execpath @bazel_build_event_proto//:bazel_build_event_proto_descriptor_set)",
+        "src/main/java/com/google/devtools/build/lib/buildeventstream/proto/build_event_stream.proto",
+        "$(execpath src/build_event_fields.rs)",
+    ],
+    tool = "//tools/proto_field_numbers:proto_field_numbers_gen",
+)
+
+rust_library(
+    name = "sniff",
+    srcs = glob(["src/**/*.rs"]) + [
+        ":analysis_fields",
+        ":build_event_fields",
+        ":query_fields",
+    ],
+    crate_name = "bviz_sniff",
+    deps = [
+        "@crates//:flate2",
+        "@crates//:prost",
+    ],
+)
+
+rust_test(
+    name = "sniff_test",
+    size = "small",
+    compile_data = ["//terminal:testdata/sample.bep"],
+    crate = ":sniff",
+    rustc_env = {"SAMPLE_BEP": "$(execpath //terminal:testdata/sample.bep)"},
+    deps = [
+        "@bazel_build_event_proto//:bazel_build_event_rust_proto",
+        "@bazel_query_proto//:bazel_query_rust_proto",
+        "@bazel_spawn_proto//:bazel_spawn_rust_proto",
+        "@crates//:fastrand",
+    ],
+)

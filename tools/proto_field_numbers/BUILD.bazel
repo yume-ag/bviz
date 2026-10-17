@@ -4,7 +4,10 @@ rust_binary(
     name = "proto_field_numbers_gen",
     srcs = ["proto_field_numbers_gen.rs"],
     crate_name = "bviz_proto_field_numbers_gen",
-    visibility = ["//execlog:__pkg__"],
+    visibility = [
+        "//execlog:__pkg__",
+        "//sniff:__pkg__",
+    ],
     deps = [
         "@crates//:heck",
         "@crates//:prost",

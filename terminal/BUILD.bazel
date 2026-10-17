@@ -2,6 +2,11 @@ load("@rules_rs//rs:rust_binary.bzl", "rust_binary")
 load("@rules_rs//rs:rust_library.bzl", "rust_library")
 load("@rules_rs//rs:rust_test.bzl", "rust_test")
 
+exports_files(
+    ["testdata/sample.bep"],
+    visibility = ["//sniff:__pkg__"],
+)
+
 # display/mod.rs holds alacritty's URL hint pattern verbatim.
 filegroup(
     name = "display_src",
