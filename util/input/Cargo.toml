@@ -1,0 +1,11 @@
+[package]
+name = "bviz_input"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[lib]
+name = "bviz_input"
+path = "src/lib.rs"

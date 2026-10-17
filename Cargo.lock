@@ -770,6 +770,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "bviz_input"
+version = "0.1.0"
+
+[[package]]
 name = "bviz_invocation"
 version = "0.1.0"
 
