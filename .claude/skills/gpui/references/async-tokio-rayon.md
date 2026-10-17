@@ -15,7 +15,7 @@ foreign work therefore need an explicit bridge:
   no runtime, but a parallel iterator **blocks the calling thread** until the
   whole job finishes, so calling it on the UI thread freezes the frame.
 
-The reference implementations live in Zed at **v1.6.3**, in two Apache-licensed
+The reference implementations live in Zed at **v1.24.3**, in two Apache-licensed
 crates: `crates/gpui_tokio/src/gpui_tokio.rs` (the whole tokio bridge, ~100
 lines) and the rayon call site in `crates/sum_tree/src/sum_tree.rs`
 (`from_par_iter`). Read them at the tag this repo targets — the gpui method
