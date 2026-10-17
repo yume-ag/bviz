@@ -11,8 +11,8 @@ use bviz_ui_components::gesture::{GestureRow, Gestures, Pointer};
 use bviz_ui_components::{
     Dropdown, DropdownEvent, HintedLabelLine, KeyScope, LabelLine, Legend, LegendEntry,
     LegendState, ListScroll, OneRow, SCROLLBAR_THICKNESS, ShowLegend, Sort, Swatch, TextTooltip,
-    TruncatingLabel, cut_off_note, legend_gestures, list_scrollbar, sort_gesture, sort_header,
-    sort_hint,
+    TruncatingLabel, cached_layer, cut_off_note, legend_gestures, list_scrollbar, sort_gesture,
+    sort_header, sort_hint,
 };
 use bviz_ui_spawn_phase::phase_name;
 use bviz_ui_workspace::{Panel, PanelEvent, PanelKind, Role, ViewKind};
@@ -96,8 +96,10 @@ const BIGGEST_SORT: Sort<ByteMeasure> = Sort {
     descending: true,
 };
 
-/// What the panel shows of a loaded log.
-struct Shown {
+/// The tables of a loaded log, embedded in [`SpawnTimePanel`] as a cached layer
+/// so that a frame another panel of the window asks for replays them, as only
+/// a notify of this entity changes what they show.
+struct SpawnTables {
     summary: Summary,
     /// Picks the runner, of the summary's, whose spawns the mnemonic table
     /// sums: one runner's spawns report one set of phases, where several
@@ -110,60 +112,11 @@ struct Shown {
     _phase_picked: Subscription,
     /// Which list of spawns largest in bytes shows, and which way round.
     biggest_sort: Sort<ByteMeasure>,
-}
-
-impl Shown {
-    /// The runner the mnemonic table sums the spawns of.
-    fn runner(&self, cx: &App) -> &Runner {
-        &self.summary.runners[self.runner_picker.read(cx).selected()]
-    }
-
-    fn phase(&self, cx: &App) -> Phase {
-        Phase::ALL[self.phase_picker.read(cx).selected()]
-    }
-}
-
-/// The spawn time of an execution log by phase: summed per runner and per
-/// mnemonic, and the spawns that spent longest in one phase. Beside it, the
-/// spawns that wrote or read the most.
-pub struct SpawnTimePanel {
-    focus: FocusHandle,
-    model: Entity<ExecLogModel>,
-    /// `None` until the log is loaded, the model's placeholder showing instead.
-    shown: Option<Shown>,
     scroll: ListScroll,
-    legend: Entity<LegendState>,
-    _model_observer: Subscription,
 }
 
-impl SpawnTimePanel {
-    pub(crate) fn new(model: Entity<ExecLogModel>, cx: &mut Context<Self>) -> Self {
-        let model_observer = cx.observe(&model, |this, _, cx| {
-            this.show_loaded(cx);
-            cx.notify();
-        });
-        let focus = cx.focus_handle();
-        let legend = cx.new(|cx| LegendState::new(focus.clone(), cx));
-        let mut panel = Self {
-            focus,
-            model,
-            shown: None,
-            scroll: ListScroll::new(),
-            legend,
-            _model_observer: model_observer,
-        };
-        panel.show_loaded(cx);
-        panel
-    }
-
-    fn show_loaded(&mut self, cx: &mut Context<Self>) {
-        if self.shown.is_some() {
-            return;
-        }
-        let Source::Loaded(summary) = self.model.read(cx).source() else {
-            return;
-        };
-        let mut summary = summary.get().clone();
+impl SpawnTables {
+    fn new(mut summary: Summary, cx: &mut Context<Self>) -> Self {
         let sort = DEFAULT_SORT;
         for runner in &mut summary.runners {
             apply(sort, &mut runner.mnemonics);
@@ -186,7 +139,7 @@ impl SpawnTimePanel {
         let phase_picked = cx.subscribe(&phase_picker, |_, _, _: &DropdownEvent, cx| {
             cx.notify();
         });
-        self.shown = Some(Shown {
+        Self {
             summary,
             runner_picker,
             _runner_picked: runner_picked,
@@ -194,28 +147,37 @@ impl SpawnTimePanel {
             phase_picker,
             _phase_picked: phase_picked,
             biggest_sort: BIGGEST_SORT,
-        });
+            scroll: ListScroll::new(),
+        }
+    }
+
+    /// The runner the mnemonic table sums the spawns of.
+    fn runner(&self, cx: &App) -> &Runner {
+        &self.summary.runners[self.runner_picker.read(cx).selected()]
+    }
+
+    fn phase(&self, cx: &App) -> Phase {
+        Phase::ALL[self.phase_picker.read(cx).selected()]
     }
 
     fn sort_mnemonics(&mut self, by: SortBy, cx: &mut Context<Self>) {
-        if let Some(shown) = &mut self.shown {
-            shown.sort = clicked(shown.sort, by);
-            for runner in &mut shown.summary.runners {
-                apply(shown.sort, &mut runner.mnemonics);
-            }
-            cx.notify();
+        self.sort = clicked(self.sort, by);
+        for runner in &mut self.summary.runners {
+            apply(self.sort, &mut runner.mnemonics);
         }
+        cx.notify();
     }
 
     fn sort_biggest(&mut self, by: ByteMeasure, cx: &mut Context<Self>) {
-        if let Some(shown) = &mut self.shown {
-            shown.biggest_sort = shown.biggest_sort.clicked(by, true);
-            cx.notify();
-        }
+        self.biggest_sort = self.biggest_sort.clicked(by, true);
+        cx.notify();
     }
+}
 
-    fn body(&self, shown: &Shown, palette: &Palette, cx: &mut Context<Self>) -> Div {
-        let summary = &shown.summary;
+impl Render for SpawnTables {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = Palette::from_theme(&bviz_ui_theme::theme(window, cx));
+        let summary = &self.summary;
         let content = div()
             .id("spawn-time")
             .flex()
@@ -236,47 +198,51 @@ impl SpawnTimePanel {
                 }
                 let runners: Vec<GroupRow> =
                     summary.runners.iter().map(|r| r.sum.clone()).collect();
-                let phase = shown.phase(cx);
+                let phase = self.phase(cx);
                 content
                     .child(section(
                         "By runner",
                         None,
-                        group_table("runner", plain_header("Runner", palette), &runners, palette),
-                        palette,
+                        group_table(
+                            "runner",
+                            plain_header("Runner", &palette),
+                            &runners,
+                            &palette,
+                        ),
+                        &palette,
                     ))
                     .child(section(
                         "By mnemonic",
-                        Some(labelled("Runner", shown.runner_picker.clone())),
+                        Some(labelled("Runner", self.runner_picker.clone())),
                         group_table(
                             "mnemonic",
-                            sorting_header(shown.sort, palette, cx),
-                            &shown.runner(cx).mnemonics,
-                            palette,
+                            sorting_header(self.sort, &palette, cx),
+                            &self.runner(cx).mnemonics,
+                            &palette,
                         ),
-                        palette,
+                        &palette,
                     ))
                     .child(section(
                         "Longest in a phase",
-                        Some(labelled("Phase", shown.phase_picker.clone())),
-                        top_table(phase, &summary.top[phase.index()], &summary.repos, palette),
-                        palette,
+                        Some(labelled("Phase", self.phase_picker.clone())),
+                        top_table(phase, &summary.top[phase.index()], &summary.repos, &palette),
+                        &palette,
                     ))
                     .child(section(
                         "Largest in bytes",
                         None,
-                        biggest_table(shown.biggest_sort, summary, palette, cx),
-                        palette,
+                        biggest_table(self.biggest_sort, summary, &palette, cx),
+                        &palette,
                     ))
             });
         div()
             .relative()
+            .size_full()
             .flex()
-            .flex_1()
-            .min_h_0()
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|panel, e: &MouseDownEvent, _, cx| {
-                    if panel.scroll.press(e.position) {
+                cx.listener(|tables, e: &MouseDownEvent, _, cx| {
+                    if tables.scroll.press(e.position) {
                         cx.stop_propagation();
                     }
                     cx.notify();
@@ -285,10 +251,53 @@ impl SpawnTimePanel {
             .child(content)
             .child(list_scrollbar(
                 cx.entity(),
-                |panel: &SpawnTimePanel| &panel.scroll,
-                |panel: &mut SpawnTimePanel| &mut panel.scroll,
+                |tables: &SpawnTables| &tables.scroll,
+                |tables: &mut SpawnTables| &mut tables.scroll,
                 palette.scroll,
             ))
+    }
+}
+
+/// The spawn time of an execution log by phase: summed per runner and per
+/// mnemonic, and the spawns that spent longest in one phase. Beside it, the
+/// spawns that wrote or read the most.
+pub struct SpawnTimePanel {
+    focus: FocusHandle,
+    model: Entity<ExecLogModel>,
+    /// `None` until the log is loaded, the model's placeholder showing instead.
+    tables: Option<Entity<SpawnTables>>,
+    legend: Entity<LegendState>,
+    _model_observer: Subscription,
+}
+
+impl SpawnTimePanel {
+    pub(crate) fn new(model: Entity<ExecLogModel>, cx: &mut Context<Self>) -> Self {
+        let model_observer = cx.observe(&model, |this, _, cx| {
+            this.show_loaded(cx);
+            cx.notify();
+        });
+        let focus = cx.focus_handle();
+        let legend = cx.new(|cx| LegendState::new(focus.clone(), cx));
+        let mut panel = Self {
+            focus,
+            model,
+            tables: None,
+            legend,
+            _model_observer: model_observer,
+        };
+        panel.show_loaded(cx);
+        panel
+    }
+
+    fn show_loaded(&mut self, cx: &mut Context<Self>) {
+        if self.tables.is_some() {
+            return;
+        }
+        let Source::Loaded(summary) = self.model.read(cx).source() else {
+            return;
+        };
+        let summary = summary.get().clone();
+        self.tables = Some(cx.new(|cx| SpawnTables::new(summary, cx)));
     }
 }
 
@@ -512,17 +521,16 @@ fn plain_header(name_title: &'static str, palette: &Palette) -> Div {
     )
 }
 
-/// A header cell of `column` titled `title`, which `sort` applies to the
-/// panel on a click to sort its table by `what`; `sorted` is as [`Sort::of`]
-/// gives it.
+/// A header cell of `column` titled `title`, whose click `sort` applies to
+/// the tables; `sorted` is as [`Sort::of`] gives it.
 fn sorting_cell(
     column: Column,
     title: &'static str,
     hint: SharedString,
     sorted: Option<bool>,
     palette: &Palette,
-    cx: &mut Context<SpawnTimePanel>,
-    sort: impl Fn(&mut SpawnTimePanel, &mut Context<SpawnTimePanel>) + 'static,
+    cx: &mut Context<SpawnTables>,
+    sort: impl Fn(&mut SpawnTables, &mut Context<SpawnTables>) + 'static,
 ) -> AnyElement {
     let content = sort_header(
         title,
@@ -536,10 +544,10 @@ fn sorting_cell(
         .cursor_pointer()
         .hover(|style| style.bg(palette.colors.element_hover))
         .tooltip(TextTooltip::builder(hint, palette.colors.tooltip()))
-        .on_click(cx.listener(move |panel, e, _, cx| {
+        .on_click(cx.listener(move |tables, e, _, cx| {
             GESTURES.dispatch(Pointer::click(e), |intent| match intent {
                 SpawnTimeIntent::Sort => {
-                    sort(panel, cx);
+                    sort(tables, cx);
                     true
                 }
             });
@@ -549,7 +557,7 @@ fn sorting_cell(
 
 /// The header of a table of mnemonics, whose titles but the bar's and the
 /// note's sort it.
-fn sorting_header(sort: Sort<SortBy>, palette: &Palette, cx: &mut Context<SpawnTimePanel>) -> Div {
+fn sorting_header(sort: Sort<SortBy>, palette: &Palette, cx: &mut Context<SpawnTables>) -> Div {
     let cells = GROUP_COLUMNS.map(|column| {
         let (layout, title) = (column.layout(), column.title("Mnemonic"));
         match column.sorts() {
@@ -560,7 +568,7 @@ fn sorting_header(sort: Sort<SortBy>, palette: &Palette, cx: &mut Context<SpawnT
                 sort.of(by),
                 palette,
                 cx,
-                move |panel, cx| panel.sort_mnemonics(by, cx),
+                move |tables, cx| tables.sort_mnemonics(by, cx),
             ),
             None => cell(layout, title).into_any_element(),
         }
@@ -711,7 +719,7 @@ fn biggest_table(
     sort: Sort<ByteMeasure>,
     summary: &Summary,
     palette: &Palette,
-    cx: &mut Context<SpawnTimePanel>,
+    cx: &mut Context<SpawnTables>,
 ) -> Stateful<Div> {
     let mut measure_cell = |measure: ByteMeasure| {
         sorting_cell(
@@ -725,7 +733,7 @@ fn biggest_table(
             sort.of(measure),
             palette,
             cx,
-            move |panel, cx| panel.sort_biggest(measure, cx),
+            move |tables, cx| tables.sort_biggest(measure, cx),
         )
     };
     let header = header_row(
@@ -895,18 +903,30 @@ impl Render for SpawnTimePanel {
             .bg(palette.colors.background)
             .text_color(palette.colors.text)
             .text_sm();
-        match &self.shown {
-            Some(shown) => panel
-                .children(
-                    self.model
-                        .read(cx)
-                        .cut_off()
-                        .then(|| cut_off_note("execution log", "spawns", &palette.colors)),
-                )
-                .child(header(&shown.summary, &self.legend, &palette, window, cx))
-                .child(self.body(shown, &palette, cx)),
-            None => panel.children(self.model.read(cx).source().placeholder(&palette.colors)),
-        }
+        let Some(tables) = &self.tables else {
+            return panel.children(self.model.read(cx).source().placeholder(&palette.colors));
+        };
+        panel
+            .children(
+                self.model
+                    .read(cx)
+                    .cut_off()
+                    .then(|| cut_off_note("execution log", "spawns", &palette.colors)),
+            )
+            .child(header(
+                &tables.read(cx).summary,
+                &self.legend,
+                &palette,
+                window,
+                cx,
+            ))
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .child(cached_layer(tables.clone())),
+            )
     }
 }
 
