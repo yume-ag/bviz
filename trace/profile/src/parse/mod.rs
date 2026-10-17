@@ -1,7 +1,8 @@
 use std::fmt;
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 
+use bviz_input::Input;
 use bviz_invocation::{InvocationId, Recorded};
 use flate2::bufread::MultiGzDecoder;
 use serde::de::DeserializeSeed;
@@ -17,7 +18,7 @@ mod scanner;
 mod serde_events;
 
 use build::{Builder, Merge, seal};
-use decode::{decode, gzip_size_hint_from_file, latin1_cow};
+use decode::{decode, gzip_size_hint_at, latin1_cow};
 use pipeline::{
     TraceEventsArray, find_trace_events_array, find_trace_events_key, parse_gz_pipelined,
     parse_gz_pipelined_reader, parse_parallel,
@@ -148,27 +149,28 @@ fn timed<T>(label: &str, f: impl FnOnce() -> T) -> T {
 }
 
 impl Profile {
-    /// Loads a profile from a file, streaming the pipelined gzip decode directly
-    /// from disk so the file read overlaps decompression and parsing (see
-    /// [`parse_gz_pipelined`]). The pipeline is sized from [`gzip_size_hint`],
-    /// read from the file's trailer without pulling the whole file in. Anything
-    /// the pipeline declines — plain JSON, a small or oddly shaped stream, a
-    /// decode or parse failure — reads the whole file and goes through
-    /// [`from_whole_buffer`].
+    /// Loads the profile at `path`, as [`from_input`](Self::from_input) does.
     pub fn from_path(path: &Path) -> Result<Recorded<Profile>, LoadError> {
-        if let Ok(mut file) = std::fs::File::open(path)
-            && let Ok(Some(decoded_size)) = gzip_size_hint_from_file(&mut file)
-            && file.seek(SeekFrom::Start(0)).is_ok()
-            && let Some(profile) = timed("decode+parse (pipelined, streamed)", || {
-                parse_gz_pipelined_reader(
-                    BufReader::with_capacity(GZIP_READ_BUFFER_BYTES, &mut file),
-                    decoded_size,
-                )
-            })
-        {
+        Profile::from_input(Input::open(path).map_err(LoadError::Io)?)
+    }
+
+    /// Loads a profile, streaming the pipelined gzip decode of a seekable input
+    /// so the read overlaps decompression and parsing (see
+    /// [`parse_gz_pipelined`]). The pipeline is sized from [`gzip_size_hint`],
+    /// read from the input's trailer without pulling the whole input in.
+    /// Anything the pipeline declines — plain JSON, a small or oddly shaped
+    /// stream, a decode or parse failure — reads the whole input and goes
+    /// through [`from_whole_buffer`]; a stream, which cannot be read twice, is
+    /// read whole and goes through [`from_bytes`](Self::from_bytes).
+    pub fn from_input(input: Input) -> Result<Recorded<Profile>, LoadError> {
+        if input.seekable().is_none() {
+            let bytes = timed("read input", || input.read_all().map_err(LoadError::Io))?;
+            return Profile::from_bytes(&bytes);
+        }
+        if let Some(profile) = parse_gz_pipelined_input(&input) {
             return Ok(Recorded::Complete(profile));
         }
-        let bytes = timed("read file", || std::fs::read(path).map_err(LoadError::Io))?;
+        let bytes = timed("read input", || input.read_all().map_err(LoadError::Io))?;
         from_whole_buffer(&bytes)
     }
 
@@ -185,6 +187,19 @@ impl Profile {
         }
         from_whole_buffer(bytes)
     }
+}
+
+/// The pipelined decode streamed from a seekable gzipped `input`, sized from
+/// its trailer. `None` for an input the pipeline declines.
+fn parse_gz_pipelined_input(input: &Input) -> Option<Profile> {
+    if !input.head()?.starts_with(&GZIP_MAGIC) {
+        return None;
+    }
+    let decoded_size = gzip_size_hint_at(input.seekable()?, input.size()?)?;
+    let reader = BufReader::with_capacity(GZIP_READ_BUFFER_BYTES, input.reader()?);
+    timed("decode+parse (pipelined, streamed)", || {
+        parse_gz_pipelined_reader(reader, decoded_size)
+    })
 }
 
 /// Decodes a profile whole into memory and parses that text: the parser works
@@ -323,17 +338,11 @@ pub(crate) const BUILD_ID_KEY: &str = "build_id";
 /// many times the `otherData` object Bazel opens a profile with.
 const PROBE_HEAD_BYTES: u64 = 64 << 10;
 
-/// The invocation that wrote the profile at `path`, from the `otherData` ahead
-/// of its events, reading and inflating no more than a bounded head of the
-/// file. `None` when that head holds no such id, the file cannot be read, or
-/// `path` is not a regular file: reading a pipe could block, and would take
-/// from it bytes it yields only once.
-pub fn probe_invocation_id(path: &Path) -> Option<InvocationId> {
-    if !std::fs::metadata(path).ok()?.is_file() {
-        return None;
-    }
-    let file = std::fs::File::open(path).ok()?;
-    invocation_id_at_head(BufReader::new(file), PROBE_HEAD_BYTES)
+/// The invocation that wrote the profile `input` holds, from the `otherData`
+/// ahead of its events in the input's head. `None` when the head holds no such
+/// id.
+pub fn probe_invocation_id(input: &Input) -> Option<InvocationId> {
+    invocation_id_at_head(input.head()?, PROBE_HEAD_BYTES)
 }
 
 /// [`probe_invocation_id`] over the first `head_bytes` decoded bytes of a
@@ -1017,9 +1026,8 @@ mod tests {
         let dir = test_dir();
         let path = std::path::Path::new(&dir).join("probe.profile.gz");
         std::fs::write(&path, enc.finish().unwrap()).unwrap();
-        assert_eq!(probe_invocation_id(&path), InvocationId::new("abc"));
-        assert_eq!(probe_invocation_id(&path.with_extension("missing")), None);
-        assert_eq!(probe_invocation_id(std::path::Path::new(&dir)), None);
+        let input = Input::open(&path).expect("opens");
+        assert_eq!(probe_invocation_id(&input), InvocationId::new("abc"));
     }
 
     #[test]
@@ -1412,6 +1420,23 @@ mod tests {
                 .expect("bytes")
                 .into_inner(),
         );
+    }
+
+    #[test]
+    fn a_streamed_input_loads_whole() {
+        let json = chunkable_profile_json();
+        let stream = |bytes: Vec<u8>| {
+            let access = bviz_input::Access::Stream {
+                reader: Box::new(std::io::Cursor::new(bytes)),
+                size: None,
+            };
+            Input::new("stream".into(), access).expect("an in-memory input reads")
+        };
+        let serial = semantic(&parse_streaming(&json).expect("serial"));
+        for bytes in [json.clone().into_bytes(), gzip(&json)] {
+            let loaded = Profile::from_input(stream(bytes)).expect("loads");
+            assert_eq!(semantic(&loaded.into_inner()), serial);
+        }
     }
 
     #[test]

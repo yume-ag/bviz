@@ -15,6 +15,7 @@ clap = { workspace = true }
 gpui = { workspace = true }
 bviz_alloc = { path = "../alloc" }
 bviz_cli = { path = "../cli" }
+bviz_input = { workspace = true }
 bviz_invocation = { workspace = true }
 bviz_ui_console = { path = "../ui/console" }
 bviz_ui_execlog = { path = "../ui/execlog" }

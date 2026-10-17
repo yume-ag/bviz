@@ -681,6 +681,7 @@ version = "0.1.0"
 dependencies = [
  "bviz_alloc",
  "bviz_cli",
+ "bviz_input",
  "bviz_invocation",
  "bviz_ui_components",
  "bviz_ui_console",
@@ -843,6 +844,7 @@ dependencies = [
 name = "bviz_trace_profile"
 version = "0.1.0"
 dependencies = [
+ "bviz_input",
  "bviz_invocation",
  "bviz_parallel",
  "crossbeam-channel",
@@ -999,6 +1001,7 @@ version = "0.1.0"
 dependencies = [
  "bviz_alloc",
  "bviz_critical_path",
+ "bviz_input",
  "bviz_invocation",
  "bviz_label",
  "bviz_trace_layout",

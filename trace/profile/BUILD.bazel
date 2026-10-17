@@ -13,6 +13,7 @@ rust_library(
     ],
     deps = [
         "//invocation",
+        "//util/input",
         "//util/parallel",
         "@crates//:crossbeam-channel",
         "@crates//:crossbeam-utils",
