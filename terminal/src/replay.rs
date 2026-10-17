@@ -491,7 +491,9 @@ mod tests {
     fn sample_without_markers_falls_back_to_event_anchors() {
         // The committed sample was captured without --show_timestamps, so the
         // timeline is interpolated from build events, spanning a real duration.
-        let output = crate::parse(SAMPLE).expect("parse sample").into_inner();
+        let output = crate::output::read_slice(SAMPLE)
+            .expect("parse sample")
+            .into_inner();
         let replay = Replay::from_output(output);
         assert!(!replay.real_time());
         assert!(replay.frame_count() > 1);

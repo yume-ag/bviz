@@ -1,3 +1,4 @@
+load("@rules_rs//rs:rust_binary.bzl", "rust_binary")
 load("@rules_rs//rs:rust_library.bzl", "rust_library")
 load("@rules_rs//rs:rust_test.bzl", "rust_test")
 
@@ -21,6 +22,7 @@ rust_library(
     visibility = ["//ui/console:__pkg__"],
     deps = [
         "//invocation",
+        "//util/input",
         "@bazel_build_event_proto//:bazel_build_event_rust_proto",
         "@crates//:alacritty_terminal",
         "@crates//:prost",
@@ -32,4 +34,15 @@ rust_test(
     size = "small",
     compile_data = ["testdata/sample.bep"],
     crate = ":terminal",
+)
+
+rust_binary(
+    name = "bench_load",
+    srcs = ["bench/load.rs"],
+    crate_name = "bench_load",
+    deps = [
+        ":terminal",
+        "//alloc",
+        "//util/input",
+    ],
 )

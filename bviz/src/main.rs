@@ -35,11 +35,13 @@ impl Load {
                 bviz_ui_trace::invocation_id,
                 Self::Trace,
             ),
-            Source::Console(source) => File {
-                kind: Kind::Bep,
-                invocation: bviz_ui_console::invocation_id(&source),
-                file: Self::Console(source.into()),
-            },
+            Source::Console(source) => Self::read(
+                Kind::Bep,
+                Input::open(&source.path),
+                source,
+                bviz_ui_console::invocation_id,
+                Self::Console,
+            ),
             Source::ExecLog(source) => Self::read(
                 Kind::ExecLog,
                 Input::open(&source.path),

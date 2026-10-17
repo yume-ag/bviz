@@ -8,6 +8,7 @@ rust_library(
     visibility = [
         "//bviz:__pkg__",
         "//execlog:__pkg__",
+        "//terminal:__pkg__",
         "//trace/layout:__pkg__",
         "//trace/profile:__pkg__",
         "//ui/execlog:__pkg__",

@@ -158,6 +158,14 @@ impl Input {
     }
 }
 
+/// An empty vector with room for `capacity` items where that much memory can
+/// be had, and growing as it fills where it cannot.
+pub fn reserved<T>(capacity: usize) -> Vec<T> {
+    let mut items = Vec::new();
+    let _ = items.try_reserve_exact(capacity);
+    items
+}
+
 /// Reserves room in `buf` for `additional` more bytes, failing with
 /// [`io::ErrorKind::OutOfMemory`] where that much memory cannot be had.
 fn reserve_exact(buf: &mut Vec<u8>, additional: u64) -> io::Result<()> {

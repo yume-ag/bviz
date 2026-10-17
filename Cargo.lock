@@ -827,6 +827,7 @@ name = "bviz_terminal"
 version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
+ "bviz_input",
  "bviz_invocation",
  "prost",
  "prost-types",
@@ -883,6 +884,7 @@ dependencies = [
 name = "bviz_ui_console"
 version = "0.1.0"
 dependencies = [
+ "bviz_input",
  "bviz_invocation",
  "bviz_terminal",
  "bviz_ui_assets",

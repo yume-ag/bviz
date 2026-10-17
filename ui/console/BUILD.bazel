@@ -19,6 +19,7 @@ rust_library(
         "//ui/playback",
         "//ui/theme",
         "//ui/workspace",
+        "//util/input",
         "@crates//:clap",
         "@crates//:gpui",
     ],
