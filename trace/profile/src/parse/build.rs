@@ -561,6 +561,10 @@ fn merge_lanes(tasks: &mut [TidTask]) {
         // Thread sizes are heavily skewed toward a few big evaluator lanes, so
         // workers steal tasks one thread at a time.
         let workers = worker_count().min(tasks.len());
+        if workers <= 1 {
+            tasks.iter_mut().for_each(merge_lane);
+            return;
+        }
         let stealer = std::sync::Mutex::new(tasks.iter_mut());
         std::thread::scope(|scope| {
             for _ in 0..workers {

@@ -914,6 +914,7 @@ dependencies = [
 name = "bviz_critical_path"
 version = "0.1.0"
 dependencies = [
+ "bviz_invocation",
  "bviz_trace_profile",
 ]
 
