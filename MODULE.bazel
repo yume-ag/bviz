@@ -303,8 +303,6 @@ crate.annotation_select(
 # that bind them.
 crate.annotation(
     crate = "xkbcommon",
-    patch_args = ["-p1"],
-    patches = ["//patches/xkbcommon:xkbcommon-drop-x11.patch"],
     deps = ["//third_party:xkbcommon"],
 )
 crate.annotation(
