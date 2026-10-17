@@ -241,11 +241,6 @@ crate.annotation(
 # build script takes its path from GPUI_SCENE_HEADER. The runtime_shaders feature
 # stitches that header into the shader source for the app to compile at run time;
 # the other path shells out to `xcrun metal`, which only macOS has.
-#
-# rustc compiles against an absolute CARGO_MANIFEST_DIR, and gpui retains that
-# value in GPUI_MANIFEST_DIR, which bakes the exec root into every build of the
-# crate. Point it at the manifest's path within gpui's source tree so the
-# compiled output stays independent of where the build ran.
 crate.annotation(
     additive_build_file_content = """filegroup(
     name = "licence",
@@ -282,7 +277,6 @@ filegroup(
         "//patches/gpui:gpui-tooltip-dismiss-on-escape.patch",
         "//patches/gpui:gpui-tooltip-optional.patch",
     ],
-    rustc_env = {"CARGO_MANIFEST_DIR": "crates/gpui"},
 )
 crate.annotation(
     additive_build_file_content = """filegroup(
