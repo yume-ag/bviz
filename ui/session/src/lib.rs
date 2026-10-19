@@ -3,6 +3,15 @@
 use bviz_invocation::{ReporterId, Session};
 use gpui::{App, Context, Entity, Subscription};
 
+/// Whether a file opens as one of an invocation's outputs, whose views read
+/// what it tells its session.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Sharing {
+    /// A file in a document of its own, whose session no other file reads.
+    Alone,
+    Invocation,
+}
+
 /// What a model reports to its invocation's session, all of it withdrawn when
 /// the model is released.
 pub struct Reports {

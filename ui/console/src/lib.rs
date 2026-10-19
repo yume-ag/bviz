@@ -60,12 +60,11 @@ impl From<ConsoleSource> for Load {
 }
 
 /// The views replaying the build `load` reads, which tells `session` what its
-/// stream knows of the invocation where it is opened as part of one, and plays
-/// on `clock` where its document plays back.
+/// stream knows of its document's invocation, and plays on `clock`.
 pub fn open(
     load: impl Into<Load>,
-    session: Option<Entity<Session>>,
-    clock: Option<Entity<Clock>>,
+    session: Entity<Session>,
+    clock: Entity<Clock>,
     _window: &mut Window,
     cx: &mut App,
 ) -> Member {
@@ -103,8 +102,9 @@ pub fn run() {
         |cli: Cli| cli.sources().map(Load::from),
         &format!("--{BEP_LONG} or a file argument"),
         |load, window, cx| {
+            let session = cx.new(|_| Session::default());
             let clock = cx.new(|_| Clock::default());
-            Document::from(open(load, None, Some(clock.clone()), window, cx)).playing_on(clock)
+            Document::from(open(load, session, clock.clone(), window, cx)).playing_on(clock)
         },
         &[console::register_keys],
     );

@@ -7,6 +7,7 @@ use bviz_cli::{Cli, Request, Source, Sources};
 use bviz_input::Input;
 use bviz_invocation::{InvocationId, Session};
 use bviz_ui_playback::Clock;
+use bviz_ui_session::Sharing;
 use bviz_ui_workspace::{Document, Member};
 use clap::Parser;
 use gpui::{App, AppContext, Entity, Window};
@@ -90,47 +91,54 @@ impl Load {
         }
     }
 
-    /// The views of what this reads, sharing `session` with the other files of
-    /// its invocation where it is opened as one of them, and following `clock`
-    /// where its document plays back.
+    /// The views of what this reads, sharing `session` and `clock` with the
+    /// other files of its document, which `sharing` says whether it is an
+    /// invocation's.
     fn open(
         self,
-        session: Option<&Entity<Session>>,
-        clock: Option<&Entity<Clock>>,
+        session: &Entity<Session>,
+        clock: &Entity<Clock>,
+        sharing: Sharing,
         window: &mut Window,
         cx: &mut App,
     ) -> Member {
-        let session = session.cloned();
+        let (session, clock) = (session.clone(), clock.clone());
         match self {
-            Self::Graph(load) => bviz_ui_graph::open(load, session, clock.cloned(), window, cx),
-            Self::Trace(load) => bviz_ui_trace::open(load, session, clock.cloned(), window, cx),
-            Self::Console(load) => bviz_ui_console::open(load, session, clock.cloned(), window, cx),
-            Self::ExecLog(load) => bviz_ui_execlog::open(load, session, window, cx),
+            Self::Graph(load) => bviz_ui_graph::open(load, session, clock, sharing, window, cx),
+            Self::Trace(load) => bviz_ui_trace::open(load, session, clock, window, cx),
+            Self::Console(load) => bviz_ui_console::open(load, session, clock, window, cx),
+            Self::ExecLog(load) => bviz_ui_execlog::open(load, session, sharing, window, cx),
         }
     }
 }
 
 /// The document `opening` is shown as: a file's own, or an invocation's files
-/// joined under a label naming it. A build's console replay plays back alone;
-/// a profile or a graph alone has nothing to play back with. Every invocation
-/// carries a clock; one whose files give it no time to play, such as an
-/// execution log with a graph, shows no playback bar.
+/// joined under a label naming it, each with a session and a clock of its own.
+/// The window offers playback for a build's console replay alone and for every
+/// invocation; one whose files give it no time to play, such as an execution
+/// log with a graph, shows no playback bar.
 fn open(opening: Opening<Load>, window: &mut Window, cx: &mut App) -> Document {
+    let session = cx.new(|_| Session::default());
     match opening {
-        Opening::Alone(load @ Load::Console(_)) => {
+        Opening::Alone(load) => {
             let clock = cx.new(|_| Clock::default());
-            Document::from(load.open(None, Some(&clock), window, cx)).playing_on(clock)
+            let plays_alone = matches!(load, Load::Console(_));
+            let document = Document::from(load.open(&session, &clock, Sharing::Alone, window, cx));
+            if plays_alone {
+                document.playing_on(clock)
+            } else {
+                document
+            }
         }
-        Opening::Alone(load) => load.open(None, None, window, cx).into(),
         Opening::Invocation {
             id,
             first,
             second,
             rest,
         } => {
-            let session = cx.new(|_| Session::default());
             let clock = cx.new(|_| Clock::joined());
-            let mut open = |load: Load| load.open(Some(&session), Some(&clock), window, cx);
+            let mut open =
+                |load: Load| load.open(&session, &clock, Sharing::Invocation, window, cx);
             let first = open(first);
             let second = open(second);
             let mut others = Vec::with_capacity(rest.len());

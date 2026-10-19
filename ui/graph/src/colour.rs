@@ -71,8 +71,8 @@ impl Colouring {
 pub(crate) struct Offered {
     /// Its nodes carry the time of the actions landing on them.
     timed: bool,
-    /// Its document plays back, and its nodes carry the execution attempts
-    /// landing on them.
+    /// Its nodes carry the execution attempts landing on them, which its
+    /// document's clock plays back.
     playable: bool,
 }
 
@@ -81,8 +81,7 @@ impl Offered {
         let loaded = model.loaded();
         Offered {
             timed: loaded.is_some_and(|loaded| loaded.times().is_ok()),
-            playable: model.clock().is_some()
-                && loaded.is_some_and(|loaded| loaded.states().is_some()),
+            playable: loaded.is_some_and(|loaded| loaded.states().is_some()),
         }
     }
 }

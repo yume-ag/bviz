@@ -699,7 +699,7 @@ impl Render for TracePanel {
                 let unaligned = self
                     .model
                     .read(cx)
-                    .unaligned()
+                    .unaligned(cx)
                     .then(|| unaligned_note("profile", &theme.colors));
                 let cut_off = self
                     .model
@@ -1793,13 +1793,12 @@ impl From<TraceSource> for Load {
 
 /// The views rendering the profile `load` reads: the timeline, the flame graph
 /// and stats that aggregate whatever tracks it has selected, and the critical
-/// path. Where it is opened as part of an invocation's `session`,
-/// it names what the profile holds an id of by what the session knows, and
-/// plays on `clock` where its document plays back.
+/// path. It names what the profile holds an id of by what its document's
+/// `session` knows, and plays on `clock`.
 pub fn open(
     load: impl Into<Load>,
-    session: Option<Entity<Session>>,
-    clock: Option<Entity<Clock>>,
+    session: Entity<Session>,
+    clock: Entity<Clock>,
     _window: &mut Window,
     cx: &mut App,
 ) -> Member {
@@ -1839,7 +1838,11 @@ pub fn run() {
         bviz_ui_workspace::WINDOW_SIZE,
         |cli: Cli| cli.trace.sources().map(Load::from),
         &format!("--{PROFILE_LONG}"),
-        |load, window, cx| open(load, None, None, window, cx).into(),
+        |load, window, cx| {
+            let session = cx.new(|_| Session::default());
+            let clock = cx.new(|_| Clock::default());
+            open(load, session, clock, window, cx).into()
+        },
         &[register_keys],
     );
 }

@@ -16,6 +16,7 @@ use bviz_input::Input;
 use bviz_invocation::{InvocationId, Session};
 use bviz_ui_components::{Pending, declare_scopes, legend_key_bindings};
 use bviz_ui_execlog_args::{EXEC_LOG_LONG, ExecLogArgs, ExecLogSource};
+use bviz_ui_session::Sharing;
 use bviz_ui_workspace::{Member, ViewSpec, document_label};
 use clap::Parser;
 use gpui::{App, Entity, SharedString, Window, prelude::*};
@@ -71,16 +72,17 @@ fn read_log(input: Input) -> Result<Read, String> {
     })
 }
 
-/// The view of the spawn time the log `load` reads. Where it is opened as
-/// part of an invocation's `session`, the log's spawns are reported to it.
+/// The view of the spawn time the log `load` reads, which reports the log's
+/// spawns to its document's `session` as `sharing` asks.
 pub fn open(
     load: impl Into<Load>,
-    session: Option<Entity<Session>>,
+    session: Entity<Session>,
+    sharing: Sharing,
     _window: &mut Window,
     cx: &mut App,
 ) -> Member {
     let load = load.into();
-    let model = cx.new(|cx| ExecLogModel::reading(load.log, session, cx));
+    let model = cx.new(|cx| ExecLogModel::reading(load.log, session, sharing, cx));
     let view = ViewSpec::new(move |cx| cx.new(|cx| SpawnTimePanel::new(model.clone(), cx)));
     Member::new(load.title, view, Vec::new())
 }
@@ -101,7 +103,10 @@ pub fn run() {
         bviz_ui_workspace::TEXT_WINDOW_SIZE,
         |cli: Cli| cli.exec_log.sources().map(Load::from),
         &format!("--{EXEC_LOG_LONG}"),
-        |load, window, cx| open(load, None, window, cx).into(),
+        |load, window, cx| {
+            let session = cx.new(|_| Session::default());
+            open(load, session, Sharing::Alone, window, cx).into()
+        },
         &[register_keys],
     );
 }

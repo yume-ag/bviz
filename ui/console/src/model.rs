@@ -56,10 +56,9 @@ const UNRECORDED_ORIGIN: EpochMicros = EpochMicros::from_millis(0);
 /// being read and reconstructed afresh.
 pub(crate) struct ConsoleModel {
     source: Source,
-    on_clock: Option<OnClock>,
-    /// What the build tells its invocation's session, where it is read as one
-    /// of the invocation's outputs.
-    reports: Option<Reports>,
+    on_clock: OnClock,
+    /// What the build tells its document's session.
+    reports: Reports,
     /// The read that fills `source`, held so that it is not cancelled.
     _load: Task<()>,
 }
@@ -69,37 +68,28 @@ impl ConsoleModel {
     /// finishes and failed where it does not.
     pub(crate) fn reading(
         stream: Pending<Stream>,
-        session: Option<Entity<Session>>,
-        clock: Option<Entity<Clock>>,
+        session: Entity<Session>,
+        clock: Entity<Clock>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let reports = session.map(|session| Reports::new(session, cx));
         let load = load_in_background(
             cx,
             move || stream.join(),
             move |model, result, cx| {
                 model.source = match result {
-                    Ok(stream) => Source::Loaded(match &model.reports {
-                        Some(reports) => reports.report(cx, |session, by, cx| {
-                            cx.notify();
-                            stream.replay_telling(session, by)
-                        }),
-                        None => stream.replay,
-                    }),
+                    Ok(stream) => Source::Loaded(model.reports.report(cx, |session, by, cx| {
+                        cx.notify();
+                        stream.replay_telling(session, by)
+                    })),
                     Err(err) => Source::Failed(err),
                 };
                 model.place_on_clock(cx);
             },
         );
-        let on_clock = clock.map(|clock| OnClock::new(clock, cx, Self::place_on_clock));
-        Self::new(load, on_clock, reports)
-    }
-
-    fn new(load: Task<()>, on_clock: Option<OnClock>, reports: Option<Reports>) -> Self {
         Self {
             source: Source::Loading,
-            on_clock,
-            reports,
+            on_clock: OnClock::new(clock, cx, Self::place_on_clock),
+            reports: Reports::new(session, cx),
             _load: load,
         }
     }
@@ -107,40 +97,34 @@ impl ConsoleModel {
     /// Registers the replay with the clock as what it plays, or withdraws it
     /// where the replay gives the clock no time.
     fn place_on_clock(&mut self, cx: &mut Context<Self>) {
-        let Some(on_clock) = &mut self.on_clock else {
-            return;
-        };
-        let played = match &self.source {
-            Source::Loaded(replay) => {
-                let replay = replay.get();
-                let alignment = on_clock.clock().read(cx).alignment();
-                origin(replay, alignment).and_then(|at| clock_source(replay, at))
-            }
-            _ => None,
-        };
-        on_clock.place(played, cx);
+        let played = self.replay().and_then(|replay| {
+            let alignment = self.on_clock.clock().read(cx).alignment();
+            origin(replay, alignment).and_then(|at| clock_source(replay, at))
+        });
+        self.on_clock.place(played, cx);
     }
 
-    /// The clock the views follow, where the document plays back.
-    pub(crate) fn clock(&self) -> Option<&Entity<Clock>> {
-        self.on_clock.as_ref().map(OnClock::clock)
+    /// The clock the views follow.
+    pub(crate) fn clock(&self) -> &Entity<Clock> {
+        self.on_clock.clock()
     }
 
     /// The frame the views show, `None` while there is no replay: the one the
     /// clock's time reaches, else the last, showing the finished build.
     pub(crate) fn shown_frame(&self, cx: &App) -> Option<usize> {
         let replay = self.replay()?;
-        let reached = self.on_clock.as_ref().and_then(|on_clock| {
-            let clock = on_clock.clock().read(cx);
-            let origin = origin(replay, clock.alignment())?;
-            let now = clock.now()?;
+        let reached = {
+            let clock = self.clock().read(cx);
+            origin(replay, clock.alignment()).zip(clock.now())
+        }
+        .map(|(origin, now)| {
             // At the instants `clock_source` marks the frames at, so stepping
             // to a mark shows its frame.
-            Some(last_reached(
+            last_reached(
                 replay.frame_count(),
                 |frame| origin.plus_secs_f64(replay.time_of(frame)),
                 now,
-            ))
+            )
         });
         Some(reached.unwrap_or(replay.frame_count() - 1))
     }
@@ -148,12 +132,8 @@ impl ConsoleModel {
     /// Whether the replay, joined to other files, records no wall-clock time
     /// to stand beside theirs on the clock.
     pub(crate) fn unaligned(&self, cx: &App) -> bool {
-        match (self.replay(), &self.on_clock) {
-            (Some(replay), Some(on_clock)) => {
-                origin(replay, on_clock.clock().read(cx).alignment()).is_none()
-            }
-            _ => false,
-        }
+        self.replay()
+            .is_some_and(|replay| origin(replay, self.clock().read(cx).alignment()).is_none())
     }
 
     pub(crate) fn source(&self) -> &Source {
@@ -163,14 +143,19 @@ impl ConsoleModel {
     /// The timeline a view plays, and `None` while the read has landed none, for
     /// which a view draws [`Source::placeholder`] in its stead.
     pub(crate) fn replay(&self) -> Option<&Replay> {
-        match &self.source {
-            Source::Loaded(replay) => Some(replay.get()),
-            _ => None,
-        }
+        replay_of(&self.source)
     }
 
     pub(crate) fn cut_off(&self) -> bool {
         self.source.is_cut_off()
+    }
+}
+
+/// The timeline `source` landed, if it has.
+fn replay_of(source: &Source) -> Option<&Replay> {
+    match source {
+        Source::Loaded(replay) => Some(replay.get()),
+        _ => None,
     }
 }
 
@@ -243,12 +228,6 @@ mod tests {
     }
     use bviz_invocation::{BuildOutcome, ConfiguredTarget};
 
-    /// A build whose read has not finished, for exercising what a view reads
-    /// off it before one has.
-    fn reading() -> ConsoleModel {
-        ConsoleModel::new(Task::ready(()), None, None)
-    }
-
     /// One `BuildEvent` carrying a `Progress` payload whose `stderr` is `text`,
     /// length-delimited as a `--build_event_binary_file` carries it. Bazel emits
     /// the build's console output as a run of these, one per progress event, and
@@ -312,12 +291,10 @@ mod tests {
     }
 
     /// A two-frame build, read the way one named on the command line is read.
-    fn loaded() -> ConsoleModel {
+    fn loaded() -> Source {
         let stream = [progress_event("Loading: \n"), progress_event("Analyzing\n")].concat();
         let stream = Stream::from_slice(&stream).expect("the stream parses");
-        let mut model = reading();
-        model.source = Source::Loaded(stream.replay);
-        model
+        Source::Loaded(stream.replay)
     }
 
     /// A stream that lands in a session tells it of the configurations it
@@ -395,17 +372,16 @@ mod tests {
     /// whether or not a panel is showing one.
     #[test]
     fn a_build_still_being_read_has_nothing_to_play() {
-        assert!(reading().replay().is_none());
+        assert!(replay_of(&Source::Loading).is_none());
     }
 
     /// A read that failed leaves nothing to play and holds on to why, which is
     /// what a view shows in the timeline's place.
     #[test]
     fn a_build_that_could_not_be_read_says_why() {
-        let mut model = reading();
-        model.source = Source::Failed("build.bep: no such file".into());
-        assert!(model.replay().is_none());
-        let Source::Failed(why) = model.source() else {
+        let source = Source::Failed("build.bep: no such file".into());
+        assert!(replay_of(&source).is_none());
+        let Source::Failed(why) = &source else {
             panic!("the read failed")
         };
         assert_eq!(why, "build.bep: no such file");
@@ -451,22 +427,21 @@ mod tests {
         let whole = [progress_event("Loading: \n"), last_event()].concat();
         let cut = &whole[..whole.len() - 1];
         for (stream, cut_off) in [(&whole[..], false), (cut, true)] {
-            let mut model = reading();
-            model.source = Source::Loaded(
+            let source = Source::Loaded(
                 Stream::from_slice(stream)
                     .expect("the stream parses")
                     .replay,
             );
-            assert_eq!(model.cut_off(), cut_off);
-            assert_eq!(model.replay().expect("a replay").frame_count(), 1);
+            assert_eq!(source.is_cut_off(), cut_off);
+            assert_eq!(replay_of(&source).expect("a replay").frame_count(), 1);
         }
     }
 
     /// Every progress event of the stream read is a frame the reader can seek to.
     #[test]
     fn a_loaded_build_plays_what_was_read() {
-        let model = loaded();
-        let replay = model.replay().expect("the read landed a build");
+        let source = loaded();
+        let replay = replay_of(&source).expect("the read landed a build");
         assert_eq!(replay.frame_count(), 2);
     }
 }

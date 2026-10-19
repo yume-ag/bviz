@@ -18,6 +18,7 @@ rust_binary(
         "//ui/execlog:execlog_lib",
         "//ui/graph:graph_lib",
         "//ui/playback",
+        "//ui/session",
         "//ui/trace:trace_lib",
         "//ui/workspace",
         "//util/input",

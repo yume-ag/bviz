@@ -5,6 +5,7 @@ rust_library(
     srcs = glob(["src/**/*.rs"]),
     crate_name = "bviz_ui_session",
     visibility = [
+        "//bviz:__pkg__",
         "//ui/console:__pkg__",
         "//ui/execlog:__pkg__",
         "//ui/graph:__pkg__",
