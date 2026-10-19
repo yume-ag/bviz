@@ -26,13 +26,13 @@ use bviz_ui_playback::{
 use bviz_ui_shell::Chrome;
 use bviz_ui_theme::ThemeColors;
 use gpui::{
-    Action, AnyElement, AnyWindowHandle, App, Axis, Bounds, Canvas, Div, ElementId, Entity,
-    EntityId, ExternalPaths, FocusHandle, Focusable, IconScale, IntoElement, KeyBinding,
-    KeyContext, MouseDownEvent, PathPromptOptions, Pixels, PlatformDragEvent, Point, Rems, Render,
-    SharedString, Size, Stateful, Subscription, WeakEntity, Window, actions, deferred, div, point,
-    prelude::*, px,
+    Action, AnyElement, AnyView, AnyWindowHandle, App, Axis, Bounds, Canvas, Div, ElementId,
+    Entity, EntityId, EventEmitter, ExternalPaths, FocusHandle, Focusable, IconScale, IntoElement,
+    KeyBinding, KeyContext, MouseDownEvent, PathPromptOptions, Pixels, PlatformDragEvent, Point,
+    Rems, Render, SharedString, Size, Stateful, Subscription, WeakEntity, Window, actions,
+    deferred, div, point, prelude::*, px,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::iter;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -544,9 +544,11 @@ struct Note {
     text: SharedString,
 }
 
-/// The window's own dialog asking for paths, and what it answers into.
-struct AskingForPaths {
-    prompt: Entity<PathPrompt>,
+/// A dialog standing over the window, and what it answers into.
+struct Asking {
+    dialog: AnyView,
+    /// Where the dialog's keys are read.
+    answer: FocusHandle,
     _answered: Subscription,
 }
 
@@ -587,8 +589,9 @@ pub struct Workspace {
     notes: Vec<Note>,
     /// How many notes the window has been told, which numbers the next.
     notes_told: u64,
-    /// The window's own dialog asking for files to open, while it stands open.
-    path_prompt: Option<AskingForPaths>,
+    /// The dialogs waiting on an answer, in the order they were asked; the
+    /// first stands over the window, and the rest wait their turn behind it.
+    dialogs: VecDeque<Asking>,
     /// Draws the window afresh as the session's windows open and close, which
     /// changes where a panel of this one can be carried to.
     _windows_changed: Subscription,
@@ -632,7 +635,7 @@ impl Workspace {
             playback: None,
             notes: Vec::new(),
             notes_told: 0,
-            path_prompt: None,
+            dialogs: VecDeque::new(),
             _windows_changed: windows_changed,
             _documents_changed: documents_changed,
         };
@@ -799,19 +802,51 @@ impl Workspace {
     /// Opens the window's own dialog asking for the paths of files to open.
     fn ask_for_paths(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let prompt = cx.new(PathPrompt::new);
-        let answered = cx.subscribe_in(&prompt, window, |workspace, _, event, window, cx| {
-            workspace.path_prompt = None;
-            if let PathPromptEvent::Chosen(paths) = event {
-                workspace.open_paths(paths.clone(), window, cx);
-            }
-            workspace.focus_active_panel(window, cx);
-            cx.notify();
-        });
-        window.focus(&prompt.read(cx).focus_handle(cx), cx);
-        self.path_prompt = Some(AskingForPaths {
+        self.ask(
             prompt,
+            |workspace, event, window, cx| {
+                if let PathPromptEvent::Chosen(paths) = event {
+                    workspace.open_paths(paths.clone(), window, cx);
+                }
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Stands `dialog` over the window, once every dialog asked before it is
+    /// answered, and hands `answered` the first event it emits, which is its
+    /// answer: the dialog leaves the window as it emits one.
+    pub fn ask<V, E>(
+        &mut self,
+        dialog: Entity<V>,
+        answered: impl Fn(&mut Self, &E, &mut Window, &mut Context<Self>) + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) where
+        V: Render + Focusable + EventEmitter<E>,
+        E: 'static,
+    {
+        let asked = dialog.entity_id();
+        let answered = cx.subscribe_in(&dialog, window, move |workspace, _, event, window, cx| {
+            workspace.dismiss(asked, window, cx);
+            answered(workspace, event, window, cx);
+        });
+        let answer = dialog.focus_handle(cx);
+        self.dialogs.push_back(Asking {
+            dialog: dialog.into(),
+            answer,
             _answered: answered,
         });
+        self.focus_active_panel(window, cx);
+        cx.notify();
+    }
+
+    /// Takes the dialog `asked` names off the window.
+    fn dismiss(&mut self, asked: EntityId, window: &mut Window, cx: &mut Context<Self>) {
+        self.dialogs
+            .retain(|asking| asking.dialog.entity_id() != asked);
+        self.focus_active_panel(window, cx);
         cx.notify();
     }
 
@@ -1330,8 +1365,9 @@ impl Workspace {
         key_context
     }
 
-    /// Hands focus to the panel the active pane shows. Which panel that is is
-    /// read here and not before: a menu names rows that close a panel and that
+    /// Hands focus to where it rests in this window, the
+    /// [`content_focus`](Self::content_focus). Which panel that is is read
+    /// here and not before: a menu names rows that close a panel and that
     /// move one to another window, so the panel a gesture was opened over may
     /// be gone by the time focus is to be given back, and a focus handle naming
     /// nothing this window draws leaves every one of the window's own key
@@ -1340,9 +1376,14 @@ impl Workspace {
         window.focus(&self.content_focus(cx), cx);
     }
 
-    /// Where focus rests in this window: on the panel the active pane shows,
-    /// or on the chrome where the window frames no panel.
+    /// Where focus rests in this window: on the dialog standing over it while
+    /// one awaits an answer, so that nothing changing underneath takes its
+    /// keys, else on the panel the active pane shows, or on the chrome where
+    /// the window frames no panel.
     pub(crate) fn content_focus(&self, cx: &App) -> FocusHandle {
+        if let Some(asking) = self.dialogs.front() {
+            return asking.answer.clone();
+        }
         match self.active_panel(cx) {
             Some(panel) => panel.focus_handle(cx),
             None => self.window_focus.clone(),
@@ -1869,14 +1910,16 @@ impl Workspace {
 
     /// Leaves the window framing nothing: closed where the session holds
     /// another window open, and standing empty where it is the last, so that
-    /// only closing a window itself ends the application.
+    /// only closing a window itself ends the application, or where a dialog
+    /// awaits an answer the window is to act on.
     fn frame_nothing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.replace_body(Body::Empty);
         self.playback = None;
         let here = cx.entity_id();
-        let closed = Documents::global(cx).update(cx, |documents, cx| {
-            documents.close_window_unless_last(here, cx)
-        });
+        let closed = self.dialogs.is_empty()
+            && Documents::global(cx).update(cx, |documents, cx| {
+                documents.close_window_unless_last(here, cx)
+            });
         if closed {
             window.remove_window();
         } else {
@@ -2780,9 +2823,9 @@ impl Render for Workspace {
         let body = towards::<FocusDown, MovePanelDown, SplitDown>(body, Side::Bottom, cx);
         let dragging = self.panel_drag_overlay(&colors, window, cx);
         let file_drop = self.file_drop_target(&colors, cx);
-        let path_prompt = self.path_prompt.as_ref().map(|asking| {
-            let answer = asking.prompt.focus_handle(cx);
-            dialog::over_window(div().child(asking.prompt.clone()), &answer, window, &colors)
+        let dialog = self.dialogs.front().map(|asking| {
+            let sheet = div().child(asking.dialog.clone());
+            dialog::over_window(sheet, &asking.answer, window, &colors)
         });
         let menu = self
             .frame()
@@ -2795,7 +2838,7 @@ impl Render for Workspace {
             .children(menu);
         // A sibling of the body, so that no key or action of the workspace's
         // reaches through the dialog to what it stands over.
-        div().size_full().child(body).children(path_prompt)
+        div().size_full().child(body).children(dialog)
     }
 }
 

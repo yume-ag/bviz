@@ -76,5 +76,7 @@ follows every rule below.
 
 Secondary is Ctrl on Linux and Windows and ⌘ on macOS; a gesture's `Held::SECONDARY` also
 accepts Control on macOS. A transient takes Escape in a key context of its own while open, and
-hands focus back to where it came from as it closes. A menu lets a modified keystroke through
-to the panel.
+hands focus back to where it came from as it closes. A window's dialog instead keeps focus
+while it stands, whatever changes beneath it, and once answered hands focus to the dialog
+waiting next, else to the active panel (`Workspace::content_focus`). A menu lets a modified
+keystroke through to the panel.
