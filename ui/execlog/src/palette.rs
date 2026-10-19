@@ -1,4 +1,4 @@
-//! The colours the spawn-time view paints with, resolved from the theme.
+//! The colours the execution log panels paint with, resolved from the theme.
 
 use bviz_execlog::Phase;
 use bviz_ui_components::ScrollbarColors;

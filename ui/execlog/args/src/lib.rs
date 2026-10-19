@@ -1,6 +1,6 @@
-//! The flags naming the compact execution logs spawn time is read from, and the
-//! documents they resolve to. Nothing here opens a window or draws, so a parse
-//! can be exercised without a display.
+//! The flags naming the compact execution logs spawn time and bytes are read
+//! from, and the documents they resolve to. Nothing here opens a window or
+//! draws, so a parse can be exercised without a display.
 
 use clap::Args;
 use std::path::PathBuf;
@@ -8,9 +8,9 @@ use std::path::PathBuf;
 /// The long name of [`ExecLogArgs::exec_log`], for messages that name the flag.
 pub const EXEC_LOG_LONG: &str = "exec_log";
 
-/// The compact execution logs spawn time is read from.
+/// The compact execution logs spawn time and bytes are read from.
 #[derive(Args, Debug)]
-#[command(next_help_heading = "Spawn time by phase (one panel per file)")]
+#[command(next_help_heading = "Spawn time and bytes (one document per file)")]
 pub struct ExecLogArgs {
     /// `bazel build --execution_log_compact_file=FILE` output.
     #[arg(long = EXEC_LOG_LONG, value_name = "FILE")]

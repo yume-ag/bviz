@@ -1,16 +1,22 @@
-//! Shows where the spawns of a Bazel build spent their time, read from a
-//! compact execution log (`--execution_log_compact_file`): the time Bazel's
-//! spawn metrics report for each phase of a spawn's run, summed by runner and
-//! by mnemonic, and the spawns that spent longest in one phase; and the
-//! spawns that wrote or read the most bytes.
+//! Shows where the spawns of a Bazel build spent their time and what they
+//! wrote and read, from a compact execution log
+//! (`--execution_log_compact_file`), in two panels: the time Bazel's spawn
+//! metrics report for each phase of a spawn's run, and the bytes of the files
+//! spawns wrote and read, each summed by runner and by mnemonic, beside the
+//! spawns that spent longest in one phase or moved the most bytes.
 
+mod bytes;
 mod format;
 mod model;
 mod palette;
-mod spawn_time;
+mod panel;
+mod phase_bar;
 mod summary;
+mod table;
+mod time;
 
-pub use spawn_time::SpawnTimePanel;
+pub use bytes::BytesPanel;
+pub use time::TimePanel;
 
 use bviz_execlog::ExecLog;
 use bviz_input::Input;
@@ -27,8 +33,8 @@ use std::path::Path;
 use summary::Summary;
 
 pub fn register_keys(cx: &mut App) {
-    declare_scopes(cx, [spawn_time::KEY_CONTEXT]);
-    cx.bind_keys(legend_key_bindings(spawn_time::KEY_CONTEXT));
+    declare_scopes(cx, [time::KEY_CONTEXT, bytes::KEY_CONTEXT]);
+    cx.bind_keys(legend_key_bindings(time::KEY_CONTEXT));
 }
 
 /// An execution log being read.
@@ -87,10 +93,11 @@ fn read_log(input: Input) -> Result<Read, String> {
 }
 
 /// The view an execution log opens with, by which a document is told to hold one.
-pub type LeadPanel = SpawnTimePanel;
+pub type LeadPanel = TimePanel;
 
-/// The view of the spawn time the log `load` reads, which reports the log's
-/// spawns to its document's `session` as `sharing` and `clock` ask.
+/// The views of the spawn time and the spawn bytes the log `load` reads,
+/// which report the log's spawns to its document's `session` as `sharing` and
+/// `clock` ask.
 pub fn open(
     load: impl Into<Load>,
     session: Entity<Session>,
@@ -101,12 +108,16 @@ pub fn open(
 ) -> Member {
     let load = load.into();
     let model = cx.new(|cx| ExecLogModel::reading(load.log, session, clock, sharing, cx));
-    let view = ViewSpec::new(move |cx| cx.new(|cx| LeadPanel::new(model.clone(), cx)));
-    Member::new(load.title, view, Vec::new())
+    let time = ViewSpec::new({
+        let model = model.clone();
+        move |cx| cx.new(|cx| LeadPanel::new(model.clone(), cx))
+    });
+    let bytes = ViewSpec::new(move |cx| cx.new(|cx| BytesPanel::new(model.clone(), cx)));
+    Member::new(load.title, time, vec![bytes])
 }
 
-/// Shows the spawn time of Bazel builds by phase. Each file given opens a view
-/// of its own.
+/// Shows the spawn time of Bazel builds by phase and the bytes their spawns
+/// wrote and read. Each file given opens views of its own.
 #[derive(Parser)]
 #[command(name = "execlog", version, about)]
 struct Cli {
@@ -114,7 +125,7 @@ struct Cli {
     exec_log: ExecLogArgs,
 }
 
-/// Reads the execution logs and opens the spawn-time window.
+/// Reads the execution logs and opens the window showing them.
 pub fn run() {
     bviz_ui_workspace::run_viewer(
         "bviz execlog",

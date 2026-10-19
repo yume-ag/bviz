@@ -513,7 +513,8 @@ mod tests {
             view_kind::<bviz_ui_trace::FlamePanel>(),
             view_kind::<bviz_ui_trace::StatsPanel>(),
             view_kind::<bviz_ui_console::ConsolePanel>(),
-            view_kind::<bviz_ui_execlog::SpawnTimePanel>(),
+            view_kind::<bviz_ui_execlog::TimePanel>(),
+            view_kind::<bviz_ui_execlog::BytesPanel>(),
         ];
         let mut claimed: HashMap<ViewKind, &'static str> = HashMap::new();
         for (panel, view) in panels {

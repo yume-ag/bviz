@@ -1,4 +1,5 @@
-//! What the spawn-time view shows of a log, derived once off the UI thread.
+//! What the spawn time and spawn bytes panels show of a log, derived once
+//! off the UI thread.
 
 use bviz_execlog::{ByteMeasure, ExecLog, Group, Phase, PhaseTiming, SpawnBytes};
 use bviz_invocation::spawn::LoggedSpawn;
@@ -70,14 +71,17 @@ pub(crate) struct TopSpawn {
 pub(crate) struct BigSpawn {
     pub(crate) name: SpawnName,
     pub(crate) bytes: SpawnBytes,
+    pub(crate) time: Duration,
 }
 
 #[derive(Clone)]
-pub(crate) struct Summary {
+pub struct Summary {
     pub(crate) spawns: usize,
     pub(crate) timing: PhaseTiming,
     /// Longest first.
     pub(crate) runners: Vec<Runner>,
+    /// Every runner's spawns by mnemonic.
+    pub(crate) mnemonics: Vec<GroupRow>,
     /// The spawns longest in each phase, longest first, indexed as
     /// [`Phase::ALL`].
     pub(crate) top: [Vec<TopSpawn>; Phase::ALL.len()],
@@ -106,10 +110,22 @@ impl Summary {
             spawns: log.spawn_count(),
             timing: log.timing(),
             runners,
+            mnemonics: (log.by_mnemonic_of_every_runner().into_iter())
+                .map(GroupRow::from)
+                .collect(),
             top: Phase::ALL.map(|phase| top_spawns(log, phase)),
             biggest: ByteMeasure::ALL.map(|measure| biggest_spawns(log, measure)),
             repos: Arc::new(RepoNames::of_labels(log.target_labels())),
         }
+    }
+
+    /// What the log's spawns wrote and read in sum.
+    pub(crate) fn bytes(&self) -> SpawnBytes {
+        let mut sum = SpawnBytes::default();
+        for runner in &self.runners {
+            sum += runner.sum.bytes;
+        }
+        sum
     }
 
     /// The phase the log spent longest in, execution where none is longer.
@@ -142,6 +158,7 @@ fn biggest_spawns(log: &ExecLog, measure: ByteMeasure) -> Vec<BigSpawn> {
         .map(|spawn| BigSpawn {
             name: SpawnName::of(spawn),
             bytes: SpawnBytes::of(spawn),
+            time: spawn.timing().total(),
         })
         .collect()
 }
