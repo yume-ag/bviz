@@ -8,9 +8,9 @@ use crate::panel_menu::{Deed, Standing};
 use crate::path_prompt::{PathPrompt, PathPromptEvent};
 use crate::regions::{Placement, placement};
 use crate::{
-    AnyPanel, Arrangement, DividerId, Document, DocumentId, Documents, Framing, Joinable, Layout,
-    Maximize, Member, Pane, PaneEvent, PathOpener, Regions, Removal, Role, Shared, Side, Split,
-    SplitSide, WindowsChanged, documents, drag_icon, drop, panel_menu,
+    AnyPanel, AppActions, Arrangement, DividerId, Document, DocumentId, Documents, Framing,
+    Joinable, Layout, Maximize, Member, Pane, PaneEvent, PathOpener, Regions, Removal, Role,
+    Shared, Side, Split, SplitSide, WindowsChanged, documents, drag_icon, drop, panel_menu,
 };
 use bviz_ui_components::dialog;
 use bviz_ui_components::gesture::Pointer;
@@ -781,7 +781,7 @@ impl Workspace {
     /// Asks which files to open, through the platform's file chooser or, where
     /// the platform offers none, the window's own dialog, and hands them to the
     /// app's [`PathOpener`].
-    fn open_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !cx.has_global::<PathOpener>() {
             return;
         }
@@ -2826,6 +2826,8 @@ impl Render for Workspace {
                     menu.update(cx, |menu, cx| menu.toggle(window, cx));
                 }
             });
+        let app_actions = AppActions::of(cx).to_vec();
+        let body = (app_actions.iter()).fold(body, |body, action| action.listen(body, cx));
         let body = towards::<FocusLeft, MovePanelLeft, SplitLeft>(body, Side::Left, cx);
         let body = towards::<FocusRight, MovePanelRight, SplitRight>(body, Side::Right, cx);
         let body = towards::<FocusUp, MovePanelUp, SplitUp>(body, Side::Top, cx);

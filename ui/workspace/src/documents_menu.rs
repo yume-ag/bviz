@@ -1,13 +1,14 @@
-use crate::workspace::{CloseDocument, ResetArrangement, ToggleDocuments};
+use crate::app_actions::{AppAction, AppActions};
+use crate::workspace::{CloseDocument, OpenFiles, ResetArrangement, ToggleDocuments};
 use crate::{
     DocumentId, Documents, OpenDocument, PathOpener, ViewId, ViewState, Workspace, documents,
 };
 use bviz_ui_components::{Button, KeyScope, Nesting, action_label, key_text_in, menu_chrome};
 use bviz_ui_theme::{ThemeColors, over};
 use gpui::{
-    Action, AnyElement, Context, Div, ElementId, Entity, FocusHandle, Hsla, IntoElement, Pixels,
-    Render, SharedString, Stateful, Subscription, WeakEntity, Window, deferred, div, prelude::*,
-    px, relative,
+    Action, AnyElement, App, Context, Div, ElementId, Entity, FocusHandle, Hsla, IntoElement,
+    Pixels, Render, SharedString, Stateful, Subscription, WeakEntity, Window, deferred, div,
+    prelude::*, px, relative,
 };
 
 gpui::actions!(
@@ -85,6 +86,24 @@ fn row_style(state: ViewState, colors: &ThemeColors) -> RowStyle {
 /// so a row saying a pane shows its view goes on saying it.
 fn hovered(fill: Hsla, colors: &ThemeColors) -> Hsla {
     Hsla::from(over(colors.element_hover, fill))
+}
+
+/// What a row of the menu does in its window besides showing a view.
+enum Act {
+    OpenFiles,
+    App(AppAction),
+    ResetArrangement,
+}
+
+impl Act {
+    /// The action the row is labelled by.
+    fn action(&self) -> &dyn Action {
+        match self {
+            Self::OpenFiles => &OpenFiles,
+            Self::App(action) => action.action(),
+            Self::ResetArrangement => &ResetArrangement,
+        }
+    }
 }
 
 /// A view a click shows, and how its row reads.
@@ -189,8 +208,7 @@ impl DocumentsMenu {
             }
             return;
         }
-        // With no document there is no row to offer.
-        if self.documents.read(cx).is_empty() {
+        if self.documents.read(cx).is_empty() && self.acts(cx).is_empty() {
             return;
         }
         self.open = true;
@@ -207,17 +225,6 @@ impl DocumentsMenu {
             self.open = false;
             cx.notify();
         }
-    }
-
-    /// Lays this menu's own window out as it opened, closing the menu over it.
-    fn reset_arrangement(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.close(cx);
-        let Some(workspace) = self.workspace.upgrade() else {
-            return;
-        };
-        workspace.update(cx, |workspace, cx| {
-            workspace.reset_arrangement(window, cx);
-        });
     }
 
     /// Shows `view` of `document` in this menu's own window, closing the menu
@@ -300,13 +307,13 @@ impl DocumentsMenu {
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement + use<>> {
         let rows = self.rows(colors, cx);
-        // A window framing no pane has no arrangement to reset.
-        let framed = self
-            .workspace
-            .upgrade()
-            .is_some_and(|workspace| workspace.read(cx).active_pane().is_some());
-        let reset = framed.then(|| self.reset_row(colors, window, cx));
-        if rows.is_empty() && reset.is_none() {
+        let acts: Vec<_> = (self.acts(cx).into_iter().enumerate())
+            .map(|(at, act)| {
+                let ruled = at == 0 && !rows.is_empty();
+                self.act_row(at, act, ruled, colors, window, cx)
+            })
+            .collect();
+        if rows.is_empty() && acts.is_empty() {
             return None;
         }
         Some(deferred(
@@ -331,7 +338,7 @@ impl DocumentsMenu {
                         .shadow_lg()
                         .text_color(colors.text)
                         .children(rows)
-                        .children(reset),
+                        .children(acts),
                 ),
         ))
     }
@@ -363,41 +370,80 @@ impl DocumentsMenu {
         rows
     }
 
-    /// The row that lays the window out as its files described themselves.
-    /// It acts on the window rather than on any one view, so it carries no mark
-    /// and is ruled off from the rows naming views.
-    fn reset_row(
+    /// What the menu offers to do in its window besides showing a view:
+    /// opening files where the app opens any, then what the app does, in the
+    /// order it lists its actions, then laying the window out afresh where it
+    /// frames panes.
+    fn acts(&self, cx: &App) -> Vec<Act> {
+        let actions = AppActions::of(cx);
+        let mut acts = Vec::with_capacity(actions.len() + 2);
+        if cx.has_global::<PathOpener>() {
+            acts.push(Act::OpenFiles);
+        }
+        acts.extend(actions.iter().cloned().map(Act::App));
+        let framed = self
+            .workspace
+            .upgrade()
+            .is_some_and(|workspace| workspace.read(cx).active_pane().is_some());
+        if framed {
+            acts.push(Act::ResetArrangement);
+        }
+        acts
+    }
+
+    /// Does `act` in this menu's window, closing the menu over it and handing
+    /// focus back to what the window shows, or to a dialog the act stood over
+    /// it.
+    fn act(&mut self, act: &Act, window: &mut Window, cx: &mut Context<Self>) {
+        self.close(cx);
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        workspace.update(cx, |workspace, cx| match act {
+            Act::OpenFiles => workspace.open_files(window, cx),
+            Act::App(action) => action.run(workspace, window, cx),
+            Act::ResetArrangement => workspace.reset_arrangement(window, cx),
+        });
+        let focus = workspace.read(cx).content_focus(cx);
+        window.focus(&focus, cx);
+    }
+
+    /// The row doing `act`, `at` its place among them, `ruled` off from rows
+    /// naming views above it. It acts on the window rather than on any one
+    /// view, so it carries no mark.
+    fn act_row(
         &self,
+        at: usize,
+        act: Act,
+        ruled: bool,
         colors: &ThemeColors,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let hovered = hovered(surface(colors), colors);
+        let action = act.action();
+        let label = action_label(action, cx).unwrap_or(action.name());
+        let keys = key_text_in(action, &self.focus_handle, window);
         div()
-            .id("documents-menu-reset")
+            .id(ElementId::NamedInteger(
+                "documents-menu-act".into(),
+                at as u64,
+            ))
             .flex()
             .flex_row()
             .items_center()
             .px(ROW_PAD)
-            .pt_1()
-            .pb_0p5()
-            .mt_1()
-            .border_t_1()
-            .border_color(colors.border)
+            .py_0p5()
+            .when(ruled, |row| {
+                row.mt_1().pt_1().border_t_1().border_color(colors.border)
+            })
             .cursor_pointer()
             .hover(move |s| s.bg(hovered))
-            .on_click(cx.listener(|this, _, window, cx| this.reset_arrangement(window, cx)))
+            .on_click(cx.listener(move |this, _, window, cx| this.act(&act, window, cx)))
             .justify_between()
             .gap(menu_chrome::LABEL_GAP)
-            .child(
-                div()
-                    .whitespace_nowrap()
-                    .child(action_label(&ResetArrangement, cx).unwrap_or(ResetArrangement.name())),
-            )
-            .children(
-                key_text_in(&ResetArrangement, &self.focus_handle, window)
-                    .map(|keys| menu_chrome::row_keys(keys, colors)),
-            )
+            .child(div().whitespace_nowrap().child(label))
+            .children(keys.map(|keys| menu_chrome::row_keys(keys, colors)))
     }
 
     /// A view's row, `at` its place in the list: its mark, its label set in `by`

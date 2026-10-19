@@ -385,6 +385,7 @@ fn open_window(openings: Vec<Opening<Load>>) {
         openings,
         open,
         Some(PathOpener::new(open_paths)),
+        Vec::new(),
         &[
             bviz_ui_graph::register_keys,
             bviz_ui_trace::register_keys,

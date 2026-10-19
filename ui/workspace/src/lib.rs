@@ -3,6 +3,7 @@
 //! of, the registry of what every window's panels show views of and the menu
 //! listing it, and [`run_panels`] for an app whose window frames them.
 
+mod app_actions;
 mod arrangement;
 mod carry;
 mod documents;
@@ -22,6 +23,8 @@ mod regions;
 mod testing;
 mod workspace;
 
+pub use app_actions::AppAction;
+pub(crate) use app_actions::AppActions;
 pub(crate) use arrangement::{Arrangement, Maximize};
 pub use documents::{Closed, DocumentId, Documents, Joinable, ViewSpec};
 pub(crate) use documents::{OpenDocument, ViewId, ViewState, WindowsChanged};
@@ -85,13 +88,22 @@ pub fn run_viewer<C, I, T, F>(
             )
             .exit()
     }
-    run_panels(app_id, window_size, documents, open, None, panel_keys);
+    run_panels(
+        app_id,
+        window_size,
+        documents,
+        open,
+        None,
+        Vec::new(),
+        panel_keys,
+    );
 }
 
 /// Runs an app whose one window frames the [`Document`]s `open` builds from
 /// `documents` in order, their views laid out by [`Role`], and frames no panel
 /// where `documents` is empty. Files the user names to a window while the app
-/// runs go to `opener`, where the app opens any. Each of
+/// runs go to `opener`, where the app opens any, and each window's Documents
+/// menu lists `actions` after opening files. Each of
 /// `panel_keys` registers the bindings of one panel kind the app can show, and
 /// runs before the first window opens. Each runs exactly once per process:
 /// `cx.bind_keys` refreshes every window, which drops what each has cached of
@@ -102,6 +114,7 @@ pub fn run_panels<T, F>(
     documents: Vec<T>,
     open: F,
     opener: Option<PathOpener>,
+    actions: Vec<AppAction>,
     panel_keys: &'static [fn(&mut App)],
 ) where
     T: 'static,
@@ -114,6 +127,7 @@ pub fn run_panels<T, F>(
         if let Some(opener) = opener {
             cx.set_global(opener);
         }
+        cx.set_global(AppActions(actions));
         for register in panel_keys {
             register(cx);
         }
