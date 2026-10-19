@@ -7,14 +7,16 @@ mod group;
 use bviz_cli::{Cli, Request, Source, Sources};
 use bviz_input::Input;
 use bviz_invocation::InvocationId;
-use bviz_ui_graph_args::GraphSource;
+use bviz_ui_components::{ChoiceDialog, ChoiceDialogEvent, ChoiceItem};
+use bviz_ui_graph_args::{GraphArgs, GraphSource};
 use bviz_ui_session::Sharing;
 use bviz_ui_workspace::{
     Document, Documents, Joinable, Member, Panel, PathOpener, Shared, ViewKind, Workspace,
+    document_label,
 };
 use clap::Parser;
 use classify::Classified;
-use gpui::{App, Context, WeakEntity, Window};
+use gpui::{App, AppContext, Context, SharedString, WeakEntity, Window};
 use group::{File, Given, Kind, Open, Opening, Placing};
 use std::iter;
 use std::path::PathBuf;
@@ -167,9 +169,18 @@ fn open_invocation_files(
 /// Opens `paths`, named to the window `into` frames, once a background task
 /// has told what each holds.
 fn open_paths(paths: Vec<PathBuf>, into: WeakEntity<Workspace>, window: &mut Window, cx: &mut App) {
-    let classifying = cx
-        .background_executor()
-        .spawn(async move { classify::classify(paths) });
+    open_classified(move || classify::classify(paths), into, window, cx);
+}
+
+/// Opens what `classifying` tells of files named to the window `into` frames,
+/// running it on a background task.
+fn open_classified(
+    classifying: impl FnOnce() -> Classified + Send + 'static,
+    into: WeakEntity<Workspace>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let classifying = cx.background_executor().spawn(async move { classifying() });
     window
         .spawn(cx, async move |cx| {
             let classified = classifying.await;
@@ -181,9 +192,49 @@ fn open_paths(paths: Vec<PathBuf>, into: WeakEntity<Workspace>, window: &mut Win
         .detach();
 }
 
+/// What the dialog asking the kind of files says of why it asks.
+const ASK_KIND: &str = "bviz cannot tell from how these files begin what they hold. \
+     Choose what to read each as, or skip it.";
+
+/// Asks the user what each of `unknown` holds, and opens those given a kind as
+/// files named to the window `workspace` frames, after the files opened
+/// with them.
+fn ask_kinds(
+    unknown: Vec<PathBuf>,
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let choices = (classify::KINDS.iter())
+        .map(|&(kind, name)| (kind, SharedString::from(name)))
+        .collect();
+    let items = unknown.iter().map(|path| {
+        ChoiceItem::new(document_label(path)).detail(path.to_string_lossy().into_owned())
+    });
+    let dialog =
+        cx.new(|cx| ChoiceDialog::new("Open files as", ASK_KIND, "Open", choices, items, cx));
+    workspace.ask(
+        dialog,
+        move |_, event: &ChoiceDialogEvent<bviz_sniff::Kind>, window, cx| {
+            let ChoiceDialogEvent::Chosen(chosen) = event else {
+                return;
+            };
+            let chosen: Vec<(PathBuf, bviz_sniff::Kind)> = (unknown.iter().zip(chosen))
+                .filter_map(|(path, &kind)| Some((path.clone(), kind?)))
+                .collect();
+            if !chosen.is_empty() {
+                let into = cx.weak_entity();
+                open_classified(move || classify::classify_as(chosen), into, window, cx);
+            }
+        },
+        window,
+        cx,
+    );
+}
+
 /// Opens what `classified` names into `workspace`, as documents grouped as
-/// the command line groups them, and tells the user of each file it cannot
-/// open.
+/// the command line groups them, tells the user of each file it cannot open,
+/// and asks what each file it cannot tell holds.
 fn place(
     classified: Classified,
     workspace: &mut Workspace,
@@ -197,18 +248,25 @@ fn place(
         unknown,
         unreadable,
     } = classified;
-    if !unknown.is_empty() {
-        workspace.tell(
-            format!(
-                "Not opened, holding nothing bviz reads: {}",
-                listed(&unknown)
-            ),
-            cx,
-        );
-    }
     for (path, error) in unreadable {
         workspace.tell(format!("Cannot open {}: {error}", path.display()), cx);
     }
+    open_batch(graph, further_graphs, files, workspace, window, cx);
+    if !unknown.is_empty() {
+        ask_kinds(unknown, workspace, window, cx);
+    }
+}
+
+/// Opens `graph`, `further_graphs` and `files`, named together, into
+/// `workspace` as documents grouped as the command line groups them.
+fn open_batch(
+    graph: GraphArgs,
+    further_graphs: Vec<GraphSource>,
+    files: Vec<File<Input>>,
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
     let files = files
         .into_iter()
         .map(|file| File {
@@ -302,34 +360,6 @@ fn given(graph: Option<GraphSource>, files: Vec<File<Load>>) -> Option<Given<Loa
         first,
         rest: files.collect(),
     })
-}
-
-/// How many paths a note names before it counts the rest.
-const NAMED_IN_A_NOTE: usize = 3;
-
-const PATH_SEPARATOR: &str = ", ";
-
-/// `paths` in one line: the first [`NAMED_IN_A_NOTE`] of them, and how many
-/// more there are.
-fn listed(paths: &[PathBuf]) -> String {
-    let named = &paths[..paths.len().min(NAMED_IN_A_NOTE)];
-    let more = paths.len() - named.len();
-    let more = (more > 0).then(|| format!(" and {more} more"));
-    let mut line = String::with_capacity(
-        named
-            .iter()
-            .map(|path| path.as_os_str().len() + PATH_SEPARATOR.len())
-            .sum::<usize>()
-            + more.as_ref().map_or(0, String::len),
-    );
-    for path in named {
-        if !line.is_empty() {
-            line.push_str(PATH_SEPARATOR);
-        }
-        line.push_str(&path.to_string_lossy());
-    }
-    line.extend(more);
-    line
 }
 
 fn main() {
@@ -430,16 +460,6 @@ mod tests {
                 panic!("{first} and {panel} both call themselves {}", view.as_str());
             }
         }
-    }
-
-    #[test]
-    fn a_note_names_a_few_paths_and_counts_the_rest() {
-        let paths = |names: &[&str]| names.iter().map(PathBuf::from).collect::<Vec<_>>();
-        assert_eq!(listed(&paths(&["a", "b"])), "a, b");
-        assert_eq!(
-            listed(&paths(&["a", "b", "c", "d", "e"])),
-            "a, b, c and 2 more"
-        );
     }
 
     #[test]

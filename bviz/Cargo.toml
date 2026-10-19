@@ -18,6 +18,7 @@ bviz_cli = { path = "../cli" }
 bviz_input = { workspace = true }
 bviz_invocation = { workspace = true }
 bviz_sniff = { path = "../sniff" }
+bviz_ui_components = { path = "../ui/components" }
 bviz_ui_console = { path = "../ui/console" }
 bviz_ui_execlog = { path = "../ui/execlog" }
 bviz_ui_graph = { path = "../ui/graph" }
@@ -25,6 +26,3 @@ bviz_ui_graph_args = { path = "../ui/graph/args" }
 bviz_ui_session = { path = "../ui/session" }
 bviz_ui_trace = { path = "../ui/trace" }
 bviz_ui_workspace = { path = "../ui/workspace" }
-
-[dev-dependencies]
-bviz_ui_components = { path = "../ui/components" }

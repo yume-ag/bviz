@@ -24,35 +24,86 @@ pub(crate) struct Classified {
 /// Reads the head of each of `paths`, once, to tell what it holds. Blocks on
 /// the file system, so it runs off the UI thread.
 pub(crate) fn classify(paths: Vec<PathBuf>) -> Classified {
-    let mut classified = Classified {
-        graph: GraphArgs::default(),
-        further_graphs: Vec::new(),
-        files: Vec::with_capacity(paths.len()),
-        unknown: Vec::new(),
-        unreadable: Vec::new(),
-    };
+    let mut classified = Classified::with_capacity(paths.len());
     for path in paths {
-        let input = match Input::open(&path) {
-            Ok(input) => input,
+        if let Some((path, input)) = classified.open(path) {
+            let kind = input.head().and_then(bviz_sniff::kind_of);
+            classified.sort(path, input, holds(kind));
+        }
+    }
+    classified
+}
+
+/// Opens each of `chosen` as the kind chosen for it, whatever its head
+/// tells. Blocks on the file system, so it runs off the UI thread.
+pub(crate) fn classify_as(chosen: Vec<(PathBuf, bviz_sniff::Kind)>) -> Classified {
+    let mut classified = Classified::with_capacity(chosen.len());
+    for (path, kind) in chosen {
+        if let Some((path, input)) = classified.open(path) {
+            classified.sort(path, input, holds(Some(kind)));
+        }
+    }
+    classified
+}
+
+/// Each kind a user can choose to open a file as, and what it is called.
+pub(crate) const KINDS: [(bviz_sniff::Kind, &str); 6] = {
+    use bviz_sniff::Kind as Sniffed;
+    match Sniffed::Profile {
+        Sniffed::Profile
+        | Sniffed::Bep
+        | Sniffed::ExecLog
+        | Sniffed::Query
+        | Sniffed::Cquery
+        | Sniffed::Aquery => {}
+    }
+    [
+        (Sniffed::Profile, "Profile"),
+        (Sniffed::Bep, "Build events"),
+        (Sniffed::ExecLog, "Execution log"),
+        (Sniffed::Query, "Query"),
+        (Sniffed::Cquery, "Cquery"),
+        (Sniffed::Aquery, "Aquery"),
+    ]
+};
+
+impl Classified {
+    fn with_capacity(paths: usize) -> Self {
+        Self {
+            graph: GraphArgs::default(),
+            further_graphs: Vec::new(),
+            files: Vec::with_capacity(paths),
+            unknown: Vec::new(),
+            unreadable: Vec::new(),
+        }
+    }
+
+    /// `path` opened, or recorded as unreadable where it does not open.
+    fn open(&mut self, path: PathBuf) -> Option<(PathBuf, Input)> {
+        match Input::open(&path) {
+            Ok(input) => Some((path, input)),
             Err(error) => {
-                classified.unreadable.push((path, error));
-                continue;
+                self.unreadable.push((path, error));
+                None
             }
-        };
-        match holds(input.head().and_then(bviz_sniff::kind_of)) {
-            Holds::File(kind, probe) => classified.files.push(File {
+        }
+    }
+
+    /// Files `input`, read from `path`, by what it `holds`.
+    fn sort(&mut self, path: PathBuf, input: Input, holds: Holds) {
+        match holds {
+            Holds::File(kind, probe) => self.files.push(File {
                 kind,
                 invocation: probe(&input),
                 file: input,
             }),
-            Holds::Graph(kind) => match classified.graph.file_mut(kind) {
+            Holds::Graph(kind) => match self.graph.file_mut(kind) {
                 slot @ None => *slot = Some(path),
-                Some(_) => (classified.further_graphs).push(GraphInput { kind, path }.into()),
+                Some(_) => (self.further_graphs).push(GraphInput { kind, path }.into()),
             },
-            Holds::Unknown => classified.unknown.push(path),
+            Holds::Unknown => self.unknown.push(path),
         }
     }
-    classified
 }
 
 /// What a file of the kind its head tells holds, to bviz.
@@ -123,6 +174,19 @@ mod tests {
             .map(|(path, _)| path.as_path())
             .collect();
         assert_eq!(unreadable, [missing.as_path()]);
+    }
+
+    /// A file chosen as a kind is opened as one, whatever its head tells.
+    #[test]
+    fn a_file_chosen_as_a_kind_opens_as_that_kind() {
+        let unknown = scratch().join("chosen.txt");
+        std::fs::write(&unknown, "not a build output").unwrap();
+        let classified = classify_as(vec![(unknown, bviz_sniff::Kind::Profile)]);
+        let [file] = &classified.files[..] else {
+            panic!("one file of a kind");
+        };
+        assert!(file.kind == Kind::Profile);
+        assert!(classified.unknown.is_empty());
     }
 
     /// A `bazel query --output=streamed_proto` stream of one target: a

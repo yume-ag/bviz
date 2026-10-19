@@ -15,6 +15,7 @@ rust_binary(
         "//cli",
         "//invocation",
         "//sniff",
+        "//ui/components",
         "//ui/console:console_lib",
         "//ui/execlog:execlog_lib",
         "//ui/graph:graph_lib",
@@ -34,7 +35,6 @@ rust_test(
     compile_data = ["//terminal:testdata/sample.bep"],
     crate = ":bviz",
     rustc_env = {"SAMPLE_BEP": "$(execpath //terminal:testdata/sample.bep)"},
-    deps = ["//ui/components"],
 )
 
 third_party_notices(
