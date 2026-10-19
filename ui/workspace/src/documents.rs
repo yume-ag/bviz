@@ -175,9 +175,9 @@ pub struct Registry<S> {
 /// A window the session holds open, named by the workspace framing it. A
 /// workspace belongs to the window it is the root view of, so it is named
 /// weakly here rather than held alive by the registry. The subscription drops
-/// this record when that workspace is released, and is the one writer that
-/// drops it, so no closed window is offered as a place to show a view or to
-/// move a panel to.
+/// this record when that workspace is released, so no closed window is offered
+/// as a place to show a view or to move a panel to; a window closing as it
+/// empties drops it ahead of that.
 struct OpenWindow {
     workspace: WeakEntity<Workspace>,
     _closed: Subscription,
@@ -677,6 +677,24 @@ impl Documents {
         cx.emit(WindowsChanged);
     }
 
+    /// Lets go of the window `workspace` frames, as [`let_go_unless_last`]
+    /// does, for a window closing as it empties; whether it let go of it.
+    pub(crate) fn close_window_unless_last(
+        &mut self,
+        workspace: EntityId,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let open = |held: &OpenWindow| {
+            let id = held.workspace.entity_id();
+            held.workspace.upgrade().map(|_| id)
+        };
+        let closed = let_go_unless_last(&mut self.windows, workspace, open);
+        if closed {
+            cx.emit(WindowsChanged);
+        }
+        closed
+    }
+
     /// Whether the session holds a window open besides the one `workspace`
     /// frames.
     pub(crate) fn holds_another_window(&self, workspace: EntityId) -> bool {
@@ -821,6 +839,11 @@ impl<S> Registry<S> {
         self.registered_mut(document)?.view_mut(view)
     }
 
+    /// Whether the session holds no document.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.documents.is_empty()
+    }
+
     /// The first-opened document of the invocation `id`, as a file of that
     /// invocation joining it finds it. A document that names no invocation is
     /// never found.
@@ -907,6 +930,24 @@ fn reveal(panel: EntityId, into: &Entity<Workspace>, window: &mut Window, cx: &m
     }
 }
 
+/// Takes the window `here` names out of `windows` where another of them is
+/// open, `open` naming each window that is; whether it took it out. A window
+/// taken out ahead of its closing counts as closed to the windows emptied
+/// after it, so of several emptied one after another the last stays.
+fn let_go_unless_last<W>(
+    windows: &mut Vec<W>,
+    here: EntityId,
+    open: impl Fn(&W) -> Option<EntityId>,
+) -> bool {
+    let another = windows
+        .iter()
+        .any(|window| open(window).is_some_and(|id| id != here));
+    if another {
+        windows.retain(|window| open(window) != Some(here));
+    }
+    another
+}
+
 /// Takes `panel` out of whichever of `open` holds it, for a caller re-homing it
 /// in the window it frames. The workspace `here` names is left alone: it is the
 /// caller's own, which takes the panel out for itself. `None` where none of the
@@ -929,13 +970,15 @@ pub(crate) fn close(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
-    here.drop_panels_of(document, window, cx);
+    // The other windows go first, so that where the close empties every
+    // window, the one it was asked from is the last and stands empty.
     let documents = Documents::global(cx);
     let open = documents.read(cx).workspaces();
     find_in_other_workspaces(open, cx.entity_id(), cx, |workspace, window, cx| {
         workspace.drop_panels_of(document, window, cx);
         None::<()>
     });
+    here.drop_panels_of(document, window, cx);
     documents.update(cx, |documents, cx| documents.forget(document, cx));
 }
 
@@ -1072,6 +1115,27 @@ mod tests {
     /// one it replaces.
     fn panel(id: u64) -> EntityId {
         EntityId::from(id)
+    }
+
+    /// Which of the windows `ids` names, emptied in turn, close; each window
+    /// open until it is let go of.
+    fn closing(ids: [u64; 3], emptied: [u64; 3]) -> [bool; 3] {
+        let mut windows: Vec<EntityId> = ids.into_iter().map(EntityId::from).collect();
+        emptied.map(|id| let_go_unless_last(&mut windows, EntityId::from(id), |id| Some(*id)))
+    }
+
+    #[test]
+    fn of_windows_emptied_one_after_another_the_last_stays() {
+        for emptied in [[1, 2, 3], [3, 1, 2], [2, 3, 1], [3, 2, 1]] {
+            assert_eq!(closing([1, 2, 3], emptied), [true, true, false]);
+        }
+    }
+
+    #[test]
+    fn a_closed_window_keeps_no_emptied_one_open() {
+        let mut windows = vec![(EntityId::from(1), true), (EntityId::from(2), false)];
+        let open = |(id, open): &(EntityId, bool)| open.then_some(*id);
+        assert!(!let_go_unless_last(&mut windows, EntityId::from(1), open));
     }
 
     /// Records `panel` as showing `view` of `document`, watched by a

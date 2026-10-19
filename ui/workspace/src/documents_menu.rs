@@ -179,9 +179,13 @@ impl DocumentsMenu {
         if self.open {
             self.close(cx);
             if let Some(workspace) = self.workspace.upgrade() {
-                let panel = workspace.read(cx).active_panel(cx);
-                window.focus(&panel.focus_handle(cx), cx);
+                let focus = workspace.read(cx).content_focus(cx);
+                window.focus(&focus, cx);
             }
+            return;
+        }
+        // With no document there is no row to offer.
+        if self.documents.read(cx).is_empty() {
             return;
         }
         self.open = true;
@@ -241,15 +245,24 @@ impl DocumentsMenu {
 
     /// The open menu, laid out above the trigger: the status bar it opens from
     /// sits at the window's bottom edge, so there is nothing below it to open
-    /// into.
+    /// into. `None` where it has no row to show.
     fn popover(
         &self,
         colors: &ThemeColors,
         window: &Window,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    ) -> Option<impl IntoElement + use<>> {
         let rows = self.rows(colors, cx);
-        deferred(
+        // A window framing no pane has no arrangement to reset.
+        let framed = self
+            .workspace
+            .upgrade()
+            .is_some_and(|workspace| workspace.read(cx).active_pane().is_some());
+        let reset = framed.then(|| self.reset_row(colors, window, cx));
+        if rows.is_empty() && reset.is_none() {
+            return None;
+        }
+        Some(deferred(
             div()
                 .absolute()
                 .bottom(relative(1.))
@@ -271,9 +284,9 @@ impl DocumentsMenu {
                         .shadow_lg()
                         .text_color(colors.text)
                         .children(rows)
-                        .child(self.reset_row(colors, window, cx)),
+                        .children(reset),
                 ),
-        )
+        ))
     }
 
     fn rows(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -402,7 +415,11 @@ impl Render for DocumentsMenu {
                 }
             }))
             .child(self.trigger(cx))
-            .children(self.open.then(|| self.popover(&colors, window, cx)))
+            .children(
+                self.open
+                    .then(|| self.popover(&colors, window, cx))
+                    .flatten(),
+            )
     }
 }
 
