@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 /// How an app opens the files its user names to a window while it runs, by
-/// the window's Open files action. Without one, a window offers none.
+/// the window's Open files action or by dropping them on the window. Without
+/// one, a window offers neither.
 #[derive(Clone)]
 pub struct PathOpener(Rc<Open>);
 

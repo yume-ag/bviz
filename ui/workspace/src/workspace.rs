@@ -27,8 +27,8 @@ use bviz_ui_shell::Chrome;
 use bviz_ui_theme::ThemeColors;
 use gpui::{
     Action, AnyElement, AnyWindowHandle, App, Axis, Bounds, Canvas, Div, ElementId, Entity,
-    EntityId, FocusHandle, Focusable, IconScale, IntoElement, KeyBinding, KeyContext,
-    MouseDownEvent, PathPromptOptions, Pixels, PlatformDragEvent, Point, Rems, Render,
+    EntityId, ExternalPaths, FocusHandle, Focusable, IconScale, IntoElement, KeyBinding,
+    KeyContext, MouseDownEvent, PathPromptOptions, Pixels, PlatformDragEvent, Point, Rems, Render,
     SharedString, Size, Stateful, Subscription, WeakEntity, Window, actions, deferred, div, point,
     prelude::*, px,
 };
@@ -148,6 +148,9 @@ const MENU_LAYER: usize = 1;
 
 /// What a file chooser's control choosing the files says it does.
 const OPEN: &str = "Open";
+
+/// How an empty window says that files dropped on it open.
+const DROP_HINT: &str = "or drop them on this window";
 
 /// What the control dismissing a note says it does.
 const DISMISS_NOTE: &str = "Dismiss";
@@ -837,6 +840,28 @@ impl Workspace {
             None => button,
         };
         Some(button.keys_for(&OpenFiles, &self.window_focus))
+    }
+
+    /// What takes files dropped on the window, marking the window while files
+    /// are carried over it; `None` where the app opens no files.
+    fn file_drop_target(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Option<Div> {
+        if !cx.has_global::<PathOpener>() {
+            return None;
+        }
+        let (fill, edge) = (colors.selection, colors.accent);
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .drag_over::<ExternalPaths>(move |style, _, _, _| {
+                    style.bg(fill).border(DRAG_EDGE).border_color(edge)
+                })
+                .on_drop(
+                    cx.listener(|workspace, dropped: &ExternalPaths, window, cx| {
+                        workspace.open_paths(dropped.paths().to_vec(), window, cx);
+                    }),
+                ),
+        )
     }
 
     /// Shows `note` above the window's panes until the user dismisses it.
@@ -2679,6 +2704,7 @@ impl Render for Workspace {
         let body = div()
             .key_context(key_context)
             .size_full()
+            .relative()
             .on_action(cx.listener(|workspace, _: &OpenFiles, window, cx| {
                 workspace.open_files(window, cx);
             }))
@@ -2753,6 +2779,7 @@ impl Render for Workspace {
         let body = towards::<FocusUp, MovePanelUp, SplitUp>(body, Side::Top, cx);
         let body = towards::<FocusDown, MovePanelDown, SplitDown>(body, Side::Bottom, cx);
         let dragging = self.panel_drag_overlay(&colors, window, cx);
+        let file_drop = self.file_drop_target(&colors, cx);
         let path_prompt = self.path_prompt.as_ref().map(|asking| {
             let answer = asking.prompt.focus_handle(cx);
             dialog::over_window(div().child(asking.prompt.clone()), &answer, window, &colors)
@@ -2761,7 +2788,11 @@ impl Render for Workspace {
             .frame()
             .and_then(|frame| frame.panel_menu.as_ref())
             .map(|open| deferred(open.menu.clone()).with_priority(MENU_LAYER));
-        let body = body.child(chrome).children(dragging).children(menu);
+        let body = body
+            .child(chrome)
+            .children(file_drop)
+            .children(dragging)
+            .children(menu);
         // A sibling of the body, so that no key or action of the workspace's
         // reaches through the dialog to what it stands over.
         div().size_full().child(body).children(path_prompt)
@@ -2805,6 +2836,15 @@ fn empty_state(colors: &ThemeColors, any_open: bool, open: Option<Button>) -> Di
     };
     let shown = any_open.then_some("Show one from the Documents menu.");
     let hint = |text: &'static str| div().text_sm().text_color(colors.text_muted).child(text);
+    let open = open.map(|open| {
+        div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap_1()
+            .child(open)
+            .child(hint(DROP_HINT))
+    });
     div()
         .size_full()
         .flex()
