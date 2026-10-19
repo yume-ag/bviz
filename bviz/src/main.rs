@@ -4,6 +4,7 @@
 mod classify;
 mod group;
 
+use bviz_bazel_flags_args::BazelrcArgs;
 use bviz_cli::{Cli, Request, Source, Sources};
 use bviz_input::Input;
 use bviz_invocation::InvocationId;
@@ -11,12 +12,12 @@ use bviz_ui_components::{ChoiceDialog, ChoiceDialogEvent, ChoiceItem};
 use bviz_ui_graph_args::{GraphArgs, GraphSource};
 use bviz_ui_session::Sharing;
 use bviz_ui_workspace::{
-    Document, Documents, Joinable, Member, Panel, PathOpener, Shared, ViewKind, Workspace,
-    document_label,
+    AppAction, Document, Documents, Joinable, Member, Panel, PathOpener, Shared, ViewKind,
+    Workspace, document_label,
 };
 use clap::Parser;
 use classify::Classified;
-use gpui::{App, AppContext, Context, SharedString, WeakEntity, Window};
+use gpui::{App, AppContext, ClipboardItem, Context, SharedString, WeakEntity, Window, actions};
 use group::{File, Given, Kind, Open, Opening, Placing};
 use std::iter;
 use std::path::PathBuf;
@@ -362,6 +363,21 @@ fn given(graph: Option<GraphSource>, files: Vec<File<Load>>) -> Option<Given<Loa
     })
 }
 
+actions!(
+    bviz_app,
+    [
+        /// Copy bazelrc snippet
+        CopyBazelrc,
+    ]
+);
+
+/// Puts the bazelrc `bviz bazelrc` prints with no flags on the clipboard,
+/// telling the user so in the window that asked.
+fn copy_bazelrc(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    cx.write_to_clipboard(ClipboardItem::new_string(BazelrcArgs::default().bazelrc()));
+    workspace.tell_briefly("Copied the bazelrc snippet to the clipboard.", cx);
+}
+
 fn main() {
     // SAFETY: the first statement of main, before any other thread starts.
     unsafe { bviz_alloc::retain_freed_memory_across_load() };
@@ -385,7 +401,7 @@ fn open_window(openings: Vec<Opening<Load>>) {
         openings,
         open,
         Some(PathOpener::new(open_paths)),
-        Vec::new(),
+        vec![AppAction::new(CopyBazelrc, copy_bazelrc)],
         &[
             bviz_ui_graph::register_keys,
             bviz_ui_trace::register_keys,

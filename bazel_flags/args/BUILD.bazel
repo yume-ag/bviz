@@ -6,6 +6,7 @@ rust_library(
     crate_name = "bviz_bazel_flags_args",
     visibility = [
         "//bazel_flags:__pkg__",
+        "//bviz:__pkg__",
         "//cli:__pkg__",
     ],
     deps = [

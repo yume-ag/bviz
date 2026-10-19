@@ -14,6 +14,7 @@ path = "src/main.rs"
 clap = { workspace = true }
 gpui = { workspace = true }
 bviz_alloc = { path = "../alloc" }
+bviz_bazel_flags_args = { path = "../bazel_flags/args" }
 bviz_cli = { path = "../cli" }
 bviz_input = { workspace = true }
 bviz_invocation = { workspace = true }

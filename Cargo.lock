@@ -680,6 +680,7 @@ name = "bviz"
 version = "0.1.0"
 dependencies = [
  "bviz_alloc",
+ "bviz_bazel_flags_args",
  "bviz_cli",
  "bviz_input",
  "bviz_invocation",

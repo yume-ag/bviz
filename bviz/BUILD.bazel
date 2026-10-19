@@ -12,6 +12,7 @@ rust_binary(
     ],
     deps = [
         "//alloc",
+        "//bazel_flags/args",
         "//cli",
         "//invocation",
         "//sniff",
