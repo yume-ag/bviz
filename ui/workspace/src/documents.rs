@@ -1,11 +1,13 @@
-use crate::panel::FileName;
-use crate::{AnyPanel, Panel, Regions, Role, ViewKind, Workspace};
+use crate::panel::{FileName, Members, numbered};
+use crate::{AnyPanel, Document, Member, Panel, Regions, Role, ViewKind, Workspace};
 use bviz_ui_playback::Clock;
 use gpui::{
     App, AppContext, Context, Entity, EntityId, EventEmitter, Global, SharedString, Subscription,
     WeakEntity, Window,
 };
+use std::collections::HashMap;
 use std::iter;
+use std::num::NonZeroUsize;
 use std::rc::Rc;
 
 /// Identity of a document the session holds open. Two readings of one file are
@@ -101,18 +103,25 @@ pub struct OpenDocument {
 
 #[cfg(test)]
 impl OpenDocument {
-    /// `document` as a registry lists it while no panel shows a view of it.
-    pub(crate) fn unshown(document: Registration) -> Self {
-        Registered {
-            id: DocumentId::for_test(0),
-            name: document.name,
-            members: iter::once(&document.first)
-                .chain(&document.rest)
-                .map(Held::registered)
-                .collect(),
-            clock: document.clock,
+    /// `documents` as a registry opening them in their order lists them while
+    /// no panel shows a view of any.
+    pub(crate) fn unshown(documents: impl IntoIterator<Item = Document>) -> Vec<Self> {
+        let mut registry = Documents::new();
+        let mut listed = Vec::new();
+        for document in documents {
+            let document = registry.numbered(document);
+            let registered = Registered {
+                id: DocumentId::for_test(0),
+                name: document.name,
+                members: iter::once(&document.first)
+                    .chain(&document.rest)
+                    .map(Held::registered)
+                    .collect(),
+                clock: document.clock,
+            };
+            listed.push(registered.listed(&mut |_| ViewState::Closed));
         }
-        .listed(&mut |_| ViewState::Closed)
+        listed
     }
 }
 
@@ -147,6 +156,11 @@ pub struct OpenView {
 pub struct Documents {
     next: u64,
     documents: Vec<Registered>,
+    /// The numbers of the labels of files.
+    files: Numbering,
+    /// The numbers of the labels joined documents are listed under, which
+    /// count apart from those of files.
+    joined: Numbering,
     /// The session's open windows, in the order they opened.
     windows: Vec<OpenWindow>,
 }
@@ -168,8 +182,34 @@ pub(crate) struct WindowsChanged;
 
 impl EventEmitter<WindowsChanged> for Documents {}
 
-/// A document as a window opens it, its labels numbered among those the window
-/// opens with.
+/// The numbers telling apart what bears one label: its first bearer goes
+/// unnumbered, and each later one takes the number after the last one taken.
+/// A label's count only rises, so no number is borne twice in a session, and
+/// none changes once taken.
+#[derive(Default)]
+struct Numbering {
+    /// By label borne so far, the number its latest bearer took, the unnumbered
+    /// first counting as one.
+    latest: HashMap<SharedString, NonZeroUsize>,
+}
+
+impl Numbering {
+    /// The number of the next bearer of `label`, `None` for its first.
+    fn take(&mut self, label: &SharedString) -> Option<NonZeroUsize> {
+        match self.latest.get_mut(label) {
+            Some(latest) => {
+                *latest = latest.saturating_add(1);
+                Some(*latest)
+            }
+            None => {
+                self.latest.insert(label.clone(), NonZeroUsize::MIN);
+                None
+            }
+        }
+    }
+}
+
+/// A document as the registry opens it, its labels numbered.
 pub(crate) struct Registration {
     /// What the document is listed under, its number included.
     pub(crate) name: SharedString,
@@ -298,7 +338,53 @@ impl Documents {
         Self {
             next: 0,
             documents: Vec::new(),
+            files: Numbering::default(),
+            joined: Numbering::default(),
             windows: Vec::new(),
+        }
+    }
+
+    /// `document` with its labels numbered after those of every document
+    /// opened before it. A file opened by itself is listed under its numbered
+    /// label, which is how its panels' titles name it.
+    fn numbered(&mut self, document: Document) -> Registration {
+        let Document { members, clock } = document;
+        let files = &mut self.files;
+        let mut held = |member: Member| Held {
+            file: FileName {
+                ordinal: files.take(&member.label),
+                label: member.label,
+            },
+            first: member.first,
+            rest: member.rest,
+        };
+        match members {
+            Members::Alone(member) => {
+                let first = held(member);
+                Registration {
+                    name: first.file.numbered(),
+                    first,
+                    rest: Vec::new(),
+                    clock,
+                }
+            }
+            Members::Joined {
+                label,
+                first,
+                second,
+                rest,
+            } => {
+                let first = held(first);
+                let mut others = Vec::with_capacity(1 + rest.len());
+                others.extend(iter::once(second).chain(rest).map(held));
+                let ordinal = self.joined.take(&label);
+                Registration {
+                    name: numbered(label, ordinal),
+                    first,
+                    rest: others,
+                    clock,
+                }
+            }
         }
     }
 
@@ -307,7 +393,7 @@ impl Documents {
     /// keeps what it takes to mint them again.
     pub(crate) fn open(
         &mut self,
-        document: Registration,
+        document: Document,
         cx: &mut Context<Self>,
     ) -> (AnyPanel, Vec<AnyPanel>) {
         let Registration {
@@ -315,7 +401,7 @@ impl Documents {
             first,
             rest,
             clock,
-        } = document;
+        } = self.numbered(document);
         let (id, (first, rest)) = self.register(name, clock, |id| {
             let mut members = Vec::with_capacity(1 + rest.len());
             let mut minted = |member: Held<ViewSpec>| {
@@ -1103,5 +1189,181 @@ mod tests {
         assert_eq!(documents.panel(id, console(1)), Some(panels[3].0));
         assert_eq!(documents.panel(id, console(0)), None);
         assert_eq!(documents.panel(id, console(3)), None);
+    }
+
+    fn numbers(labels: &[&'static str]) -> Vec<Option<usize>> {
+        let mut numbering = Numbering::default();
+        labels
+            .iter()
+            .map(|&label| numbering.take(&label.into()).map(NonZeroUsize::get))
+            .collect()
+    }
+
+    #[test]
+    fn distinct_labels_are_not_numbered() {
+        assert_eq!(numbers(&[]), []);
+        assert_eq!(numbers(&["a.bep", "b.bep"]), [None, None]);
+    }
+
+    #[test]
+    fn a_label_s_first_bearer_is_unnumbered_and_later_ones_count_from_two() {
+        assert_eq!(numbers(&["x", "x"]), [None, Some(2)]);
+        assert_eq!(
+            numbers(&["x", "y", "x", "x"]),
+            [None, None, Some(2), Some(3)]
+        );
+    }
+
+    #[test]
+    fn each_label_counts_on_its_own() {
+        assert_eq!(
+            numbers(&["x", "y", "y", "x", "z"]),
+            [None, None, Some(2), Some(2), None]
+        );
+    }
+
+    fn member(label: &'static str, kinds: &[ViewKind]) -> Member {
+        let mut specs = kinds.iter().map(|&kind| spec(kind));
+        let first = specs.next().expect("a file brings a view");
+        Member::new(label.into(), first, specs.collect())
+    }
+
+    fn profile_member(label: &'static str) -> Member {
+        member(label, &[TIMELINE, FLAME])
+    }
+
+    fn session(label: &'static str, profile: &'static str) -> Document {
+        Document::join(
+            label.into(),
+            profile_member(profile),
+            member("build.bep", &[CONSOLE]),
+            Vec::new(),
+        )
+    }
+
+    /// Each document `registry` opens of `documents`, in their order, as what
+    /// it is listed under and the numbered labels of its files.
+    fn named_in(registry: &mut Documents, documents: Vec<Document>) -> Vec<(String, Vec<String>)> {
+        documents
+            .into_iter()
+            .map(|document| {
+                let registration = registry.numbered(document);
+                let files = iter::once(&registration.first)
+                    .chain(&registration.rest)
+                    .map(|held| held.file.numbered().to_string())
+                    .collect();
+                (registration.name.to_string(), files)
+            })
+            .collect()
+    }
+
+    fn named(documents: Vec<Document>) -> Vec<(String, Vec<String>)> {
+        named_in(&mut Documents::new(), documents)
+    }
+
+    fn names(document: &str, files: &[&str]) -> (String, Vec<String>) {
+        let files = files.iter().map(|file| file.to_string()).collect();
+        (document.to_string(), files)
+    }
+
+    /// A joined document holds each file as the file's viewer opened it: under
+    /// its own label, with the views it asked for.
+    #[test]
+    fn a_joined_document_holds_every_file_as_it_was_opened() {
+        let joined = Document::join(
+            "Invocation a5f7f3e6".into(),
+            profile_member("build.profile.gz"),
+            member("build.bep", &[CONSOLE]),
+            vec![member("aquery.pb", &[GRAPH])],
+        );
+        let registration = Documents::new().numbered(joined);
+        assert_eq!(registration.name, "Invocation a5f7f3e6");
+        let files: Vec<(String, Vec<ViewKind>)> = iter::once(&registration.first)
+            .chain(&registration.rest)
+            .map(|held| {
+                let kinds = held.views().map(ViewSpec::kind).collect();
+                (held.file.numbered().to_string(), kinds)
+            })
+            .collect();
+        assert_eq!(
+            files,
+            [
+                ("build.profile.gz".to_string(), vec![TIMELINE, FLAME]),
+                ("build.bep".to_string(), vec![CONSOLE]),
+                ("aquery.pb".to_string(), vec![GRAPH]),
+            ]
+        );
+    }
+
+    /// A panel is titled by its file, so files of one name are told apart by
+    /// number in whichever documents they are held.
+    #[test]
+    fn files_sharing_a_label_are_numbered_across_joined_documents() {
+        assert_eq!(
+            named(vec![
+                session("Invocation a5f7f3e6", "build.profile.gz"),
+                session("Invocation 0b437916", "build.profile.gz"),
+            ]),
+            [
+                names("Invocation a5f7f3e6", &["build.profile.gz", "build.bep"]),
+                names(
+                    "Invocation 0b437916",
+                    &["build.profile.gz (2)", "build.bep (2)"]
+                ),
+            ]
+        );
+    }
+
+    /// A file opened by itself is listed under the number its panels carry.
+    #[test]
+    fn a_joined_file_and_one_opened_by_itself_are_numbered_together() {
+        assert_eq!(
+            named(vec![
+                session("Invocation a5f7f3e6", "build.profile.gz"),
+                profile_member("build.profile.gz").into(),
+                member("aquery.pb", &[GRAPH]).into(),
+            ]),
+            [
+                names("Invocation a5f7f3e6", &["build.profile.gz", "build.bep"]),
+                names("build.profile.gz (2)", &["build.profile.gz (2)"]),
+                names("aquery.pb", &["aquery.pb"]),
+            ]
+        );
+    }
+
+    /// The labels joined documents are listed under are numbered among
+    /// themselves: a file's label equal to one names something else.
+    #[test]
+    fn joined_documents_sharing_a_label_are_numbered_among_themselves() {
+        assert_eq!(
+            named(vec![
+                session("Invocation a5f7f3e6", "a.profile.gz"),
+                member("Invocation a5f7f3e6", &[GRAPH]).into(),
+                session("Invocation a5f7f3e6", "b.profile.gz"),
+                session("Invocation 0b437916", "c.profile.gz"),
+            ]),
+            [
+                names("Invocation a5f7f3e6", &["a.profile.gz", "build.bep"]),
+                names("Invocation a5f7f3e6", &["Invocation a5f7f3e6"]),
+                names(
+                    "Invocation a5f7f3e6 (2)",
+                    &["b.profile.gz", "build.bep (2)"]
+                ),
+                names("Invocation 0b437916", &["c.profile.gz", "build.bep (3)"]),
+            ]
+        );
+    }
+
+    /// Numbers count across everything the session opens, not one window's
+    /// worth: a file opened later takes the number after the last one taken.
+    #[test]
+    fn a_later_opening_numbers_on_from_the_earlier_ones() {
+        let mut registry = Documents::new();
+        let profile = || profile_member("build.profile.gz").into();
+        named_in(&mut registry, vec![profile(), profile()]);
+        assert_eq!(
+            named_in(&mut registry, vec![profile()]),
+            [names("build.profile.gz (3)", &["build.profile.gz (3)"])]
+        );
     }
 }

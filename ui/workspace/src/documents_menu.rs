@@ -475,7 +475,7 @@ mod tests {
     /// What a window opening with `first` and `others` lists before any panel
     /// shows a view.
     fn opening_listings(first: Document, others: Vec<Document>) -> Vec<Listing> {
-        listings(Document::unshown(first, others))
+        listings(OpenDocument::unshown(std::iter::once(first).chain(others)))
     }
 
     /// A joined document heads a row for every view of every file, in the order
@@ -565,7 +565,7 @@ mod tests {
         let listed = opening_listings(session("a.profile.gz"), vec![session("b.profile.gz")]);
         assert_eq!(
             listed_names(&listed),
-            ["Invocation a5f7f3e6 (1)", "Invocation a5f7f3e6 (2)"]
+            ["Invocation a5f7f3e6", "Invocation a5f7f3e6 (2)"]
         );
     }
 
