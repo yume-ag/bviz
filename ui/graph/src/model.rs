@@ -26,7 +26,7 @@ use bviz_graph_layout::{Capabilities, Facets, Id, InputSet, Joint, MapLayout, Na
 use bviz_invocation::{ActionGraph, Chosen, Configurations, Revision, Session};
 use bviz_ui_components::{Pending, load_in_background};
 use bviz_ui_graph_args::GraphSource;
-use bviz_ui_playback::{Clock, DocumentClock};
+use bviz_ui_playback::Clock;
 use bviz_ui_session::Reports;
 use gpui::{App, Context, Entity, EntityId, EventEmitter, SharedString, Subscription, Task};
 use std::collections::{HashMap, HashSet};
@@ -714,7 +714,7 @@ pub(crate) struct GraphModel {
     joined: Option<Joined>,
     /// The playback clock of the document the graph is opened in, where that
     /// document plays back.
-    clock: Option<DocumentClock>,
+    clock: Option<Entity<Clock>>,
 }
 
 /// How many nodes the document keeps named what leaves them out of the
@@ -771,7 +771,7 @@ impl GraphModel {
     pub(crate) fn reading(
         load: Pending<Read>,
         session: Option<Entity<Session>>,
-        clock: Option<DocumentClock>,
+        clock: Option<Entity<Clock>>,
         cx: &mut Context<Self>,
     ) -> Self {
         // The build's outcomes can land on either side of the graph, so they
@@ -1354,7 +1354,7 @@ impl GraphModel {
     }
 
     pub(crate) fn clock(&self) -> Option<&Entity<Clock>> {
-        self.clock.as_ref().map(DocumentClock::clock)
+        self.clock.as_ref()
     }
 
     pub(crate) fn source(&self) -> &Source {

@@ -4,7 +4,7 @@ use crate::documents::{Held, Registration};
 use crate::{DocumentId, Documents, Pane, Regions, Role, ViewSpec};
 use bviz_ui_components::KeyScope;
 use bviz_ui_components::gesture::GestureRow;
-use bviz_ui_playback::{Clock, DocumentClock};
+use bviz_ui_playback::Clock;
 use gpui::{
     AnyView, App, Context, Entity, EntityId, EventEmitter, FocusHandle, Focusable, Render,
     SharedString, Subscription, Window,
@@ -347,12 +347,12 @@ impl Document {
         }
     }
 
-    /// The document `open` makes of files following `clock`, which the window
-    /// drives from a bar while one of the document's panels is the active one.
-    pub fn playing_on(clock: DocumentClock, open: impl FnOnce(&DocumentClock) -> Self) -> Self {
+    /// This document, its files following `clock`, which the window drives
+    /// from a bar while one of the document's panels is the active one.
+    pub fn playing_on(self, clock: Entity<Clock>) -> Self {
         Self {
-            clock: Some(clock.clock().clone()),
-            ..open(&clock)
+            clock: Some(clock),
+            ..self
         }
     }
 

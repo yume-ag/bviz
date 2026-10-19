@@ -2,7 +2,7 @@ use bviz_input::Input;
 use bviz_invocation::{Configurations, EpochMicros, Outcomes, Recorded, ReporterId, Session};
 use bviz_terminal::{BuildOutput, Replay};
 use bviz_ui_components::{Pending, load_in_background};
-use bviz_ui_playback::{Clock, DocumentClock, OnClock, Span};
+use bviz_ui_playback::{Alignment, Clock, OnClock, Span};
 use bviz_ui_session::Reports;
 use gpui::{App, Context, Entity, Task};
 
@@ -70,7 +70,7 @@ impl ConsoleModel {
     pub(crate) fn reading(
         stream: Pending<Stream>,
         session: Option<Entity<Session>>,
-        clock: Option<DocumentClock>,
+        clock: Option<Entity<Clock>>,
         cx: &mut Context<Self>,
     ) -> Self {
         let reports = session.map(|session| Reports::new(session, cx));
@@ -91,7 +91,7 @@ impl ConsoleModel {
                 model.place_on_clock(cx);
             },
         );
-        let on_clock = clock.map(|clock| OnClock::new(clock, cx));
+        let on_clock = clock.map(|clock| OnClock::new(clock, cx, Self::place_on_clock));
         Self::new(load, on_clock, reports)
     }
 
@@ -113,7 +113,8 @@ impl ConsoleModel {
         let played = match &self.source {
             Source::Loaded(replay) => {
                 let replay = replay.get();
-                origin(replay, on_clock.document_clock()).and_then(|at| clock_source(replay, at))
+                let alignment = on_clock.clock().read(cx).alignment();
+                origin(replay, alignment).and_then(|at| clock_source(replay, at))
             }
             _ => None,
         };
@@ -130,8 +131,9 @@ impl ConsoleModel {
     pub(crate) fn shown_frame(&self, cx: &App) -> Option<usize> {
         let replay = self.replay()?;
         let reached = self.on_clock.as_ref().and_then(|on_clock| {
-            let origin = origin(replay, on_clock.document_clock())?;
-            let now = on_clock.clock().read(cx).now()?;
+            let clock = on_clock.clock().read(cx);
+            let origin = origin(replay, clock.alignment())?;
+            let now = clock.now()?;
             // At the instants `clock_source` marks the frames at, so stepping
             // to a mark shows its frame.
             Some(last_reached(
@@ -145,9 +147,11 @@ impl ConsoleModel {
 
     /// Whether the replay, joined to other files, records no wall-clock time
     /// to stand beside theirs on the clock.
-    pub(crate) fn unaligned(&self) -> bool {
+    pub(crate) fn unaligned(&self, cx: &App) -> bool {
         match (self.replay(), &self.on_clock) {
-            (Some(replay), Some(on_clock)) => origin(replay, on_clock.document_clock()).is_none(),
+            (Some(replay), Some(on_clock)) => {
+                origin(replay, on_clock.clock().read(cx).alignment()).is_none()
+            }
             _ => false,
         }
     }
@@ -170,12 +174,12 @@ impl ConsoleModel {
     }
 }
 
-/// The instant `replay`'s time zero stands at on `clock`, `None` where it
-/// records none yet must meet another file's times.
-fn origin(replay: &Replay, clock: &DocumentClock) -> Option<EpochMicros> {
-    match clock {
-        DocumentClock::Joined(_) => replay.epoch_origin(),
-        DocumentClock::Alone(_) => Some(replay.epoch_origin().unwrap_or(UNRECORDED_ORIGIN)),
+/// The instant `replay`'s time zero stands at on a clock `aligned` so, `None`
+/// where it records none yet must meet another file's times.
+fn origin(replay: &Replay, aligned: Alignment) -> Option<EpochMicros> {
+    match aligned {
+        Alignment::Joined => replay.epoch_origin(),
+        Alignment::Alone => Some(replay.epoch_origin().unwrap_or(UNRECORDED_ORIGIN)),
     }
 }
 
@@ -413,6 +417,19 @@ mod tests {
     fn a_replay_of_one_instant_gives_a_clock_nothing_to_play() {
         let stream = Stream::from_slice(&progress_event("Loading: \n")).expect("the stream parses");
         assert!(clock_source(stream.replay.get(), UNRECORDED_ORIGIN).is_none());
+    }
+
+    /// A build that timestamps nothing plays on a clock of its own from an
+    /// origin of its choosing, and on none once its document joins other
+    /// files, whose times it has no wall-clock time to meet.
+    #[test]
+    fn a_replay_recording_no_wall_clock_time_plays_alone_only() {
+        let stream = [progress_event("Loading: \n"), progress_event("Done\n")].concat();
+        let stream = Stream::from_slice(&stream).expect("the stream parses");
+        let replay = stream.replay.get();
+        assert_eq!(replay.epoch_origin(), None);
+        assert_eq!(origin(replay, Alignment::Alone), Some(UNRECORDED_ORIGIN));
+        assert_eq!(origin(replay, Alignment::Joined), None);
     }
 
     /// The event Bazel ends a stream with, marked its last.

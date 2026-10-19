@@ -14,7 +14,7 @@ use bviz_ui_components::{
     text_input, zoom_key_bindings,
 };
 use bviz_ui_graph_args::{AQUERY_LONG, CQUERY_LONG, GraphArgs, GraphSource, QUERY_LONG};
-use bviz_ui_playback::{Clock, DocumentClock};
+use bviz_ui_playback::Clock;
 use bviz_ui_theme::{DataColors, Theme, ThemeColors};
 use bviz_ui_workspace::{
     Member, Panel, PanelEvent, PanelKind, Role, Titled, ViewKind, ViewSpec, document_label,
@@ -1577,7 +1577,7 @@ fn title(source: &GraphSource) -> SharedString {
 pub fn open(
     load: impl Into<Load>,
     session: Option<Entity<Session>>,
-    clock: Option<DocumentClock>,
+    clock: Option<Entity<Clock>>,
     _window: &mut Window,
     cx: &mut App,
 ) -> Member {

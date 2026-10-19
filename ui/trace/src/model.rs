@@ -17,7 +17,7 @@ use bviz_trace_layout::{
 };
 use bviz_trace_profile::{LaneClass, Profile, SliceAt, Str, TimeSpan};
 use bviz_ui_components::{Pending, load_in_background};
-use bviz_ui_playback::{Clock, DocumentClock, OnClock, Span};
+use bviz_ui_playback::{Clock, OnClock, Span};
 use bviz_ui_session::Reports;
 use gpui::{App, Context, Entity, EventEmitter, Subscription, Task};
 use std::cell::RefCell;
@@ -554,7 +554,7 @@ impl TraceModel {
     pub(crate) fn reading(
         profile: Pending<Recorded<Profile>>,
         session: Option<Entity<Session>>,
-        clock: Option<DocumentClock>,
+        clock: Option<Entity<Clock>>,
         cx: &mut Context<Self>,
     ) -> Self {
         let session_changed = session
@@ -584,7 +584,11 @@ impl TraceModel {
         );
         Self {
             _session_changed: session_changed,
-            ..Self::new(reports, clock.map(|clock| OnClock::new(clock, cx)), load)
+            ..Self::new(
+                reports,
+                clock.map(|clock| OnClock::new(clock, cx, Self::place_on_clock)),
+                load,
+            )
         }
     }
 

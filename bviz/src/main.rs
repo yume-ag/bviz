@@ -6,7 +6,7 @@ mod group;
 use bviz_cli::{Cli, Request, Source, Sources};
 use bviz_input::Input;
 use bviz_invocation::{InvocationId, Session};
-use bviz_ui_playback::DocumentClock;
+use bviz_ui_playback::Clock;
 use bviz_ui_workspace::{Document, Member};
 use clap::Parser;
 use gpui::{App, AppContext, Entity, Window};
@@ -96,7 +96,7 @@ impl Load {
     fn open(
         self,
         session: Option<&Entity<Session>>,
-        clock: Option<&DocumentClock>,
+        clock: Option<&Entity<Clock>>,
         window: &mut Window,
         cx: &mut App,
     ) -> Member {
@@ -118,9 +118,8 @@ impl Load {
 fn open(opening: Opening<Load>, window: &mut Window, cx: &mut App) -> Document {
     match opening {
         Opening::Alone(load @ Load::Console(_)) => {
-            Document::playing_on(DocumentClock::alone(cx), |clock| {
-                load.open(None, Some(clock), window, cx).into()
-            })
+            let clock = cx.new(|_| Clock::default());
+            Document::from(load.open(None, Some(&clock), window, cx)).playing_on(clock)
         }
         Opening::Alone(load) => load.open(None, None, window, cx).into(),
         Opening::Invocation {
@@ -130,16 +129,15 @@ fn open(opening: Opening<Load>, window: &mut Window, cx: &mut App) -> Document {
             rest,
         } => {
             let session = cx.new(|_| Session::default());
-            Document::playing_on(DocumentClock::joined(cx), |clock| {
-                let mut open = |load: Load| load.open(Some(&session), Some(clock), window, cx);
-                let first = open(first);
-                let second = open(second);
-                let mut others = Vec::with_capacity(rest.len());
-                for load in rest {
-                    others.push(open(load));
-                }
-                Document::join(group::label(&id).into(), first, second, others)
-            })
+            let clock = cx.new(|_| Clock::joined());
+            let mut open = |load: Load| load.open(Some(&session), Some(&clock), window, cx);
+            let first = open(first);
+            let second = open(second);
+            let mut others = Vec::with_capacity(rest.len());
+            for load in rest {
+                others.push(open(load));
+            }
+            Document::join(group::label(&id).into(), first, second, others).playing_on(clock)
         }
     }
 }

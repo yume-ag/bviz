@@ -19,7 +19,7 @@ use bviz_input::Input;
 use bviz_invocation::{InvocationId, Session};
 use bviz_ui_components::Pending;
 use bviz_ui_console_args::{BEP_LONG, ConsoleArgs, ConsoleSource};
-use bviz_ui_playback::DocumentClock;
+use bviz_ui_playback::Clock;
 use bviz_ui_workspace::{Document, Member, ViewSpec, document_label};
 use clap::Parser;
 use gpui::{App, Entity, SharedString, Window, prelude::*};
@@ -65,7 +65,7 @@ impl From<ConsoleSource> for Load {
 pub fn open(
     load: impl Into<Load>,
     session: Option<Entity<Session>>,
-    clock: Option<DocumentClock>,
+    clock: Option<Entity<Clock>>,
     _window: &mut Window,
     cx: &mut App,
 ) -> Member {
@@ -103,9 +103,8 @@ pub fn run() {
         |cli: Cli| cli.sources().map(Load::from),
         &format!("--{BEP_LONG} or a file argument"),
         |load, window, cx| {
-            Document::playing_on(DocumentClock::alone(cx), |clock| {
-                open(load, None, Some(clock.clone()), window, cx).into()
-            })
+            let clock = cx.new(|_| Clock::default());
+            Document::from(open(load, None, Some(clock.clone()), window, cx)).playing_on(clock)
         },
         &[console::register_keys],
     );

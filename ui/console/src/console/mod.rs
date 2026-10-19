@@ -711,7 +711,7 @@ impl Render for ConsolePanel {
                 let unaligned = self
                     .model
                     .read(cx)
-                    .unaligned()
+                    .unaligned(cx)
                     .then(|| unaligned_note("build event stream", colors));
                 let cut_off = self
                     .model

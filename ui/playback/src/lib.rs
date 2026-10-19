@@ -6,7 +6,7 @@ mod clock;
 mod note;
 
 pub use bar::PlaybackBar;
-pub use clock::{Clock, DocumentClock, OnClock, Source, SourceId, Span, Speed, Timeline};
+pub use clock::{Alignment, BecameJoined, Clock, OnClock, Source, SourceId, Span, Speed, Timeline};
 pub use note::unaligned_note;
 
 use bviz_ui_components::KeyScope;

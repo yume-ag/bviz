@@ -47,7 +47,7 @@ use bviz_ui_components::{
     declare_scopes, find_key_bindings, legend_key_bindings, overlay_canvas, text_input, track_drag,
     zoom_key_bindings,
 };
-use bviz_ui_playback::{DocumentClock, unaligned_note};
+use bviz_ui_playback::{Clock, unaligned_note};
 use bviz_ui_trace_args::{PROFILE_LONG, TraceArgs, TraceSource};
 use bviz_ui_workspace::{
     Member, Panel, PanelEvent, PanelKind, Role, Titled, ViewKind, ViewSpec, document_label,
@@ -1799,7 +1799,7 @@ impl From<TraceSource> for Load {
 pub fn open(
     load: impl Into<Load>,
     session: Option<Entity<Session>>,
-    clock: Option<DocumentClock>,
+    clock: Option<Entity<Clock>>,
     _window: &mut Window,
     cx: &mut App,
 ) -> Member {
