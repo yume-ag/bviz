@@ -13,6 +13,14 @@ use gpui::{
     SharedString, Subscription, Window, div, prelude::*,
 };
 
+gpui::actions!(
+    bviz_execlog,
+    [
+        /// Cycle list
+        CycleList,
+    ]
+);
+
 /// What a panel shows of a loaded log, embedded in its [`SpawnPanel`] as a
 /// cached layer so that a frame another panel of the window asks for replays
 /// it: only a notify of the tables changes what they show.
@@ -26,6 +34,9 @@ pub trait Tables: Render {
 
     /// The tables of `summary`, in a panel whose keys go where `focus` stands.
     fn new(summary: Summary, focus: &FocusHandle, cx: &mut Context<Self>) -> Self;
+
+    /// Shows the list after the one shown.
+    fn cycle_list(&mut self, cx: &mut Context<Self>);
 
     /// The toolbar over `tables`, which a choice on it notifies.
     fn toolbar(tables: &Entity<Self>, focus: &FocusHandle, window: &Window, cx: &App) -> OneRow;
@@ -125,7 +136,9 @@ impl<T: Tables> Render for SpawnPanel<T> {
         let Some(tables) = &self.tables else {
             return panel.children(self.model.read(cx).source().placeholder(&palette.colors));
         };
+        let cycled = tables.clone();
         T::on_actions(panel, tables)
+            .on_action(move |_: &CycleList, _, cx| cycled.update(cx, T::cycle_list))
             .children(
                 self.model
                     .read(cx)

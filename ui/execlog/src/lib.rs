@@ -21,19 +21,23 @@ pub use time::TimePanel;
 use bviz_execlog::ExecLog;
 use bviz_input::Input;
 use bviz_invocation::{InvocationId, Session};
-use bviz_ui_components::{Pending, declare_scopes, legend_key_bindings};
+use bviz_ui_components::{Pending, declare_scopes, legend_key_bindings, text_input};
 use bviz_ui_execlog_args::{EXEC_LOG_LONG, ExecLogArgs, ExecLogSource};
 use bviz_ui_playback::Clock;
 use bviz_ui_session::Sharing;
 use bviz_ui_workspace::{Document, Member, Shared, ViewSpec, document_label};
 use clap::Parser;
-use gpui::{App, Entity, SharedString, Window, prelude::*};
+use gpui::{App, Entity, KeyBinding, SharedString, Window, prelude::*};
 use model::{ExecLogModel, Read, Reread};
 use std::path::Path;
 use summary::Summary;
 
 pub fn register_keys(cx: &mut App) {
     declare_scopes(cx, [time::KEY_CONTEXT, bytes::KEY_CONTEXT]);
+    cx.bind_keys([time::KEY_CONTEXT, bytes::KEY_CONTEXT].map(|scope| {
+        let panel = text_input::unless_typing(scope);
+        KeyBinding::new("v", panel::CycleList, Some(panel.as_str()))
+    }));
     cx.bind_keys(legend_key_bindings(time::KEY_CONTEXT));
 }
 

@@ -184,6 +184,10 @@ impl Tables for TimeTables {
         legend_gestures().collect()
     }
 
+    fn cycle_list(&mut self, cx: &mut Context<Self>) {
+        self.show(self.list.next(), cx);
+    }
+
     fn new(mut summary: Summary, focus: &FocusHandle, cx: &mut Context<Self>) -> Self {
         let sort = DEFAULT_SORT;
         for runner in &mut summary.runners {
@@ -219,7 +223,7 @@ impl Tables for TimeTables {
         }
     }
 
-    fn toolbar(tables: &Entity<Self>, _focus: &FocusHandle, window: &Window, cx: &App) -> OneRow {
+    fn toolbar(tables: &Entity<Self>, focus: &FocusHandle, window: &Window, cx: &App) -> OneRow {
         let this = tables.read(cx);
         let palette = Palette::from_theme(&bviz_ui_theme::theme(window, cx));
         let summary = &this.summary;
@@ -249,7 +253,7 @@ impl Tables for TimeTables {
         let legend = Legend::new("spawn-time-legend", &this.legend).entries(phases);
         OneRow::new("spawn-time-toolbar")
             .filling(totals(text.into(), caveats, &palette))
-            .group(list_group(this.list, LONGEST, choose, window))
+            .group(list_group(this.list, LONGEST, choose, focus, window))
             .group(control)
             .trailing(legend.toolbar_group(window, cx))
     }

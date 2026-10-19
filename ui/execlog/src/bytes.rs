@@ -217,6 +217,10 @@ impl Tables for BytesTables {
         }
     }
 
+    fn cycle_list(&mut self, cx: &mut Context<Self>) {
+        self.show(self.list.next(), cx);
+    }
+
     fn new(mut summary: Summary, _focus: &FocusHandle, cx: &mut Context<Self>) -> Self {
         let sort = DEFAULT_SORT;
         for runner in &mut summary.runners {
@@ -243,7 +247,7 @@ impl Tables for BytesTables {
         }
     }
 
-    fn toolbar(tables: &Entity<Self>, _focus: &FocusHandle, window: &Window, cx: &App) -> OneRow {
+    fn toolbar(tables: &Entity<Self>, focus: &FocusHandle, window: &Window, cx: &App) -> OneRow {
         let this = tables.read(cx);
         let palette = Palette::from_theme(&bviz_ui_theme::theme(window, cx));
         let summary = &this.summary;
@@ -255,7 +259,7 @@ impl Tables for BytesTables {
         };
         let row = OneRow::new("spawn-bytes-toolbar")
             .filling(totals(text.into(), caveats, &palette))
-            .group(list_group(this.list, LARGEST, choose, window));
+            .group(list_group(this.list, LARGEST, choose, focus, window));
         match this.list {
             List::ByMnemonic => {
                 let set = this.runner_picker.read(cx).selected() != 0;

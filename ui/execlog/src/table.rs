@@ -3,6 +3,7 @@
 
 use crate::format::duration;
 use crate::palette::Palette;
+use crate::panel::CycleList;
 use crate::phase_bar::phase_bar;
 use crate::summary::{GroupRow, SpawnName};
 use bviz_execlog::ByteMeasure;
@@ -16,8 +17,8 @@ use bviz_ui_components::{
     TruncatingLabel, list_scrollbar, sort_gesture, sort_header, sort_hint,
 };
 use gpui::{
-    AnyElement, App, Context, Div, ElementId, Entity, IntoElement, MouseButton, MouseDownEvent,
-    Pixels, SharedString, Stateful, Window, div, prelude::*, px,
+    AnyElement, App, Context, Div, ElementId, Entity, FocusHandle, IntoElement, MouseButton,
+    MouseDownEvent, Pixels, SharedString, Stateful, Window, div, prelude::*, px,
 };
 use std::cmp::Ordering;
 use std::time::Duration;
@@ -486,6 +487,16 @@ pub(crate) enum List {
 
 const LISTS: [List; 2] = [List::ByMnemonic, List::Spawns];
 
+impl List {
+    /// The list after this one, round to the first.
+    pub(crate) fn next(self) -> List {
+        match self {
+            List::ByMnemonic => List::Spawns,
+            List::Spawns => List::ByMnemonic,
+        }
+    }
+}
+
 /// How long each group of a panel's toolbar holds out against the panel
 /// narrowing, the choice of list longest.
 const LIST: Priority = 3;
@@ -502,16 +513,21 @@ pub(crate) struct SpawnsToggle {
 }
 
 /// The toolbar's choice of list, standing at `standing`, a click asking
-/// `choose` for the list picked.
+/// `choose` for the list picked, naming the keys that cycle it where `focus`
+/// stands.
 pub(crate) fn list_group(
     standing: List,
     spawns: SpawnsToggle,
     choose: impl Fn(List, &mut App) + Clone + 'static,
+    focus: &FocusHandle,
     window: &Window,
 ) -> ToolbarGroup {
-    let segment = move |list: List| match list {
-        List::ByMnemonic => ToggleSegment::new("by mnemonic").tooltip("Spawns by mnemonic"),
-        List::Spawns => ToggleSegment::new(spawns.label).tooltip(spawns.tip),
+    let segment = move |list: List| {
+        match list {
+            List::ByMnemonic => ToggleSegment::new("by mnemonic").tooltip("Spawns by mnemonic"),
+            List::Spawns => ToggleSegment::new(spawns.label).tooltip(spawns.tip),
+        }
+        .keys_for(&CycleList, focus)
     };
     let toggles = || {
         let choose = choose.clone();
