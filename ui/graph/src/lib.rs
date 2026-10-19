@@ -18,7 +18,8 @@ use bviz_ui_playback::Clock;
 use bviz_ui_session::Sharing;
 use bviz_ui_theme::{DataColors, Theme, ThemeColors};
 use bviz_ui_workspace::{
-    Member, Panel, PanelEvent, PanelKind, Role, Titled, ViewKind, ViewSpec, document_label,
+    Document, Member, Panel, PanelEvent, PanelKind, Role, Shared, Titled, ViewKind, ViewSpec,
+    document_label,
 };
 use clap::Parser;
 use gpui::{
@@ -1616,9 +1617,10 @@ pub fn run() {
         |cli: Cli| cli.graph.source().map(Load::from),
         &format!("one of --{AQUERY_LONG}, --{CQUERY_LONG} or --{QUERY_LONG}"),
         |load: Load, window, cx| {
-            let session = cx.new(|_| Session::default());
-            let clock = cx.new(|_| Clock::default());
-            open(load, session, clock, Sharing::Alone, window, cx).into()
+            let shared = Shared::new(cx);
+            let (session, clock) = (shared.session().clone(), shared.clock().clone());
+            let member = open(load, session, clock, Sharing::Alone, window, cx);
+            Document::alone(member, None, shared)
         },
         &[register_keys],
     );

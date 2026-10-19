@@ -687,7 +687,6 @@ dependencies = [
  "bviz_ui_console",
  "bviz_ui_execlog",
  "bviz_ui_graph",
- "bviz_ui_playback",
  "bviz_ui_session",
  "bviz_ui_trace",
  "bviz_ui_workspace",
@@ -1059,6 +1058,7 @@ dependencies = [
 name = "bviz_ui_workspace"
 version = "0.1.0"
 dependencies = [
+ "bviz_invocation",
  "bviz_ui_assets",
  "bviz_ui_components",
  "bviz_ui_playback",

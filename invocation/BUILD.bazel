@@ -19,6 +19,7 @@ rust_library(
         "//ui/session:__pkg__",
         "//ui/spawn_phase:__pkg__",
         "//ui/trace:__pkg__",
+        "//ui/workspace:__pkg__",
     ],
 )
 

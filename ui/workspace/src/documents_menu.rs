@@ -412,7 +412,7 @@ impl Render for DocumentsMenu {
 mod tests {
     use super::*;
     use crate::documents::OpenView;
-    use crate::{Document, Member, Role, ViewKind, ViewSpec};
+    use crate::{DocumentOf, Member, Role, ViewKind, ViewSpec};
     use bviz_ui_theme::{
         MIN_SECONDARY_CONTRAST, MIN_TEXT_CONTRAST, MIN_VISIBLE_STEP, built_in_themes,
         contrast_ratio, level_step,
@@ -474,7 +474,7 @@ mod tests {
 
     /// What a window opening with `first` and `others` lists before any panel
     /// shows a view.
-    fn opening_listings(first: Document, others: Vec<Document>) -> Vec<Listing> {
+    fn opening_listings(first: DocumentOf<()>, others: Vec<DocumentOf<()>>) -> Vec<Listing> {
         listings(OpenDocument::unshown(std::iter::once(first).chain(others)))
     }
 
@@ -482,11 +482,12 @@ mod tests {
     /// the files were joined, under the label it was joined under.
     #[test]
     fn a_joined_document_heads_a_row_for_every_view_of_its_files() {
-        let joined = Document::join(
-            "Invocation a5f7f3e6".into(),
+        let joined = DocumentOf::join(
+            bviz_invocation::InvocationId::new("a5f7f3e6").expect("a non-empty id"),
             file("build.profile.gz", TIMELINE, vec![FLAME]),
             file("build.bep", CONSOLE, Vec::new()),
             vec![file("aquery.pb", GRAPH, Vec::new())],
+            (),
         );
         let listed = opening_listings(joined, Vec::new());
         let [Listing::Under { label, views }] = &listed[..] else {
@@ -526,19 +527,20 @@ mod tests {
     #[test]
     fn a_file_is_listed_under_the_number_it_has_among_the_files_of_every_document() {
         let session = || {
-            Document::join(
-                "Invocation a5f7f3e6".into(),
+            DocumentOf::join(
+                bviz_invocation::InvocationId::new("a5f7f3e6").expect("a non-empty id"),
                 file("build.profile.gz", TIMELINE, vec![FLAME]),
                 file("aquery.pb", GRAPH, Vec::new()),
                 Vec::new(),
+                (),
             )
         };
         let listed = opening_listings(
             session(),
             vec![
-                file("aquery.pb", GRAPH, Vec::new()).into(),
-                file("build.profile.gz", TIMELINE, vec![FLAME]).into(),
-                file("build.bep", CONSOLE, Vec::new()).into(),
+                DocumentOf::alone(file("aquery.pb", GRAPH, Vec::new()), None, ()),
+                DocumentOf::alone(file("build.profile.gz", TIMELINE, vec![FLAME]), None, ()),
+                DocumentOf::alone(file("build.bep", CONSOLE, Vec::new()), None, ()),
             ],
         );
         assert_eq!(
@@ -555,11 +557,12 @@ mod tests {
     #[test]
     fn joined_documents_sharing_a_label_are_listed_by_number() {
         let session = |profile| {
-            Document::join(
-                "Invocation a5f7f3e6".into(),
+            DocumentOf::join(
+                bviz_invocation::InvocationId::new("a5f7f3e6").expect("a non-empty id"),
                 file(profile, TIMELINE, vec![FLAME]),
                 file("build.bep", CONSOLE, Vec::new()),
                 Vec::new(),
+                (),
             )
         };
         let listed = opening_listings(session("a.profile.gz"), vec![session("b.profile.gz")]);

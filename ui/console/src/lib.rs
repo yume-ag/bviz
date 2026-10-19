@@ -20,7 +20,7 @@ use bviz_invocation::{InvocationId, Session};
 use bviz_ui_components::Pending;
 use bviz_ui_console_args::{BEP_LONG, ConsoleArgs, ConsoleSource};
 use bviz_ui_playback::Clock;
-use bviz_ui_workspace::{Document, Member, ViewSpec, document_label};
+use bviz_ui_workspace::{Document, Member, Shared, ViewSpec, document_label};
 use clap::Parser;
 use gpui::{App, Entity, SharedString, Window, prelude::*};
 use std::path::{Path, PathBuf};
@@ -102,9 +102,15 @@ pub fn run() {
         |cli: Cli| cli.sources().map(Load::from),
         &format!("--{BEP_LONG} or a file argument"),
         |load, window, cx| {
-            let session = cx.new(|_| Session::default());
-            let clock = cx.new(|_| Clock::default());
-            Document::from(open(load, session, clock.clone(), window, cx)).playing_on(clock)
+            let shared = Shared::new(cx);
+            let member = open(
+                load,
+                shared.session().clone(),
+                shared.clock().clone(),
+                window,
+                cx,
+            );
+            Document::alone(member, None, shared).playing()
         },
         &[console::register_keys],
     );

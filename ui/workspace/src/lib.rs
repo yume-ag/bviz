@@ -21,17 +21,17 @@ mod testing;
 mod workspace;
 
 pub(crate) use arrangement::{Arrangement, Maximize};
-pub use documents::ViewSpec;
-pub(crate) use documents::{
-    DocumentId, Documents, OpenDocument, ViewId, ViewState, WindowsChanged,
-};
+pub use documents::{DocumentId, Documents, Joinable, ViewSpec};
+pub(crate) use documents::{OpenDocument, ViewId, ViewState, WindowsChanged};
 pub use gestures::chrome_gestures;
 pub(crate) use group::PanelGroup;
 pub use layout::{AtEdge, DividerId, Layout, Panes, Removal, Side, Split, SplitSide};
 pub(crate) use pane::Framing;
 pub use pane::{Pane, PaneEvent};
+pub(crate) use panel::DocumentOf;
 pub use panel::{
-    AnyPanel, Document, Member, Panel, PanelEvent, PanelKind, Titled, ViewKind, document_label,
+    AnyPanel, Document, Member, Panel, PanelEvent, PanelKind, Shared, Titled, ViewKind,
+    document_label, invocation_label,
 };
 pub(crate) use regions::Regions;
 pub use regions::Role;

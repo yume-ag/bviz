@@ -13,6 +13,7 @@ rust_library(
         "//ui/trace:__pkg__",
     ],
     deps = [
+        "//invocation",
         "//ui/assets",
         "//ui/components",
         "//ui/playback",

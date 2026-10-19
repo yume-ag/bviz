@@ -50,7 +50,8 @@ use bviz_ui_components::{
 use bviz_ui_playback::{Clock, unaligned_note};
 use bviz_ui_trace_args::{PROFILE_LONG, TraceArgs, TraceSource};
 use bviz_ui_workspace::{
-    Member, Panel, PanelEvent, PanelKind, Role, Titled, ViewKind, ViewSpec, document_label,
+    Document, Member, Panel, PanelEvent, PanelKind, Role, Shared, Titled, ViewKind, ViewSpec,
+    document_label,
 };
 use clap::Parser;
 use gpui::{
@@ -1839,9 +1840,10 @@ pub fn run() {
         |cli: Cli| cli.trace.sources().map(Load::from),
         &format!("--{PROFILE_LONG}"),
         |load, window, cx| {
-            let session = cx.new(|_| Session::default());
-            let clock = cx.new(|_| Clock::default());
-            open(load, session, clock, window, cx).into()
+            let shared = Shared::new(cx);
+            let (session, clock) = (shared.session().clone(), shared.clock().clone());
+            let member = open(load, session, clock, window, cx);
+            Document::alone(member, None, shared)
         },
         &[register_keys],
     );

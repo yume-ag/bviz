@@ -30,7 +30,12 @@ pub(crate) enum Given<T> {
 
 /// What a window opens as one document.
 pub(crate) enum Opening<T> {
-    Alone(T),
+    /// A file by itself, of the invocation `invocation` where the file names
+    /// the one that wrote it.
+    Alone {
+        file: T,
+        invocation: Option<InvocationId>,
+    },
     /// Files of the invocation `id`, in the order they were given.
     Invocation {
         id: InvocationId,
@@ -42,7 +47,10 @@ pub(crate) enum Opening<T> {
 
 /// A document while the files after its first are still being gone through.
 enum Gathering<T> {
-    Alone(T),
+    Alone {
+        file: T,
+        invocation: Option<InvocationId>,
+    },
     Invocation(Gathered<T>),
 }
 
@@ -65,7 +73,10 @@ impl<T> Gathering<T> {
                 rest: Vec::new(),
                 held: vec![file.kind],
             }),
-            None => Self::Alone(file.file),
+            None => Self::Alone {
+                file: file.file,
+                invocation: None,
+            },
         }
     }
 
@@ -80,7 +91,7 @@ impl<T> Gathering<T> {
     /// one file was gathered for opens as that file.
     fn gathered(self) -> Opening<T> {
         match self {
-            Self::Alone(file) => Opening::Alone(file),
+            Self::Alone { file, invocation } => Opening::Alone { file, invocation },
             Self::Invocation(gathered) => {
                 let mut rest = gathered.rest.into_iter();
                 match rest.next() {
@@ -90,7 +101,10 @@ impl<T> Gathering<T> {
                         second,
                         rest: rest.collect(),
                     },
-                    None => Opening::Alone(gathered.first),
+                    None => Opening::Alone {
+                        file: gathered.first,
+                        invocation: Some(gathered.id),
+                    },
                 }
             }
         }
@@ -123,7 +137,10 @@ pub(crate) fn by_invocation<T>(given: Given<T>) -> (Opening<T>, Vec<Opening<T>>)
                     rest: Vec::new(),
                     held: Vec::new(),
                 }),
-                None => Gathering::Alone(graph),
+                None => Gathering::Alone {
+                    file: graph,
+                    invocation: None,
+                },
             };
             (leading, files)
         }
@@ -142,7 +159,10 @@ pub(crate) fn by_invocation<T>(given: Given<T>) -> (Opening<T>, Vec<Opening<T>>)
                 gathered.rest.push(file.file);
                 continue;
             }
-            Some(_) => Gathering::Alone(file.file),
+            Some(_) => Gathering::Alone {
+                file: file.file,
+                invocation: file.invocation,
+            },
             None => Gathering::begin(file),
         };
         others.push(apart);
@@ -153,23 +173,10 @@ pub(crate) fn by_invocation<T>(given: Given<T>) -> (Opening<T>, Vec<Opening<T>>)
     )
 }
 
-/// Characters of a UUID's first group, which is as much of an invocation id as
-/// a label shows.
-const SHORT_ID_CHARS: usize = 8;
-
-/// How the invocation `id` reads as its document's label: by the first group
-/// of the UUID Bazel names an invocation with, and by as many leading
-/// characters of an id that is not one.
-pub(crate) fn label(id: &InvocationId) -> String {
-    let id = id.as_str();
-    let group = id.split('-').find(|group| !group.is_empty()).unwrap_or(id);
-    let short: String = group.chars().take(SHORT_ID_CHARS).collect();
-    format!("Invocation {short}")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bviz_ui_workspace::invocation_label;
 
     const A: &str = "a5f7f3e6-4fda-4675-bc16-8ede5420b210";
     const B: &str = "0c3d9a77-14be-4f0e-9d0a-55817e2200e2";
@@ -209,13 +216,13 @@ mod tests {
         iter::once(leading)
             .chain(others)
             .map(|opening| match opening {
-                Opening::Alone(name) => vec![name.to_string()],
+                Opening::Alone { file, .. } => vec![file.to_string()],
                 Opening::Invocation {
                     id,
                     first,
                     second,
                     rest,
-                } => iter::once(label(&id))
+                } => iter::once(invocation_label(&id).to_string())
                     .chain([first, second].into_iter().chain(rest).map(String::from))
                     .collect(),
             })
@@ -367,21 +374,48 @@ mod tests {
         );
     }
 
-    #[test]
-    fn an_invocation_is_labelled_by_the_first_group_of_its_uuid() {
-        assert_eq!(label(&id(A)), "Invocation a5f7f3e6");
+    /// The invocation each document opening by itself is of, by its id.
+    fn lone_invocations(given: Given<&'static str>) -> Vec<(&'static str, Option<String>)> {
+        let (leading, others) = by_invocation(given);
+        iter::once(leading)
+            .chain(others)
+            .filter_map(|opening| match opening {
+                Opening::Alone { file, invocation } => {
+                    Some((file, invocation.map(|id| id.as_str().to_string())))
+                }
+                Opening::Invocation { .. } => None,
+            })
+            .collect()
     }
 
-    /// An id is whatever the file holds, so one that is no UUID is still cut to
-    /// a label's length, and one led by a hyphen still shows a group.
+    /// A file opening by itself keeps the invocation it names, whether it is
+    /// the only file of it or one of a kind its invocation's document holds; a
+    /// graph names none.
     #[test]
-    fn an_id_that_is_no_uuid_is_labelled_by_its_leading_characters() {
-        assert_eq!(label(&id("abc")), "Invocation abc");
+    fn a_file_opening_by_itself_keeps_the_invocation_it_names() {
+        let given = Given::Files {
+            first: profile("pa", Some(A)),
+            rest: vec![profile("pb", Some(A)), bep("b", None)],
+        };
         assert_eq!(
-            label(&id("0123456789abcdef0123456789abcdef")),
-            "Invocation 01234567"
+            lone_invocations(given),
+            [
+                ("pa", Some(A.to_string())),
+                ("pb", Some(A.to_string())),
+                ("b", None),
+            ]
         );
-        assert_eq!(label(&id("-4fda-4675")), "Invocation 4fda");
-        assert_eq!(label(&id("--")), "Invocation --");
+        let graph = Given::Graph {
+            graph: "g",
+            files: vec![profile("pa", Some(A)), profile("pb", Some(B))],
+        };
+        assert_eq!(
+            lone_invocations(graph),
+            [
+                ("g", None),
+                ("pa", Some(A.to_string())),
+                ("pb", Some(B.to_string())),
+            ]
+        );
     }
 }

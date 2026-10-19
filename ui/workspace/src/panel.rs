@@ -1,10 +1,11 @@
 use crate::{DocumentId, Documents, Pane, Regions, Role, ViewSpec};
+use bviz_invocation::{InvocationId, Session};
 use bviz_ui_components::KeyScope;
 use bviz_ui_components::gesture::GestureRow;
 use bviz_ui_playback::Clock;
 use gpui::{
-    AnyView, App, Context, Entity, EntityId, EventEmitter, FocusHandle, Focusable, Render,
-    SharedString, Subscription, Window,
+    AnyView, App, AppContext, Context, Entity, EntityId, EventEmitter, FocusHandle, Focusable,
+    Render, SharedString, Subscription, Window,
 };
 use std::iter;
 use std::num::NonZeroUsize;
@@ -296,60 +297,121 @@ impl Member {
     }
 }
 
+/// What the files of one document share: the session their readers report to
+/// and the clock whose time every view of the document shows.
+#[derive(Clone)]
+pub struct Shared {
+    session: Entity<Session>,
+    clock: Entity<Clock>,
+}
+
+impl Shared {
+    /// A fresh session and clock for a document's files. The registry joins
+    /// the clock of a document opening with several files.
+    pub fn new(cx: &mut App) -> Self {
+        Self {
+            session: cx.new(|_| Session::default()),
+            clock: cx.new(|_| Clock::default()),
+        }
+    }
+
+    pub fn session(&self) -> &Entity<Session> {
+        &self.session
+    }
+
+    pub fn clock(&self) -> &Entity<Clock> {
+        &self.clock
+    }
+}
+
 /// What a window opens, and lists as one entry of its Documents menu.
-pub struct Document {
+pub type Document = DocumentOf<Shared>;
+
+/// A [`Document`] whose files share `S`, which the registry's bookkeeping is
+/// tested over without a running application.
+pub struct DocumentOf<S> {
     pub(crate) members: Members,
-    /// The time every view of the document shows, for a document that can play
-    /// back.
-    pub(crate) clock: Option<Entity<Clock>>,
+    pub(crate) shared: S,
+    /// Whether the window drives the document's clock from a bar while one of
+    /// its panels is the active one.
+    pub(crate) plays: bool,
 }
 
 pub(crate) enum Members {
-    /// One file opened by itself, which the document goes by the label of.
-    Alone(Member),
-    /// Several files under a label of the document's own.
+    /// One file opened by itself, which the document goes by the label of, and
+    /// the invocation that wrote it where the file names one.
+    Alone {
+        member: Member,
+        invocation: Option<InvocationId>,
+    },
+    /// Several files of the invocation `invocation`, which the document goes
+    /// by the label of.
     Joined {
-        label: SharedString,
+        invocation: InvocationId,
         first: Member,
         second: Member,
         rest: Vec<Member>,
     },
 }
 
-impl From<Member> for Document {
-    fn from(member: Member) -> Self {
+impl<S> DocumentOf<S> {
+    /// `member` as a document by itself, of `invocation` where the file names
+    /// the one that wrote it.
+    pub fn alone(member: Member, invocation: Option<InvocationId>, shared: S) -> Self {
         Self {
-            members: Members::Alone(member),
-            clock: None,
+            members: Members::Alone { member, invocation },
+            shared,
+            plays: false,
         }
     }
-}
 
-impl Document {
-    /// `first`, `second` and each of `rest` as one document, which the Documents
-    /// menu lists under `label`. A window lays out and numbers each file as it
-    /// does one opened by itself.
-    pub fn join(label: SharedString, first: Member, second: Member, rest: Vec<Member>) -> Self {
+    /// `first`, `second` and each of `rest` as one document of `invocation`,
+    /// which the Documents menu lists under the invocation's label. A window
+    /// lays out and numbers each file as it does one opened by itself.
+    pub fn join(
+        invocation: InvocationId,
+        first: Member,
+        second: Member,
+        rest: Vec<Member>,
+        shared: S,
+    ) -> Self {
         Self {
             members: Members::Joined {
-                label,
+                invocation,
                 first,
                 second,
                 rest,
             },
-            clock: None,
+            shared,
+            plays: false,
         }
     }
 
-    /// This document, its files following `clock`, which the window drives
-    /// from a bar while one of the document's panels is the active one.
-    pub fn playing_on(self, clock: Entity<Clock>) -> Self {
+    /// This document, played back from a bar while one of its panels is the
+    /// active one.
+    pub fn playing(self) -> Self {
         Self {
-            clock: Some(clock),
+            plays: true,
             ..self
         }
     }
+}
 
+/// Characters of a UUID's first group, which is as much of an invocation id as
+/// a label shows.
+const SHORT_ID_CHARS: usize = 8;
+
+/// How the invocation `id` reads as its document's label: by the first group
+/// of the UUID Bazel names an invocation with, and by as many leading
+/// characters of an id that is not one.
+pub fn invocation_label(id: &InvocationId) -> SharedString {
+    let id = id.as_str();
+    let group = id.split('-').find(|group| !group.is_empty()).unwrap_or(id);
+    let short: String = group.chars().take(SHORT_ID_CHARS).collect();
+    format!("Invocation {short}").into()
+}
+
+impl Document {
     /// The panels of `first` and `others`, each document registered with the
     /// session's [`Documents`], gathered by role in the order the documents,
     /// their files and the files' views are given.
@@ -513,5 +575,30 @@ mod tests {
             NonZeroUsize::new(12).map(ordinal_suffix),
             Some(" (12)".into())
         );
+    }
+
+    fn id(id: &str) -> InvocationId {
+        InvocationId::new(id).expect("a non-empty id")
+    }
+
+    #[test]
+    fn an_invocation_is_labelled_by_the_first_group_of_its_uuid() {
+        assert_eq!(
+            invocation_label(&id("a5f7f3e6-4fda-4675-bc16-8ede5420b210")),
+            "Invocation a5f7f3e6"
+        );
+    }
+
+    /// An id is whatever the file holds, so one that is no UUID is still cut to
+    /// a label's length, and one led by a hyphen still shows a group.
+    #[test]
+    fn an_id_that_is_no_uuid_is_labelled_by_its_leading_characters() {
+        assert_eq!(invocation_label(&id("abc")), "Invocation abc");
+        assert_eq!(
+            invocation_label(&id("0123456789abcdef0123456789abcdef")),
+            "Invocation 01234567"
+        );
+        assert_eq!(invocation_label(&id("-4fda-4675")), "Invocation 4fda");
+        assert_eq!(invocation_label(&id("--")), "Invocation --");
     }
 }

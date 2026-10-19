@@ -408,14 +408,6 @@ impl Sources {
 }
 
 impl Clock {
-    /// A clock of a document joining several files.
-    pub fn joined() -> Self {
-        Self {
-            alignment: Alignment::Joined,
-            ..Self::default()
-        }
-    }
-
     pub fn alignment(&self) -> Alignment {
         self.alignment
     }

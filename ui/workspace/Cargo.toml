@@ -13,6 +13,7 @@ path = "src/lib.rs"
 [dependencies]
 clap = { workspace = true }
 gpui = { workspace = true }
+bviz_invocation = { workspace = true }
 bviz_ui_assets = { path = "../assets" }
 bviz_ui_components = { path = "../components" }
 bviz_ui_playback = { path = "../playback" }

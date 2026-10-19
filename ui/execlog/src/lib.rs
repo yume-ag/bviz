@@ -17,7 +17,7 @@ use bviz_invocation::{InvocationId, Session};
 use bviz_ui_components::{Pending, declare_scopes, legend_key_bindings};
 use bviz_ui_execlog_args::{EXEC_LOG_LONG, ExecLogArgs, ExecLogSource};
 use bviz_ui_session::Sharing;
-use bviz_ui_workspace::{Member, ViewSpec, document_label};
+use bviz_ui_workspace::{Document, Member, Shared, ViewSpec, document_label};
 use clap::Parser;
 use gpui::{App, Entity, SharedString, Window, prelude::*};
 use model::{ExecLogModel, Read};
@@ -104,8 +104,9 @@ pub fn run() {
         |cli: Cli| cli.exec_log.sources().map(Load::from),
         &format!("--{EXEC_LOG_LONG}"),
         |load, window, cx| {
-            let session = cx.new(|_| Session::default());
-            open(load, session, Sharing::Alone, window, cx).into()
+            let shared = Shared::new(cx);
+            let member = open(load, shared.session().clone(), Sharing::Alone, window, cx);
+            Document::alone(member, None, shared)
         },
         &[register_keys],
     );
