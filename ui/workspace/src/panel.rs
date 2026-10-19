@@ -414,20 +414,18 @@ pub fn invocation_label(id: &InvocationId) -> SharedString {
 }
 
 impl Document {
-    /// The panels of `first` and `others`, each document registered with the
-    /// session's [`Documents`], gathered by role in the order the documents,
-    /// their files and the files' views are given.
-    pub(crate) fn open(first: Self, others: Vec<Self>, cx: &mut App) -> Regions<AnyPanel> {
-        let by_role = |panel: AnyPanel| (panel.role(), panel);
-        Documents::global(cx).update(cx, |documents, cx| {
-            let (lead, following) = documents.open(first, cx);
-            let mut regions = Regions::new(lead.role(), lead);
-            regions.extend(following.into_iter().map(by_role));
-            for document in others {
-                let (first, rest) = documents.open(document, cx);
-                regions.extend(iter::once(first).chain(rest).map(by_role));
+    /// The panels of `documents`, each registered with the session's
+    /// [`Documents`], gathered by role in the order the documents, their files
+    /// and the files' views are given. `None` where `documents` is empty.
+    pub(crate) fn open(documents: Vec<Self>, cx: &mut App) -> Option<Regions<AnyPanel>> {
+        Documents::global(cx).update(cx, |registry, cx| {
+            let mut panels = Vec::with_capacity(documents.len());
+            for document in documents {
+                let (first, rest) = registry.open(document, cx);
+                panels.push(iter::once(first).chain(rest));
             }
-            regions
+            let by_role = |panel: AnyPanel| (panel.role(), panel);
+            Regions::gather(panels.into_iter().flatten().map(by_role))
         })
     }
 }

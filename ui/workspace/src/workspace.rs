@@ -604,8 +604,8 @@ impl Workspace {
         workspace
     }
 
-    /// Builds a workspace framing the views of `first` and `others`, each in its
-    /// role's region.
+    /// Builds a workspace framing the views of `first` and `others`, as
+    /// [`Workspace::open_documents`] lays them out.
     pub(crate) fn with_documents(
         app_name: impl Into<SharedString>,
         first: Document,
@@ -613,7 +613,42 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::new(app_name, Document::open(first, others, cx), window, cx)
+        let mut workspace = Self::empty(app_name, window, cx);
+        let mut documents = Vec::with_capacity(1 + others.len());
+        documents.push(first);
+        documents.extend(others);
+        workspace.open_documents(documents, window, cx);
+        workspace
+    }
+
+    /// Registers each of `documents` and shows its views here: a window framing
+    /// no panel frames them by role as a window opening with them does, and
+    /// one framing panes lays each panel out where its [`placement`] puts it.
+    /// The pane showing the first document's first view becomes the active one.
+    pub fn open_documents(
+        &mut self,
+        documents: Vec<Document>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Body::Framed(frame) = &mut self.body else {
+            if let Some(regions) = Document::open(documents, cx) {
+                self.reframe(regions, window, cx);
+            }
+            return;
+        };
+        let registry = Documents::global(cx);
+        let mut leading = None;
+        for document in documents {
+            let (first, rest) = registry.update(cx, |registry, cx| registry.open(document, cx));
+            leading.get_or_insert(first.entity_id());
+            for panel in iter::once(first).chain(rest) {
+                frame.place(panel, window, cx);
+            }
+        }
+        if let Some(panel) = leading {
+            self.reveal(panel, window, cx);
+        }
     }
 
     /// The panes the window frames, `None` while it frames none.
