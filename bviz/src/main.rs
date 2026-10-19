@@ -138,17 +138,20 @@ fn open(opening: Opening<Load>, window: &mut Window, cx: &mut App) -> Document {
 fn main() {
     // SAFETY: the first statement of main, before any other thread starts.
     unsafe { bviz_alloc::retain_freed_memory_across_load() };
-    match Cli::parse().request().unwrap_or_else(|e| e.exit()) {
+    match Cli::parse().request() {
         Request::Bazelrc(args) => args.print(),
-        Request::Open(sources) => open_window(sources),
+        Request::Open(sources) => {
+            let (first, rest) = group::by_invocation(Load::start_all(sources));
+            let mut openings = Vec::with_capacity(1 + rest.len());
+            openings.push(first);
+            openings.extend(rest);
+            open_window(openings);
+        }
+        Request::Empty => open_window(Vec::new()),
     }
 }
 
-fn open_window(sources: Sources) {
-    let (first, rest) = group::by_invocation(Load::start_all(sources));
-    let mut openings = Vec::with_capacity(1 + rest.len());
-    openings.push(first);
-    openings.extend(rest);
+fn open_window(openings: Vec<Opening<Load>>) {
     bviz_ui_workspace::run_panels(
         "bviz",
         bviz_ui_workspace::WINDOW_SIZE,
@@ -239,7 +242,7 @@ mod tests {
             .unwrap_or_else(std::env::temp_dir);
         let missing = dir.join("missing.profile.gz");
         let args = ["bviz".into(), "--profile".into(), missing.into_os_string()];
-        let request = Cli::try_parse_from(args).and_then(Cli::request);
+        let request = Cli::try_parse_from(args).map(Cli::request);
         let Ok(Request::Open(Sources::Files { first, .. })) = request else {
             panic!("a profile opens as a file");
         };

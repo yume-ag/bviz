@@ -5,12 +5,11 @@
 //! so a parse can be exercised without a display.
 
 use bviz_bazel_flags_args::BazelrcArgs;
-use bviz_ui_console_args::{BEP_LONG, ConsoleArgs, ConsoleSource};
-use bviz_ui_execlog_args::{EXEC_LOG_LONG, ExecLogArgs, ExecLogSource};
-use bviz_ui_graph_args::{AQUERY_LONG, CQUERY_LONG, GraphArgs, GraphSource, QUERY_LONG};
-use bviz_ui_trace_args::{PROFILE_LONG, TraceArgs, TraceSource};
-use clap::error::ErrorKind;
-use clap::{CommandFactory, Parser, Subcommand};
+use bviz_ui_console_args::{ConsoleArgs, ConsoleSource};
+use bviz_ui_execlog_args::{ExecLogArgs, ExecLogSource};
+use bviz_ui_graph_args::{GraphArgs, GraphSource};
+use bviz_ui_trace_args::{TraceArgs, TraceSource};
+use clap::{Parser, Subcommand};
 
 /// Opens Bazel build documents: the dependency graph, the action timeline, the
 /// console replay, the spawn time by phase.
@@ -32,6 +31,8 @@ use clap::{CommandFactory, Parser, Subcommand};
 /// build a graph describes. It takes the graph for the invocation's when every
 /// id the other files carry is the same one, be that a single file's, and opens
 /// the graph as a document of its own when they carry several ids or none.
+///
+/// With no file named, the window opens showing no document.
 #[derive(Parser, Debug)]
 #[command(
     name = "bviz",
@@ -63,22 +64,20 @@ enum Command {
 pub enum Request {
     Bazelrc(BazelrcArgs),
     Open(Sources),
+    /// The window, showing no document.
+    Empty,
 }
 
 impl Cli {
-    pub fn request(self) -> Result<Request, clap::Error> {
+    pub fn request(self) -> Request {
         match self.command {
-            Some(Command::Bazelrc(args)) => Ok(Request::Bazelrc(args)),
-            None => self.sources().map(Request::Open),
+            Some(Command::Bazelrc(args)) => Request::Bazelrc(args),
+            None => self.sources().map_or(Request::Empty, Request::Open),
         }
     }
 
-    /// What this command line names to open.
-    ///
-    /// The rejection of a command line naming nothing is written out here rather
-    /// than left to a clap argument group, because these fragments are shared
-    /// with the per-viewer binaries, where a different flag is the required one.
-    fn sources(self) -> Result<Sources, clap::Error> {
+    /// What this command line names to open, `None` where it names nothing.
+    fn sources(self) -> Option<Sources> {
         let mut files = Vec::with_capacity(
             self.trace.profile.len() + self.console.bep.len() + self.exec_log.exec_log.len(),
         );
@@ -86,19 +85,11 @@ impl Cli {
         files.extend(self.console.sources().map(Source::Console));
         files.extend(self.exec_log.sources().map(Source::ExecLog));
         if let Some(graph) = self.graph.source() {
-            return Ok(Sources::Graph { graph, files });
+            return Some(Sources::Graph { graph, files });
         }
         let mut files = files.into_iter();
-        let Some(first) = files.next() else {
-            return Err(Self::command().error(
-                ErrorKind::MissingRequiredArgument,
-                format!(
-                    "one of --{AQUERY_LONG}, --{CQUERY_LONG}, --{QUERY_LONG}, --{PROFILE_LONG}, \
-                     --{BEP_LONG} or --{EXEC_LOG_LONG} is required"
-                ),
-            ));
-        };
-        Ok(Sources::Files {
+        let first = files.next()?;
+        Some(Sources::Files {
             first,
             rest: files.collect(),
         })
@@ -116,8 +107,7 @@ pub enum Source {
 
 /// What a command line names to open: the one graph its graph flags describe,
 /// where it gives any, and each repeatable flag's files in the order given.
-/// Either way it names at least one thing: a window with nothing to show is a
-/// usage mistake, refused before any window opens.
+/// Either way it names at least one thing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Sources {
     Graph {
@@ -134,13 +124,17 @@ pub enum Sources {
 mod tests {
     use super::*;
     use bviz_ui_graph_args::{Input, InputKind};
+    use clap::CommandFactory;
+    use clap::error::ErrorKind;
 
-    fn sources(args: &[&str]) -> Result<Sources, clap::Error> {
-        Cli::try_parse_from(std::iter::once("bviz").chain(args.iter().copied()))?.sources()
+    fn sources(args: &[&str]) -> Option<Sources> {
+        Cli::try_parse_from(std::iter::once("bviz").chain(args.iter().copied()))
+            .expect("the command line parses")
+            .sources()
     }
 
     fn request(args: &[&str]) -> Result<Request, clap::Error> {
-        Cli::try_parse_from(std::iter::once("bviz").chain(args.iter().copied()))?.request()
+        Cli::try_parse_from(std::iter::once("bviz").chain(args.iter().copied())).map(Cli::request)
     }
 
     fn bazelrc(config: &str, dir: &str) -> Request {
@@ -180,22 +174,10 @@ mod tests {
         Source::ExecLog(ExecLogSource { path: path.into() })
     }
 
-    /// A window with nothing to show is refused, in the terms clap refuses a
-    /// missing required argument — which is what fixes the exit code the shell
-    /// sees.
     #[test]
-    fn a_command_line_naming_no_file_is_a_usage_error() {
-        let err = sources(&[]).expect_err("no file was named");
-        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
-        let error = err.to_string();
-        for arg in Cli::command().get_arguments() {
-            if let Some(long) = arg.get_long() {
-                assert!(
-                    error.contains(&format!("--{long}")),
-                    "the error does not name --{long}: {error}"
-                );
-            }
-        }
+    fn a_command_line_naming_no_file_asks_for_an_empty_window() {
+        assert_eq!(sources(&[]), None);
+        assert_eq!(request(&[]).unwrap(), Request::Empty);
     }
 
     #[test]
@@ -330,7 +312,7 @@ mod tests {
                 .iter()
                 .map(|words| {
                     Cli::try_parse_from(words)
-                        .and_then(Cli::request)
+                        .map(Cli::request)
                         .unwrap_or_else(|e| panic!("{words:?}: {e}"))
                 })
                 .collect();
