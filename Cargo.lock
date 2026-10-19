@@ -830,7 +830,7 @@ dependencies = [
 name = "bviz_sniff"
 version = "0.1.0"
 dependencies = [
- "fastrand 2.5.0",
+ "fastrand",
  "flate2",
  "prost",
 ]
