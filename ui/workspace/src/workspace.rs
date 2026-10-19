@@ -8,8 +8,8 @@ use crate::panel_menu::{Deed, Standing};
 use crate::regions::{Placement, placement};
 use crate::{
     AnyPanel, Arrangement, DividerId, Document, DocumentId, Documents, Framing, Joinable, Layout,
-    Maximize, Member, Pane, PaneEvent, Regions, Removal, Role, Shared, Side, Split, SplitSide,
-    WindowsChanged, documents, drag_icon, drop, panel_menu,
+    Maximize, Member, Pane, PaneEvent, PathOpener, Regions, Removal, Role, Shared, Side, Split,
+    SplitSide, WindowsChanged, documents, drag_icon, drop, panel_menu,
 };
 use bviz_ui_components::gesture::Pointer;
 use bviz_ui_components::{
@@ -25,12 +25,13 @@ use bviz_ui_shell::Chrome;
 use bviz_ui_theme::ThemeColors;
 use gpui::{
     Action, AnyElement, AnyWindowHandle, App, Axis, Bounds, Canvas, Div, ElementId, Entity,
-    EntityId, FocusHandle, IconScale, IntoElement, KeyBinding, KeyContext, MouseDownEvent, Pixels,
-    PlatformDragEvent, Point, Rems, Render, SharedString, Size, Stateful, Subscription, WeakEntity,
-    Window, actions, deferred, div, point, prelude::*, px,
+    EntityId, FocusHandle, IconScale, IntoElement, KeyBinding, KeyContext, MouseDownEvent,
+    PathPromptOptions, Pixels, PlatformDragEvent, Point, Rems, Render, SharedString, Size,
+    Stateful, Subscription, WeakEntity, Window, actions, deferred, div, point, prelude::*, px,
 };
 use std::collections::HashMap;
 use std::iter;
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
 actions!(
@@ -78,6 +79,8 @@ actions!(
         ResetArrangement,
         /// Show keys and gestures
         ShowKeysAndGestures,
+        /// Open files
+        OpenFiles,
     ]
 );
 
@@ -140,10 +143,18 @@ const MARK_FILL: f32 = 0.3;
 /// holds.
 const MENU_LAYER: usize = 1;
 
+/// What a file chooser's control choosing the files says it does.
+const OPEN: &str = "Open";
+
+/// What a window says where the platform offers no file chooser.
+const NO_CHOOSER: &str = "No file chooser is available to open files with.";
+
 /// What the control dismissing a note says it does.
 const DISMISS_NOTE: &str = "Dismiss";
 
-pub(crate) fn register_keys(cx: &mut App) {
+/// Registers the window's key scopes and bindings, binding [`OpenFiles`] only
+/// where `opens_files` says the app opens files at all.
+pub(crate) fn register_keys(cx: &mut App, opens_files: bool) {
     declare_scopes(
         cx,
         [
@@ -152,12 +163,16 @@ pub(crate) fn register_keys(cx: &mut App) {
             documents_menu::KEY_CONTEXT,
         ],
     );
+    cx.bind_keys(bindings(opens_files));
+}
+
+fn bindings(opens_files: bool) -> Vec<KeyBinding> {
     let workspace = Some(KEY_CONTEXT.id());
     let unless_typing = text_input::unless_typing(KEY_CONTEXT);
     let unless_typing = Some(unless_typing.as_str());
     let playback = text_input::unless_typing(PLAYBACK_KEY_CONTEXT);
     let playback = Some(playback.as_str());
-    cx.bind_keys([
+    let mut bindings = vec![
         KeyBinding::new("?", ShowKeysAndGestures, unless_typing),
         KeyBinding::new("f1", ShowKeysAndGestures, workspace),
         KeyBinding::new("ctrl-tab", NextTab, workspace),
@@ -192,7 +207,11 @@ pub(crate) fn register_keys(cx: &mut App) {
         KeyBinding::new("end", SeekEnd, playback),
         KeyBinding::new("]", SpeedUp, playback),
         KeyBinding::new("[", SpeedDown, playback),
-    ]);
+    ];
+    if opens_files {
+        bindings.push(KeyBinding::new("secondary-o", OpenFiles, workspace));
+    }
+    bindings
 }
 
 /// Where a panel is re-homed by [`Workspace::move_panel`]. A pane is named by
@@ -738,6 +757,57 @@ impl Workspace {
             self.add_panel(panel, window, cx);
         }
         Ok(())
+    }
+
+    /// Asks which files to open through the platform's file chooser, and hands
+    /// them to the app's [`PathOpener`].
+    fn open_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !cx.has_global::<PathOpener>() {
+            return;
+        }
+        let chosen = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some(OPEN.into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let chosen = chosen.await;
+            this.update_in(cx, |workspace, window, cx| match chosen {
+                Ok(Ok(Some(paths))) => workspace.open_paths(paths, window, cx),
+                Ok(Ok(None)) => {}
+                Ok(Err(_)) | Err(_) => workspace.tell(NO_CHOOSER, cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Hands `paths` to the app's [`PathOpener`] to open into this window.
+    fn open_paths(&mut self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+        if paths.is_empty() {
+            return;
+        }
+        if let Some(opener) = cx.try_global::<PathOpener>().cloned() {
+            opener.open(paths, cx.weak_entity(), window, cx);
+        }
+    }
+
+    /// The control on an empty window running [`OpenFiles`], where the app
+    /// opens files at all.
+    fn open_files_button(&self, cx: &mut Context<Self>) -> Option<Button> {
+        if !cx.has_global::<PathOpener>() {
+            return None;
+        }
+        let button = Button::new(
+            "workspace-open-files",
+            cx.listener(|workspace, _, window, cx| workspace.open_files(window, cx)),
+        );
+        let button = match action_label(&OpenFiles, cx) {
+            Some(label) => button.label(label),
+            None => button,
+        };
+        Some(button.keys_for(&OpenFiles, &self.window_focus))
     }
 
     /// Shows `note` above the window's panes until the user dismisses it.
@@ -1914,7 +1984,8 @@ impl Workspace {
     fn body_element(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> AnyElement {
         let Some(frame) = self.frame() else {
             let any_open = !Documents::global(cx).read(cx).is_empty();
-            return empty_state(colors, any_open).into_any_element();
+            let open = self.open_files_button(cx);
+            return empty_state(colors, any_open, open).into_any_element();
         };
         match frame.arrangement.maximized() {
             Some(pane) => self.framed_pane(pane, cx).into_any_element(),
@@ -2579,6 +2650,9 @@ impl Render for Workspace {
         let body = div()
             .key_context(key_context)
             .size_full()
+            .on_action(cx.listener(|workspace, _: &OpenFiles, window, cx| {
+                workspace.open_files(window, cx);
+            }))
             .on_action(cx.listener(|workspace, _: &NextTab, window, cx| {
                 if let Some(pane) = workspace.active_pane().cloned() {
                     pane.update(cx, |pane, cx| pane.activate_next(window, cx));
@@ -2686,8 +2760,8 @@ fn window_title(app_name: &str, panel: Option<&AnyPanel>) -> String {
 
 /// What a window framing no panel shows in its place: that the session holds
 /// no document, or, where `any_open` says it holds one, that a view of it is to
-/// be shown from the Documents menu.
-fn empty_state(colors: &ThemeColors, any_open: bool) -> Div {
+/// be shown from the Documents menu; and `open`, where the app opens files.
+fn empty_state(colors: &ThemeColors, any_open: bool, open: Option<Button>) -> Div {
     let heading = if any_open {
         "No views shown"
     } else {
@@ -2701,10 +2775,11 @@ fn empty_state(colors: &ThemeColors, any_open: bool) -> Div {
         .flex_col()
         .items_center()
         .justify_center()
-        .gap_2()
+        .gap_3()
         .bg(colors.background)
         .child(div().text_color(colors.text).child(heading))
         .children(shown.map(hint))
+        .children(open)
 }
 
 /// How a window reads where another window's menu offers a move into it: what
@@ -2729,6 +2804,7 @@ fn stack_around(workspace: KeyContext, scope: KeyScope) -> Vec<KeyContext> {
 mod tests {
     use super::*;
     use crate::drop::Band;
+    use bviz_ui_components::keymap_probe::{dispatched, is};
     use gpui::{point, size};
 
     const EXTENT: f32 = 407.0;
@@ -3255,6 +3331,20 @@ mod tests {
         let second = window_name(2, "build.profile.gz");
         assert_ne!(first, second);
         assert!(first.contains("build.profile.gz"), "{first}");
+    }
+
+    /// The context stack of a key pressed with focus in a panel of the window.
+    fn in_a_panel() -> [&'static str; 3] {
+        [KEY_CONTEXT.id(), bviz_ui_shell::KEY_CONTEXT.id(), "Panel"]
+    }
+
+    #[test]
+    fn a_window_binds_its_open_files_key_only_where_the_app_opens_files() {
+        assert!(is(
+            dispatched(bindings(true), "secondary-o", &in_a_panel()),
+            OpenFiles
+        ));
+        assert!(dispatched(bindings(false), "secondary-o", &in_a_panel()).is_none());
     }
 
     /// The keys help of a panel the last frame's path to focus left out still

@@ -12,6 +12,7 @@ mod drop;
 mod gestures;
 mod group;
 mod layout;
+mod opener;
 mod pane;
 mod panel;
 mod panel_menu;
@@ -26,6 +27,7 @@ pub(crate) use documents::{OpenDocument, ViewId, ViewState, WindowsChanged};
 pub use gestures::chrome_gestures;
 pub(crate) use group::PanelGroup;
 pub use layout::{AtEdge, DividerId, Layout, Panes, Removal, Side, Split, SplitSide};
+pub use opener::PathOpener;
 pub(crate) use pane::Framing;
 pub use pane::{Pane, PaneEvent};
 pub(crate) use panel::DocumentOf;
@@ -82,12 +84,13 @@ pub fn run_viewer<C, I, T, F>(
             )
             .exit()
     }
-    run_panels(app_id, window_size, documents, open, panel_keys);
+    run_panels(app_id, window_size, documents, open, None, panel_keys);
 }
 
 /// Runs an app whose one window frames the [`Document`]s `open` builds from
 /// `documents` in order, their views laid out by [`Role`], and frames no panel
-/// where `documents` is empty. Each of
+/// where `documents` is empty. Files the user names to a window while the app
+/// runs go to `opener`, where the app opens any. Each of
 /// `panel_keys` registers the bindings of one panel kind the app can show, and
 /// runs before the first window opens. Each runs exactly once per process:
 /// `cx.bind_keys` refreshes every window, which drops what each has cached of
@@ -97,6 +100,7 @@ pub fn run_panels<T, F>(
     window_size: Size<Pixels>,
     documents: Vec<T>,
     open: F,
+    opener: Option<PathOpener>,
     panel_keys: &'static [fn(&mut App)],
 ) where
     T: 'static,
@@ -105,7 +109,10 @@ pub fn run_panels<T, F>(
     let app_id = app_id.into();
     bviz_ui_shell::application().run(move |cx: &mut App| {
         bviz_ui_shell::setup(cx);
-        register_keys(cx);
+        register_keys(cx, opener.is_some());
+        if let Some(opener) = opener {
+            cx.set_global(opener);
+        }
         for register in panel_keys {
             register(cx);
         }

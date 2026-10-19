@@ -157,6 +157,7 @@ fn open_window(openings: Vec<Opening<Load>>) {
         bviz_ui_workspace::WINDOW_SIZE,
         openings,
         open,
+        None,
         &[
             bviz_ui_graph::register_keys,
             bviz_ui_trace::register_keys,
