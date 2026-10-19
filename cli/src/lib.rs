@@ -123,7 +123,7 @@ pub enum Sources {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bviz_ui_graph_args::{Input, InputKind};
+    use bviz_ui_graph_args::InputKind;
     use clap::CommandFactory;
     use clap::error::ErrorKind;
 
@@ -145,15 +145,12 @@ mod tests {
     }
 
     fn graph(inputs: &[(InputKind, &str)], files: Vec<Source>) -> Sources {
-        let inputs = inputs
-            .iter()
-            .map(|&(kind, path)| Input {
-                kind,
-                path: path.into(),
-            })
-            .collect();
+        let mut args = GraphArgs::default();
+        for &(kind, path) in inputs {
+            *args.file_mut(kind) = Some(path.into());
+        }
         Sources::Graph {
-            graph: GraphSource::new(inputs).expect("the inputs name a graph"),
+            graph: args.source().expect("the inputs name a graph"),
             files,
         }
     }

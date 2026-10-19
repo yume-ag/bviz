@@ -2706,15 +2706,16 @@ mod tests {
         );
     }
 
+    /// The graph read from `paths`, an aquery, a cquery and a query output in
+    /// that order, as many of them as are given.
     fn source(paths: &[&str]) -> GraphSource {
-        let inputs = paths
-            .iter()
-            .map(|path| bviz_ui_graph_args::Input {
-                kind: bviz_ui_graph_args::InputKind::Aquery,
-                path: path.into(),
-            })
-            .collect();
-        GraphSource::new(inputs).expect("the paths name a graph")
+        use bviz_ui_graph_args::InputKind;
+        let mut args = GraphArgs::default();
+        let kinds = [InputKind::Aquery, InputKind::Cquery, InputKind::Query];
+        for (kind, path) in kinds.into_iter().zip(paths) {
+            *args.file_mut(kind) = Some(path.into());
+        }
+        args.source().expect("the paths name a graph")
     }
 
     /// One graph is drawn however many files it merges, so its title names the
