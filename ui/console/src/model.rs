@@ -1,5 +1,5 @@
 use bviz_input::Input;
-use bviz_invocation::{Configurations, EpochMicros, Outcomes, Recorded, Session};
+use bviz_invocation::{Configurations, EpochMicros, Outcomes, Recorded, ReporterId, Session};
 use bviz_terminal::{BuildOutput, Replay};
 use bviz_ui_components::{Pending, load_in_background};
 use bviz_ui_playback::{Clock, DocumentClock, OnClock, Span};
@@ -39,9 +39,9 @@ impl Stream {
         })
     }
 
-    fn replay_telling(self, session: &mut Session) -> Recorded<Replay> {
+    fn replay_telling(self, session: &mut Session, by: ReporterId) -> Recorded<Replay> {
         session.add_configurations(self.configurations);
-        session.report_outcomes(self.outcomes);
+        session.report_outcomes(by, self.outcomes);
         self.replay
     }
 }
@@ -69,15 +69,19 @@ impl ConsoleModel {
         clock: Option<DocumentClock>,
         cx: &mut Context<Self>,
     ) -> Self {
+        let session = session.map(|session| {
+            let by = session.update(cx, |session, _| session.reporter());
+            (session, by)
+        });
         let load = load_in_background(
             cx,
             move || stream.join(),
             move |model, result, cx| {
                 model.source = match result {
                     Ok(stream) => Source::Loaded(match session {
-                        Some(session) => session.update(cx, |session, cx| {
+                        Some((session, by)) => session.update(cx, |session, cx| {
                             cx.notify();
-                            stream.replay_telling(session)
+                            stream.replay_telling(session, by)
                         }),
                         None => stream.replay,
                     }),
@@ -320,7 +324,8 @@ mod tests {
         .concat();
         let stream = Stream::from_slice(&stream).expect("the stream parses");
         let mut session = Session::default();
-        let replay = stream.replay_telling(&mut session);
+        let by = session.reporter();
+        let replay = stream.replay_telling(&mut session, by);
         assert_eq!(replay.get().frame_count(), 1);
         assert_eq!(
             session.configurations().name(CONFIGURATION).as_deref(),
@@ -362,7 +367,8 @@ mod tests {
         let stream = built_event("//app", CONFIGURATION);
         let stream = Stream::from_slice(&stream).expect("the stream parses");
         let mut session = Session::default();
-        stream.replay_telling(&mut session);
+        let by = session.reporter();
+        stream.replay_telling(&mut session, by);
         let app = ConfiguredTarget::new("//app", Some(CONFIGURATION));
         assert_eq!(session.outcomes().build(app), Some(&BuildOutcome::Built));
     }
@@ -373,7 +379,8 @@ mod tests {
     fn a_stream_describing_no_configuration_adds_none() {
         let stream = Stream::from_slice(&progress_event("Loading: \n")).expect("the stream parses");
         let mut session = Session::default();
-        stream.replay_telling(&mut session);
+        let by = session.reporter();
+        stream.replay_telling(&mut session, by);
         assert_eq!(session.configurations().name(CONFIGURATION), None);
     }
 

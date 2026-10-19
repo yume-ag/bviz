@@ -28,6 +28,10 @@ impl ExecLogModel {
         session: Option<WeakEntity<Session>>,
         cx: &mut Context<Self>,
     ) -> Self {
+        let session = session.map(|session| {
+            let by = session.update(cx, |session, _| session.reporter()).ok();
+            (session, by)
+        });
         Self {
             source: Source::Loading,
             _load: load_in_background(
@@ -36,10 +40,10 @@ impl ExecLogModel {
                 move |model, result, cx| {
                     model.source = match result {
                         Ok(Read { summary, spawns }) => {
-                            if let Some(session) = session {
+                            if let Some((session, Some(by))) = session {
                                 session
                                     .update(cx, |session, cx| {
-                                        session.report_logged_spawns(spawns);
+                                        session.report_logged_spawns(by, spawns);
                                         cx.notify();
                                     })
                                     .ok();

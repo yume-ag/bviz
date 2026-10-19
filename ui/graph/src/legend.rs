@@ -582,10 +582,11 @@ mod tests {
     #[test]
     fn a_view_is_scanned_again_once_its_statuses_are_resolved_from_other_outcomes() {
         let mut session = Session::default();
+        let by = session.reporter();
         let unreported = session.outcomes_revision();
-        session.report_outcomes(Outcomes::default());
+        session.report_outcomes(by, Outcomes::default());
         let first = session.outcomes_revision();
-        session.report_outcomes(Outcomes::default());
+        session.report_outcomes(by, Outcomes::default());
         let second = session.outcomes_revision();
         let mut legend = Legend::default();
         let drawn = boxes(1);
@@ -745,8 +746,9 @@ mod tests {
     fn a_view_is_scanned_again_once_its_times_are_read_from_other_timings() {
         let (drawn, times, _) = timed();
         let mut session = Session::default();
+        let by = session.reporter();
         let untimed = session.timings_revision();
-        session.report_timings(Timings::default());
+        session.report_timings(by, Timings::default());
         let timed = session.timings_revision();
         let mut legend = Legend::default();
         let stale = Coloured {
@@ -824,8 +826,9 @@ mod tests {
     fn a_view_coloured_by_playback_is_scanned_again_once_other_attempts_land() {
         let (drawn, _, states) = timed();
         let mut session = Session::default();
+        let by = session.reporter();
         let unattempted = session.attempts_revision();
-        session.report_attempts(Attempts::default());
+        session.report_attempts(by, Attempts::default());
         let attempted = session.attempts_revision();
         let mut legend = Legend::default();
         let mut reading = |states, attempted| played(&mut legend, &drawn, states, attempted);

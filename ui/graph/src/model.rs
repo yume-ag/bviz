@@ -23,7 +23,7 @@ use bviz_graph_layout::select;
 use bviz_graph_layout::select::labels::LabelIndex;
 use bviz_graph_layout::target_pattern::TargetIndex;
 use bviz_graph_layout::{Capabilities, Facets, Id, InputSet, Joint, MapLayout, Names, Provenance};
-use bviz_invocation::{ActionGraph, Chosen, Configurations, Revision, Session};
+use bviz_invocation::{ActionGraph, Chosen, Configurations, ReporterId, Revision, Session};
 use bviz_ui_components::{Pending, load_in_background};
 use bviz_ui_graph_args::GraphSource;
 use bviz_ui_playback::{Clock, DocumentClock};
@@ -735,6 +735,7 @@ struct Joined {
     /// Held for as long as the graph is: a session nothing holds is released,
     /// and tells its observers nothing further.
     session: Entity<Session>,
+    by: ReporterId,
     /// Takes up what the build reports whenever the session changes.
     _changed: Subscription,
 }
@@ -777,6 +778,7 @@ impl GraphModel {
         // are taken up as the graph lands and again whenever the session
         // changes.
         let joined = session.map(|session| Joined {
+            by: session.update(cx, |session, _| session.reporter()),
             _changed: cx.observe(&session, |model, _, cx| model.take_up(cx)),
             session,
         });
@@ -799,10 +801,11 @@ impl GraphModel {
                     Ok((mut read, described, actions)) => {
                         if let Some(joined) = &model.joined {
                             read.loaded.pass_over_choice(joined.session.read(cx));
+                            let by = joined.by;
                             joined.session.update(cx, |session, cx| {
                                 session.add_configurations(described);
                                 if let Some(actions) = actions {
-                                    session.report_action_graph(actions);
+                                    session.report_action_graph(by, actions);
                                 }
                                 cx.notify();
                             });
@@ -1482,10 +1485,11 @@ mod tests {
     fn a_graph_takes_up_the_outcomes_its_session_holds_once_per_report_of_them() {
         let mut loaded = loaded();
         let mut session = Session::default();
+        let by = session.reporter();
         assert!(!loaded.report(&session));
         assert_eq!(loaded.statuses, Statuses::default());
 
-        session.report_outcomes(reporting(BuildOutcome::NotBuilt));
+        session.report_outcomes(by, reporting(BuildOutcome::NotBuilt));
         assert!(loaded.report(&session));
         assert_ne!(loaded.statuses, Statuses::default());
         assert!(!loaded.report(&session));
@@ -1493,9 +1497,9 @@ mod tests {
         session.add_configurations(Configurations::default());
         assert!(!loaded.report(&session));
 
-        session.report_outcomes(reporting(BuildOutcome::NotBuilt));
+        session.report_outcomes(by, reporting(BuildOutcome::NotBuilt));
         assert!(!loaded.report(&session));
-        session.report_outcomes(reporting(BuildOutcome::Built));
+        session.report_outcomes(by, reporting(BuildOutcome::Built));
         assert!(loaded.report(&session));
     }
 
@@ -1518,21 +1522,22 @@ mod tests {
     fn a_graph_takes_up_timings_and_outcomes_each_once_per_report_of_them() {
         let mut loaded = loaded();
         let mut session = Session::default();
+        let by = session.reporter();
         assert_eq!(loaded.times, Err(Untimed::NoProfile));
 
-        session.report_timings(timing("bazel-out/bin/app/bin"));
+        session.report_timings(by, timing("bazel-out/bin/app/bin"));
         assert!(loaded.report(&session));
         assert!(loaded.times.is_ok());
         assert!(!loaded.report(&session));
 
-        session.report_outcomes(reporting(BuildOutcome::NotBuilt));
+        session.report_outcomes(by, reporting(BuildOutcome::NotBuilt));
         let timed = loaded.timed;
         assert!(loaded.report(&session));
         assert_eq!(loaded.timed, timed);
         assert!(loaded.times.is_ok());
 
         let taken_up = loaded.taken_up;
-        session.report_timings(timing("bazel-out/bin/app/other"));
+        session.report_timings(by, timing("bazel-out/bin/app/other"));
         assert!(loaded.report(&session));
         assert_eq!(loaded.taken_up, taken_up);
         assert_eq!(loaded.times, Err(Untimed::Unplaced));
@@ -1544,22 +1549,23 @@ mod tests {
     fn a_graph_takes_up_the_attempts_its_session_holds_once_per_report_of_them() {
         let mut loaded = loaded();
         let mut session = Session::default();
+        let by = session.reporter();
         assert!(!loaded.report(&session));
         assert!(loaded.states().is_none());
 
         let mut attempts = Attempts::default();
         let attempt = crate::playback::tests::attempt(0, 10, &[]);
         attempts.record(Some("bazel-out/bin/app/bin"), None, attempt);
-        session.report_attempts(attempts);
+        session.report_attempts(by, attempts);
         assert!(loaded.report(&session));
         assert!(loaded.states().is_some());
         assert!(!loaded.report(&session));
 
-        session.report_timings(timing("bazel-out/bin/app/bin"));
+        session.report_timings(by, timing("bazel-out/bin/app/bin"));
         assert!(loaded.report(&session));
         assert!(loaded.states().is_some());
 
-        session.report_attempts(Attempts::default());
+        session.report_attempts(by, Attempts::default());
         assert!(loaded.report(&session));
         assert!(loaded.states().is_none());
     }
@@ -1570,14 +1576,15 @@ mod tests {
     fn a_graph_takes_up_the_critical_path_once_per_report_of_it() {
         let mut loaded = loaded();
         let mut session = Session::default();
+        let by = session.reporter();
         let step = |primary_output: &str| CriticalStep::new(Some(primary_output), None);
 
-        session.report_critical_path(vec![step("bazel-out/bin/app/bin")], Vec::new());
+        session.report_critical_path(by, vec![step("bazel-out/bin/app/bin")], Vec::new());
         assert!(loaded.report(&session));
         assert!(loaded.critical().any());
         assert!(!loaded.report(&session));
 
-        session.report_critical_path(vec![step("bazel-out/bin/app/other")], Vec::new());
+        session.report_critical_path(by, vec![step("bazel-out/bin/app/other")], Vec::new());
         assert!(loaded.report(&session));
         assert!(!loaded.critical().any());
     }
@@ -1588,8 +1595,10 @@ mod tests {
     fn a_graph_shows_each_chosen_critical_path_step_once() {
         let mut loaded = loaded();
         let mut session = Session::default();
+        let by = session.reporter();
         let step = |primary_output: &str| CriticalStep::new(Some(primary_output), None);
         session.report_critical_path(
+            by,
             vec![
                 step("bazel-out/bin/app/bin"),
                 step("bazel-out/bin/app/other"),
@@ -1618,8 +1627,10 @@ mod tests {
     fn a_graph_shows_a_chosen_nearly_critical_action() {
         let mut loaded = loaded();
         let mut session = Session::default();
+        let by = session.reporter();
         let action = |primary_output: &str| CriticalStep::new(Some(primary_output), None);
         session.report_critical_path(
+            by,
             vec![action("bazel-out/bin/app/other")],
             vec![action("bazel-out/bin/app/bin")],
         );
@@ -1636,8 +1647,9 @@ mod tests {
     #[test]
     fn a_graph_passes_over_a_step_chosen_before_it_landed() {
         let mut session = Session::default();
+        let by = session.reporter();
         let step = CriticalStep::new(Some("bazel-out/bin/app/bin"), None);
-        session.report_critical_path(vec![step], Vec::new());
+        session.report_critical_path(by, vec![step], Vec::new());
         assert!(session.choose(Some(Chosen::Step(0))));
         let mut loaded = loaded();
         loaded.pass_over_choice(&session);
@@ -1653,8 +1665,9 @@ mod tests {
     #[test]
     fn a_chosen_step_is_revealed_in_place_in_the_deferred_to_panel() {
         let mut session = Session::default();
+        let by = session.reporter();
         let step = CriticalStep::new(Some("bazel-out/bin/app/bin"), None);
-        session.report_critical_path(vec![step], Vec::new());
+        session.report_critical_path(by, vec![step], Vec::new());
         let mut model = GraphModel::new(Task::ready(()));
         model.source = Source::Loaded(loaded());
         let panel = EntityId::from(1);
@@ -1678,7 +1691,8 @@ mod tests {
     #[test]
     fn a_graph_takes_up_outcomes_reported_before_it_landed() {
         let mut session = Session::default();
-        session.report_outcomes(reporting(BuildOutcome::Built));
+        let by = session.reporter();
+        session.report_outcomes(by, reporting(BuildOutcome::Built));
         let mut loaded = loaded();
         assert!(loaded.report(&session));
         assert_ne!(loaded.statuses, Statuses::default());
