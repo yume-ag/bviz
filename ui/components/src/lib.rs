@@ -4,6 +4,7 @@ mod background;
 mod button;
 mod by_room;
 mod canvas;
+mod choice_dialog;
 pub mod dialog;
 mod divider;
 mod drag;
@@ -41,6 +42,7 @@ pub use background::{Pending, load_in_background};
 pub use button::Button;
 pub use by_room::ByRoom;
 pub use canvas::{Inked, LabelBoxStyle, paint_labeled_box, shape_truncated};
+pub use choice_dialog::{ChoiceDialog, ChoiceDialogEvent, ChoiceItem};
 pub use divider::{Divider, DividerSide};
 pub use drag::{DragEnd, track_drag};
 pub use dropdown::{Dropdown, DropdownEvent};
@@ -105,6 +107,7 @@ pub fn register_keys(cx: &mut App) {
         [
             text_input::KEY_CONTEXT,
             dialog::KEY_CONTEXT,
+            choice_dialog::KEY_CONTEXT,
             multi_select::KEY_CONTEXT,
             dropdown::KEY_CONTEXT,
             keys_help::KEY_CONTEXT,
@@ -113,6 +116,7 @@ pub fn register_keys(cx: &mut App) {
     );
     keys_help::bind_keys(cx);
     dialog::bind_keys(cx);
+    choice_dialog::bind_keys(cx);
     text_input::bind_keys(cx);
     multi_select::bind_keys(cx);
     dropdown::bind_keys(cx);

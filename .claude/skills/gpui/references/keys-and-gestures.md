@@ -70,7 +70,7 @@ follows every rule below.
 | Focus the query field | `q` | — |
 | History | Alt-← / Alt-→ ("Go back" / "Go forward") | mouse back / forward button |
 | List | ↑ / ↓ move the aim, Enter acts on the aimed row where moving does not, Esc closes the list or clears its choice | a click acts on the row |
-| Dialog | Enter answers, Esc cancels | a click on its buttons |
+| Dialog | Enter answers, Esc cancels; in a choice dialog ↑ / ↓ aim at an item and ← / → step through its choices | a click on a button or a choice |
 | Escape | closes the topmost transient (completion, field, palette, menu, popup card), else clears the selection, else puts away a lens such as the why paths | — |
 | Close | secondary-W the panel, secondary-Shift-W the window | — |
 

@@ -26,11 +26,15 @@ actions!(
 pub const KEY_CONTEXT: KeyScope = KeyScope::new("Dialog", "Dialog");
 
 pub(crate) fn bind_keys(cx: &mut App) {
+    cx.bind_keys(bindings());
+}
+
+pub(crate) fn bindings() -> [KeyBinding; 2] {
     let dialog = Some(KEY_CONTEXT.id());
-    cx.bind_keys([
+    [
         KeyBinding::new("enter", Accept, dialog),
         KeyBinding::new("escape", Cancel, dialog),
-    ]);
+    ]
 }
 
 /// How wide a dialog's sheet stands, room for a path of some depth in a field.
