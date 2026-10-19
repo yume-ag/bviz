@@ -413,7 +413,7 @@ pub(super) fn follow(view: &mut ChipBar, cx: &mut Context<ChipBar>) {
             return;
         };
         view.completer.offered = Some(Offered {
-            matching: view.model.update(cx, |model, _| model.take_matcher()),
+            matching: view.model.update(cx, |model, cx| model.take_matcher(cx)),
             few: Few::Functions(Vec::new()),
             word: None,
             offers: Offers::at(Place::Pattern),

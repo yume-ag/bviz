@@ -1181,8 +1181,8 @@ impl GraphModel {
 
     /// A matching with no query, on the graph's matcher pool where no list
     /// holds it.
-    pub(crate) fn take_matcher<S>(&mut self) -> Matching<S> {
-        self.matchers.take()
+    pub(crate) fn take_matcher<S>(&mut self, cx: &App) -> Matching<S> {
+        self.matchers.take(cx.background_executor())
     }
 
     /// Hands the pool of `matching` back for another list to take up.

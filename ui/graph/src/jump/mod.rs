@@ -224,7 +224,7 @@ impl JumpPalette {
                 field,
                 _edits: edits,
                 scope,
-                matching: self.model.update(cx, |model, _| model.take_matcher()),
+                matching: self.model.update(cx, |model, cx| model.take_matcher(cx)),
                 candidates,
                 aimed: 0,
                 painted: None,

@@ -5,14 +5,15 @@ mod rank;
 
 use bviz_label::shown::Shown;
 use gpui::{
-    Context, HighlightStyle, Hsla, Pixels, Rems, SharedString, StyledText, Task, UnderlineStyle,
-    px, rems,
+    BackgroundExecutor, Context, HighlightStyle, Hsla, Pixels, Rems, SharedString, StyledText,
+    Task, UnderlineStyle, px, rems,
 };
 use nucleo::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo::{Config, Injector, Matcher, Nucleo, Utf32Str, Utf32String};
 pub(crate) use rank::{Row, Standing};
 use std::cell::RefCell;
-use std::ops::Range;
+use std::mem::ManuallyDrop;
+use std::ops::{Deref, DerefMut, Range};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -43,7 +44,7 @@ pub(crate) type TakeUp<V> = fn(&mut V, &mut Context<V>);
 /// A matcher over candidates handed to it by index into a source of type `S`,
 /// with the rows its latest result ranks.
 pub(crate) struct Matching<S> {
-    nucleo: Nucleo<u32>,
+    nucleo: Workers,
     /// Finds the characters each row's query matched, for ranking the rows
     /// and highlighting them, on a row's text as written and as shown.
     matcher: RefCell<Matcher>,
@@ -78,12 +79,13 @@ struct Landed<S> {
 /// The matcher worker pool a panel keeps while no list of its holds it, so
 /// that a list opened takes it up rather than starting a pool of its own.
 #[derive(Default)]
-pub(crate) struct Pool(Option<Nucleo<u32>>);
+pub(crate) struct Pool(Option<Workers>);
 
 impl Pool {
-    /// A matching with no query, on the parked pool where one is parked.
-    pub(crate) fn take<S>(&mut self) -> Matching<S> {
-        Matching::new(self.0.take())
+    /// A matching with no query, on the parked pool where one is parked, and
+    /// otherwise on a new one.
+    pub(crate) fn take<S>(&mut self, executor: &BackgroundExecutor) -> Matching<S> {
+        Matching::new(self.0.take().unwrap_or_else(|| Workers::new(executor)))
     }
 
     /// Parks the pool of `matching`, which stops matching; a pool parked
@@ -93,12 +95,47 @@ impl Pool {
     }
 }
 
+/// A matcher and its worker pool, dropped on the background executor, since
+/// dropping a [`Nucleo`] waits for its worker to stop.
+struct Workers {
+    nucleo: ManuallyDrop<Nucleo<u32>>,
+    executor: BackgroundExecutor,
+}
+
+impl Workers {
+    fn new(executor: &BackgroundExecutor) -> Self {
+        let workers = Some(bviz_parallel::worker_count());
+        Workers {
+            nucleo: ManuallyDrop::new(Nucleo::new(config(), Arc::new(|| {}), workers, 1)),
+            executor: executor.clone(),
+        }
+    }
+}
+
+impl Deref for Workers {
+    type Target = Nucleo<u32>;
+
+    fn deref(&self) -> &Nucleo<u32> {
+        &self.nucleo
+    }
+}
+
+impl DerefMut for Workers {
+    fn deref_mut(&mut self) -> &mut Nucleo<u32> {
+        &mut self.nucleo
+    }
+}
+
+impl Drop for Workers {
+    fn drop(&mut self) {
+        // SAFETY: `nucleo` is not touched again.
+        let nucleo = unsafe { ManuallyDrop::take(&mut self.nucleo) };
+        self.executor.spawn(async move { drop(nucleo) }).detach();
+    }
+}
+
 impl<S> Matching<S> {
-    fn new(pool: Option<Nucleo<u32>>) -> Self {
-        let mut nucleo = pool.unwrap_or_else(|| {
-            let workers = Some(bviz_parallel::worker_count());
-            Nucleo::new(config(), Arc::new(|| {}), workers, 1)
-        });
+    fn new(mut nucleo: Workers) -> Self {
         nucleo
             .pattern
             .reparse(0, "", CaseMatching::Smart, Normalization::Smart, false);
