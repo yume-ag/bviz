@@ -230,13 +230,15 @@ fn is_blank(row: &[Cell]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::output::parse;
+    use crate::output::read_slice;
 
     const SAMPLE: &[u8] = include_bytes!("../testdata/sample.bep");
 
     #[test]
     fn renders_final_build_output() {
-        let output = parse(SAMPLE).expect("parse sample stream").into_inner();
+        let output = read_slice(SAMPLE)
+            .expect("parse sample stream")
+            .into_inner();
         let screen = Screen::from_output(&output);
         // The emulator was sized to the width the stream reported, so every
         // retained row spans it.

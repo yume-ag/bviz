@@ -1,5 +1,6 @@
+use bviz_input::Input;
 use bviz_invocation::{Configurations, EpochMicros, Outcomes, Recorded, Session};
-use bviz_terminal::Replay;
+use bviz_terminal::{BuildOutput, Replay};
 use bviz_ui_components::{Pending, load_in_background};
 use bviz_ui_playback::{Clock, DocumentClock, OnClock, Span};
 use gpui::{App, Context, Entity, Task};
@@ -14,8 +15,21 @@ pub(crate) struct Stream {
 }
 
 impl Stream {
-    pub(crate) fn parse(stream: &[u8]) -> Result<Self, String> {
-        let mut output = bviz_terminal::parse(stream).map_err(|e| e.to_string())?;
+    pub(crate) fn read(input: Input) -> Result<Self, String> {
+        let name = input.name().to_owned();
+        let size = input.size();
+        let read = bviz_terminal::read(input.into_reader(), size)
+            .map_err(|e| format!("cannot read {name}: {e}"));
+        Self::of(read)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_slice(stream: &[u8]) -> Result<Self, String> {
+        Self::of(bviz_terminal::read(stream, Some(stream.len() as u64)).map_err(|e| e.to_string()))
+    }
+
+    fn of(read: Result<Recorded<BuildOutput>, String>) -> Result<Self, String> {
+        let mut output = read?;
         let configurations = std::mem::take(&mut output.get_mut().configurations);
         let outcomes = std::mem::take(&mut output.get_mut().outcomes);
         Ok(Self {
@@ -289,7 +303,7 @@ mod tests {
     /// A two-frame build, read the way one named on the command line is read.
     fn loaded() -> ConsoleModel {
         let stream = [progress_event("Loading: \n"), progress_event("Analyzing\n")].concat();
-        let stream = Stream::parse(&stream).expect("the stream parses");
+        let stream = Stream::from_slice(&stream).expect("the stream parses");
         let mut model = reading();
         model.source = Source::Loaded(stream.replay);
         model
@@ -304,7 +318,7 @@ mod tests {
             progress_event("Loading: \n"),
         ]
         .concat();
-        let stream = Stream::parse(&stream).expect("the stream parses");
+        let stream = Stream::from_slice(&stream).expect("the stream parses");
         let mut session = Session::default();
         let replay = stream.replay_telling(&mut session);
         assert_eq!(replay.get().frame_count(), 1);
@@ -346,7 +360,7 @@ mod tests {
     #[test]
     fn a_stream_read_in_a_session_reports_its_outcomes_there() {
         let stream = built_event("//app", CONFIGURATION);
-        let stream = Stream::parse(&stream).expect("the stream parses");
+        let stream = Stream::from_slice(&stream).expect("the stream parses");
         let mut session = Session::default();
         stream.replay_telling(&mut session);
         let app = ConfiguredTarget::new("//app", Some(CONFIGURATION));
@@ -357,7 +371,7 @@ mod tests {
     /// knew.
     #[test]
     fn a_stream_describing_no_configuration_adds_none() {
-        let stream = Stream::parse(&progress_event("Loading: \n")).expect("the stream parses");
+        let stream = Stream::from_slice(&progress_event("Loading: \n")).expect("the stream parses");
         let mut session = Session::default();
         stream.replay_telling(&mut session);
         assert_eq!(session.configurations().name(CONFIGURATION), None);
@@ -387,7 +401,7 @@ mod tests {
     /// play, wherever its time zero stands.
     #[test]
     fn a_replay_of_one_instant_gives_a_clock_nothing_to_play() {
-        let stream = Stream::parse(&progress_event("Loading: \n")).expect("the stream parses");
+        let stream = Stream::from_slice(&progress_event("Loading: \n")).expect("the stream parses");
         assert!(clock_source(stream.replay.get(), UNRECORDED_ORIGIN).is_none());
     }
 
@@ -411,7 +425,11 @@ mod tests {
         let cut = &whole[..whole.len() - 1];
         for (stream, cut_off) in [(&whole[..], false), (cut, true)] {
             let mut model = reading();
-            model.source = Source::Loaded(Stream::parse(stream).expect("the stream parses").replay);
+            model.source = Source::Loaded(
+                Stream::from_slice(stream)
+                    .expect("the stream parses")
+                    .replay,
+            );
             assert_eq!(model.cut_off(), cut_off);
             assert_eq!(model.replay().expect("a replay").frame_count(), 1);
         }

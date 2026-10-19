@@ -2,9 +2,10 @@
 //!
 //! The file is a sequence of length-delimited `BuildEvent` messages.
 
-use std::io::{BufReader, Read};
-use std::path::Path;
+use std::io::Read;
 
+use bviz_input::delimited::{self, Delimited, Next};
+use bviz_input::{Input, reserved};
 use bviz_invocation::{Configurations, InvocationId, Outcomes, Recorded};
 use prost::Message;
 
@@ -71,54 +72,82 @@ impl BuildOutput {
     }
 }
 
+/// Stream bytes per byte of console output, rounded down from the most
+/// output-laden streams measured so the output is reserved at or above its
+/// final length.
+const STREAM_BYTES_PER_OUTPUT_BYTE: usize = 3;
+
+/// Stream bytes per progress event, rounded down like
+/// [`STREAM_BYTES_PER_OUTPUT_BYTE`].
+const STREAM_BYTES_PER_FRAME: usize = 2 << 10;
+
+/// Stream bytes per timestamped event, rounded down like
+/// [`STREAM_BYTES_PER_OUTPUT_BYTE`].
+const STREAM_BYTES_PER_ANCHOR: usize = 8 << 10;
+
 /// Why a build event binary stream cannot be read.
 #[derive(Debug)]
-pub enum ParseError {
+pub enum ReadError {
+    Io(std::io::Error),
     Decode(prost::DecodeError),
     /// The stream holds no whole event, as no build event stream does.
     NoEvent,
 }
 
-impl From<prost::DecodeError> for ParseError {
+impl From<prost::DecodeError> for ReadError {
     fn from(e: prost::DecodeError) -> Self {
-        ParseError::Decode(e)
+        ReadError::Decode(e)
     }
 }
 
-impl std::fmt::Display for ParseError {
+impl From<delimited::Error> for ReadError {
+    fn from(e: delimited::Error) -> Self {
+        match e {
+            delimited::Error::Io(e) => ReadError::Io(e),
+            delimited::Error::Delimiter(e) => ReadError::Decode(e),
+        }
+    }
+}
+
+impl std::fmt::Display for ReadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ParseError::Decode(e) => write!(f, "cannot parse build event stream: {e}"),
-            ParseError::NoEvent => write!(f, "not a build event stream"),
+            ReadError::Io(e) => write!(f, "cannot read build event stream: {e}"),
+            ReadError::Decode(e) => write!(f, "cannot parse build event stream: {e}"),
+            ReadError::NoEvent => write!(f, "not a build event stream"),
         }
     }
 }
 
-impl std::error::Error for ParseError {
+impl std::error::Error for ReadError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            ParseError::Decode(e) => Some(e),
-            ParseError::NoEvent => None,
+            ReadError::Io(e) => Some(e),
+            ReadError::Decode(e) => Some(e),
+            ReadError::NoEvent => None,
         }
     }
 }
 
-/// Read a build event binary stream: whole, where it runs to the event Bazel
-/// marks its last, and up to where it ends otherwise. An event that does not
-/// decode fails the read, as does a stream that holds no whole event.
-pub fn parse(mut stream: &[u8]) -> Result<Recorded<BuildOutput>, ParseError> {
-    let mut bytes = Vec::new();
-    let mut frames = Vec::new();
-    let mut anchors = Vec::new();
+/// Read a build event binary stream event by event: whole, where it runs to
+/// the event Bazel marks its last, and up to where it ends otherwise. An event
+/// that does not decode fails the read, as does a stream that holds no whole
+/// event. `size`, the stream's length in bytes where known, sizes the output.
+pub fn read(stream: impl Read, size: Option<u64>) -> Result<Recorded<BuildOutput>, ReadError> {
+    let size = size.map_or(0, |size| usize::try_from(size).unwrap_or(usize::MAX));
+    let mut bytes = reserved(size / STREAM_BYTES_PER_OUTPUT_BYTE);
+    let mut frames = reserved(size / STREAM_BYTES_PER_FRAME);
+    let mut anchors = reserved(size / STREAM_BYTES_PER_ANCHOR);
     let mut configurations = Configurations::default();
     let mut outcomes = Outcomes::default();
     let mut columns = None;
     let mut show_timestamps = false;
     let mut last_read = false;
     let mut any_event = false;
+    let mut events = Delimited::buffered(stream);
     let ended_whole = loop {
-        let event = match next_event(&mut stream)? {
-            Next::Event(event) => event,
+        let event = match events.next(|event: &[u8]| BuildEvent::decode(event))? {
+            Next::Message(event) => event?,
             Next::End => break true,
             Next::CutOff => break false,
         };
@@ -128,7 +157,7 @@ pub fn parse(mut stream: &[u8]) -> Result<Recorded<BuildOutput>, ParseError> {
             payload,
             last_message,
             ..
-        } = BuildEvent::decode(event)?;
+        } = event;
         any_event = true;
         last_read |= last_message;
         let id = id.and_then(|id| id.id);
@@ -170,7 +199,7 @@ pub fn parse(mut stream: &[u8]) -> Result<Recorded<BuildOutput>, ParseError> {
         }
     };
     if !any_event {
-        return Err(ParseError::NoEvent);
+        return Err(ReadError::NoEvent);
     }
     let output = BuildOutput {
         configurations,
@@ -187,89 +216,33 @@ pub fn parse(mut stream: &[u8]) -> Result<Recorded<BuildOutput>, ParseError> {
     })
 }
 
-/// How the head of a stream holds its next event.
-enum Next<'a> {
-    Event(&'a [u8]),
-    End,
-    /// The stream ends inside the event.
-    CutOff,
+/// [`read`] over a stream held in memory.
+#[cfg(test)]
+pub(crate) fn read_slice(stream: &[u8]) -> Result<Recorded<BuildOutput>, ReadError> {
+    read(stream, Some(stream.len() as u64))
 }
 
-/// The event at the head of `stream`, which it advances past the event.
-fn next_event<'a>(stream: &mut &'a [u8]) -> Result<Next<'a>, prost::DecodeError> {
-    if stream.is_empty() {
-        return Ok(Next::End);
-    }
-    let delimiter_ends = stream
-        .iter()
-        .take(MAX_DELIMITER_BYTES)
-        .any(|&b| b & VARINT_CONTINUES == 0);
-    if !delimiter_ends && stream.len() < MAX_DELIMITER_BYTES {
-        return Ok(Next::CutOff);
-    }
-    let length = prost::decode_length_delimiter(&mut *stream)?;
-    if length > stream.len() {
-        return Ok(Next::CutOff);
-    }
-    let (event, rest) = stream.split_at(length);
-    *stream = rest;
-    Ok(Next::Event(event))
+/// The invocation that wrote the build event binary stream `input` holds: the
+/// first `BuildStarted.uuid` that is not empty, among the events wholly within
+/// the input's head. `None` when the head holds no such event.
+pub fn probe_invocation_id(input: &Input) -> Option<InvocationId> {
+    invocation_id_in_head(input.head()?)
 }
 
-/// Bytes [`probe_invocation_id`] reads from the head of a stream, many times
-/// the `BuildStarted` event a stream opens with.
-const PROBE_PREFIX_BYTES: u64 = 256 << 10;
-
-/// The invocation that wrote the build event binary stream at `path`: the first
-/// `BuildStarted.uuid` that is not empty, reading the file event by event up
-/// to the one that names it, and no more than a bounded prefix. `None` when
-/// that prefix holds no such event whole, the file cannot be read, or `path`
-/// is not a regular file: reading a pipe could block, and would take from it
-/// bytes it yields only once.
-pub fn probe_invocation_id(path: &Path) -> Option<InvocationId> {
-    if !std::fs::metadata(path).ok()?.is_file() {
-        return None;
-    }
-    let file = std::fs::File::open(path).ok()?;
-    invocation_id_in_prefix(BufReader::new(file), PROBE_PREFIX_BYTES)
-}
-
-/// [`probe_invocation_id`] over the first `prefix_bytes` bytes of a stream.
-fn invocation_id_in_prefix(stream: impl Read, prefix_bytes: u64) -> Option<InvocationId> {
-    let mut prefix = stream.take(prefix_bytes);
-    let mut event = Vec::new();
+/// [`probe_invocation_id`] over the events wholly within `head`.
+fn invocation_id_in_head(head: &[u8]) -> Option<InvocationId> {
+    let mut events = Delimited::new(head);
     loop {
-        let length = read_length_delimiter(&mut prefix)?;
-        if length as u64 > prefix.limit() {
+        let Next::Message(event) = events.next(|event: &[u8]| BuildEvent::decode(event)).ok()?
+        else {
             return None;
-        }
-        event.resize(length, 0);
-        prefix.read_exact(&mut event).ok()?;
-        if let Some(Payload::Started(started)) = BuildEvent::decode(event.as_slice()).ok()?.payload
+        };
+        if let Some(Payload::Started(started)) = event.ok()?.payload
             && let Some(id) = InvocationId::new(&started.uuid)
         {
             return Some(id);
         }
     }
-}
-
-/// The longest encoding of a length delimiter, a 64-bit varint.
-const MAX_DELIMITER_BYTES: usize = 10;
-
-/// Set on every byte of a varint but its last.
-const VARINT_CONTINUES: u8 = 0x80;
-
-/// The length of the next length-delimited message in `stream`, consuming its
-/// delimiter. `None` when the stream ends first.
-fn read_length_delimiter(stream: &mut impl Read) -> Option<usize> {
-    let mut delimiter = [0u8; MAX_DELIMITER_BYTES];
-    for end in 1..=MAX_DELIMITER_BYTES {
-        stream.read_exact(&mut delimiter[end - 1..end]).ok()?;
-        if delimiter[end - 1] & VARINT_CONTINUES == 0 {
-            return prost::decode_length_delimiter(&delimiter[..end]).ok();
-        }
-    }
-    None
 }
 
 /// Record a wall-clock anchor at a frame boundary, skipping events whose
@@ -327,7 +300,9 @@ mod tests {
 
     #[test]
     fn reads_columns_and_output() {
-        let output = parse(SAMPLE).expect("parse sample stream").into_inner();
+        let output = read_slice(SAMPLE)
+            .expect("parse sample stream")
+            .into_inner();
         assert_eq!(output.columns.get(), 100);
         // Bazel's curses progress display emits cursor-control escape sequences.
         assert!(
@@ -355,7 +330,9 @@ mod tests {
 
     #[test]
     fn reads_configurations_by_checksum() {
-        let output = parse(SAMPLE).expect("parse sample stream").into_inner();
+        let output = read_slice(SAMPLE)
+            .expect("parse sample stream")
+            .into_inner();
         // The sample's two configurations share a mnemonic.
         let target = "55817e2200e2f24b506d68c96928ed7b9fa185d1fb462c4f511796269d8d06d4";
         let other = "91e24984663c795f7d9f904758d4b84ba1954389b2ab756f70a6f32db2a79020";
@@ -372,7 +349,7 @@ mod tests {
             configuration_event("0c3d9a77", "k8-opt-exec"),
         ]
         .concat();
-        let known = parse(&stream)
+        let known = read_slice(&stream)
             .expect("parse stream")
             .into_inner()
             .configurations;
@@ -420,7 +397,7 @@ mod tests {
     fn falls_back_from_a_width_the_emulator_cannot_hold() {
         for width in ["0", "1", "65535", "-3", "wide"] {
             let stream = [terminal_columns_event(width), progress_event("built\n")].concat();
-            let output = parse(&stream).expect("parse stream").into_inner();
+            let output = read_slice(&stream).expect("parse stream").into_inner();
             assert_eq!(
                 output.columns,
                 Columns::DEFAULT,
@@ -435,7 +412,7 @@ mod tests {
     fn takes_the_first_width_the_emulator_can_hold() {
         let stream = [terminal_columns_event("0"), terminal_columns_event("120")].concat();
         assert_eq!(
-            parse(&stream)
+            read_slice(&stream)
                 .expect("parse stream")
                 .into_inner()
                 .columns
@@ -457,12 +434,12 @@ mod tests {
 
     #[test]
     fn reads_a_stream_ending_in_its_last_event_whole() {
-        assert!(matches!(parse(SAMPLE), Ok(Recorded::Complete(_))));
+        assert!(matches!(read_slice(SAMPLE), Ok(Recorded::Complete(_))));
     }
 
     #[test]
     fn a_stream_cut_off_keeps_the_events_ahead_of_the_cut() {
-        let cut_off = |cut: usize| match parse(&SAMPLE[..cut]) {
+        let cut_off = |cut: usize| match read_slice(&SAMPLE[..cut]) {
             Ok(Recorded::CutOff(output)) => output,
             _ => panic!("a stream cut at {cut} is cut off"),
         };
@@ -490,7 +467,7 @@ mod tests {
             PNG_SIGNATURE,
         ] {
             assert!(
-                matches!(parse(stream), Err(ParseError::NoEvent)),
+                matches!(read_slice(stream), Err(ReadError::NoEvent)),
                 "{stream:?}"
             );
         }
@@ -502,36 +479,38 @@ mod tests {
         let garbled = [0xff; 3];
         prost::encode_length_delimiter(garbled.len(), &mut stream).expect("delimiter");
         stream.extend(garbled);
-        assert!(parse(&stream).is_err());
+        assert!(read_slice(&stream).is_err());
     }
+
+    /// Every byte continuing the varint, one past its longest encoding.
+    const UNENDING_DELIMITER: [u8; 11] = [0x80; 11];
 
     #[test]
     fn a_delimiter_running_past_its_longest_encoding_fails_the_read() {
-        let stream = [VARINT_CONTINUES; MAX_DELIMITER_BYTES + 1];
-        assert!(parse(&stream).is_err());
+        assert!(matches!(
+            read_slice(&UNENDING_DELIMITER),
+            Err(ReadError::Decode(_))
+        ));
     }
 
     #[test]
-    fn probe_reads_the_id_within_its_prefix() {
+    fn probe_reads_the_id_within_the_head() {
         let id = InvocationId::new("a5f7f3e6-4fda-4675-bc16-8ede5420b210");
-        let whole = SAMPLE.len() as u64;
-        assert_eq!(invocation_id_in_prefix(SAMPLE, whole), id);
+        assert_eq!(invocation_id_in_head(SAMPLE), id);
 
-        // `BuildStarted` is the sample's first event; a prefix ending inside
+        // `BuildStarted` is the sample's first event; a head ending inside
         // it holds no id, and one ending right after it does.
-        let mut rest = SAMPLE;
-        BuildEvent::decode_length_delimited(&mut rest).expect("first event");
-        let first_event = (SAMPLE.len() - rest.len()) as u64;
-        assert_eq!(invocation_id_in_prefix(SAMPLE, first_event - 1), None);
-        assert_eq!(invocation_id_in_prefix(SAMPLE, first_event), id);
+        let first_event = sample_event_ends()[0];
+        assert_eq!(invocation_id_in_head(&SAMPLE[..first_event - 1]), None);
+        assert_eq!(invocation_id_in_head(&SAMPLE[..first_event]), id);
 
         // Events ahead of `BuildStarted` are passed over.
         let mut late = configuration_event("0c3d9a77", "k8-opt-exec");
-        let events_ahead = late.len() as u64;
+        let events_ahead = late.len();
         late.extend(SAMPLE);
-        assert_eq!(invocation_id_in_prefix(late.as_slice(), whole), id);
-        assert_eq!(invocation_id_in_prefix(late.as_slice(), events_ahead), None);
-        assert_eq!(invocation_id_in_prefix(&[][..], PROBE_PREFIX_BYTES), None);
+        assert_eq!(invocation_id_in_head(&late), id);
+        assert_eq!(invocation_id_in_head(&late[..events_ahead]), None);
+        assert_eq!(invocation_id_in_head(&[]), None);
     }
 
     /// A length-delimited `BuildStarted` event of the invocation `uuid`.
@@ -549,21 +528,15 @@ mod tests {
     #[test]
     fn probe_reads_the_first_id_that_is_not_empty() {
         let stream = ["", "first", "second"].map(started_event).concat();
-        assert_eq!(
-            invocation_id_in_prefix(stream.as_slice(), stream.len() as u64),
-            InvocationId::new("first")
-        );
+        assert_eq!(invocation_id_in_head(&stream), InvocationId::new("first"));
     }
 
     #[test]
-    fn probe_stops_at_an_event_longer_than_its_prefix() {
+    fn probe_stops_at_an_event_longer_than_the_head() {
         let mut stream = Vec::new();
         prost::encode_length_delimiter(usize::MAX, &mut stream).expect("delimiter");
         stream.extend(started_event("late"));
-        assert_eq!(
-            invocation_id_in_prefix(stream.as_slice(), PROBE_PREFIX_BYTES),
-            None
-        );
+        assert_eq!(invocation_id_in_head(&stream), None);
     }
 
     #[test]
@@ -571,19 +544,20 @@ mod tests {
         let dir = std::env::var_os("TEST_TMPDIR")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(std::env::temp_dir);
-        let path = Path::new(&dir).join("probe.bep");
+        let path = dir.join("probe.bep");
         std::fs::write(&path, SAMPLE).unwrap();
+        let input = Input::open(&path).unwrap();
         assert_eq!(
-            probe_invocation_id(&path),
+            probe_invocation_id(&input),
             InvocationId::new("a5f7f3e6-4fda-4675-bc16-8ede5420b210")
         );
-        assert_eq!(probe_invocation_id(&path.with_extension("missing")), None);
-        assert_eq!(probe_invocation_id(Path::new(&dir)), None);
     }
 
     #[test]
     fn frames_partition_the_output() {
-        let output = parse(SAMPLE).expect("parse sample stream").into_inner();
+        let output = read_slice(SAMPLE)
+            .expect("parse sample stream")
+            .into_inner();
         // Every progress event yields a frame, and frame ends are non-decreasing
         // offsets running up to the full output.
         assert!(!output.frames.is_empty());
@@ -594,13 +568,17 @@ mod tests {
     #[test]
     fn detects_show_timestamps_off() {
         // The sample was captured without --show_timestamps.
-        let output = parse(SAMPLE).expect("parse sample stream").into_inner();
+        let output = read_slice(SAMPLE)
+            .expect("parse sample stream")
+            .into_inner();
         assert!(!output.show_timestamps);
     }
 
     #[test]
     fn anchors_bracket_the_build() {
-        let output = parse(SAMPLE).expect("parse sample stream").into_inner();
+        let output = read_slice(SAMPLE)
+            .expect("parse sample stream")
+            .into_inner();
         // A completed build carries at least its start and finish times, in
         // non-decreasing wall-clock order, each tied to a real frame boundary.
         assert!(

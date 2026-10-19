@@ -1,12 +1,11 @@
-use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{self, ErrorKind, Read};
 use std::ops::Range;
-use std::path::Path;
 use std::time::Duration;
 
 use bazel_spawn_proto::duration_proto::google::protobuf::Duration as ProtoDuration;
 use bazel_spawn_proto::tools::protos::SpawnMetrics;
 use bazel_spawn_proto::tools::protos::exec_log_entry::Invocation;
+use bviz_input::Input;
 use bviz_invocation::spawn::{self, Logged, PhaseTiming, REPORTED_PHASES};
 use bviz_invocation::{InvocationId, Recorded};
 use bviz_parallel::worker_count;
@@ -42,17 +41,27 @@ const OUTPUT_BYTES_PER_COMPRESSED_KIB: u64 = 192;
 /// Decoded bytes read from the log at a time.
 const READ_CHUNK_BYTES: usize = 256 << 10;
 
-pub(crate) fn read_path(path: &Path) -> Result<Recorded<ExecLog>, LoadError> {
-    let file = File::open(path).map_err(LoadError::Io)?;
-    let compressed = file.metadata().map_err(LoadError::Io)?.len();
-    read_compressed(file, compressed)
+pub(crate) fn read_input(input: Input) -> Result<Recorded<ExecLog>, LoadError> {
+    let compressed = input.size().unwrap_or(0);
+    read_compressed(input.into_reader(), compressed)
 }
+
+/// Opens every zstd frame, and so every execution log.
+const ZSTD_MAGIC: [u8; 4] = zstd::zstd_safe::MAGICNUMBER.to_le_bytes();
 
 /// Reads a log of `compressed` bytes from `log`.
 pub(crate) fn read_compressed(
-    log: impl Read + Send,
+    mut log: impl Read + Send,
     compressed: u64,
 ) -> Result<Recorded<ExecLog>, LoadError> {
+    let mut magic = [0u8; ZSTD_MAGIC.len()];
+    match log.read_exact(&mut magic) {
+        Ok(()) if magic == ZSTD_MAGIC => {}
+        Ok(()) => return Err(LoadError::NotALog),
+        Err(e) if e.kind() == ErrorKind::UnexpectedEof => return Err(LoadError::NotALog),
+        Err(e) => return Err(LoadError::Io(e)),
+    }
+    let log = io::Cursor::new(magic).chain(log);
     let decoder = zstd::stream::read::Decoder::new(log).map_err(LoadError::Io)?;
     let mut builder = Builder::with_capacity(compressed);
     let mut any_entry = false;
@@ -317,17 +326,11 @@ fn duration(proto: Option<ProtoDuration>) -> Duration {
 /// times the invocation entry a log opens with.
 const PROBE_HEAD_BYTES: usize = 64 << 10;
 
-/// The invocation that wrote the execution log at `path`, from the invocation
-/// entry it opens with, decompressing no more than a bounded head of the file.
-/// `None` when the log opens with no such entry, the file cannot be read, or
-/// `path` is not a regular file: reading a pipe could block, and would take
-/// from it bytes it yields only once.
-pub fn probe_invocation_id(path: &Path) -> Option<InvocationId> {
-    if !std::fs::metadata(path).ok()?.is_file() {
-        return None;
-    }
-    let file = File::open(path).ok()?;
-    invocation_id_at_head(BufReader::new(file), PROBE_HEAD_BYTES)
+/// The invocation that wrote the execution log `input` holds, from the
+/// invocation entry it opens with in the input's head. `None` when the head
+/// opens with no such entry.
+pub fn probe_invocation_id(input: &Input) -> Option<InvocationId> {
+    invocation_id_at_head(input.head()?, PROBE_HEAD_BYTES)
 }
 
 /// [`probe_invocation_id`] over the first `head_bytes` decoded bytes of a log.
@@ -519,9 +522,23 @@ mod tests {
     }
 
     #[test]
-    fn a_log_that_is_no_zstd_stream_fails() {
+    fn a_file_that_is_no_zstd_stream_is_no_log() {
         let text = b"not an execution log at all";
-        assert!(read_compressed(&text[..], text.len() as u64).is_err());
+        assert!(matches!(
+            read_compressed(&text[..], text.len() as u64),
+            Err(LoadError::NotALog)
+        ));
+    }
+
+    #[test]
+    fn a_file_shorter_than_the_zstd_magic_is_no_log() {
+        for len in [0, 1, ZSTD_MAGIC.len() - 1] {
+            let short = &ZSTD_MAGIC[..len];
+            assert!(
+                matches!(read_compressed(short, len as u64), Err(LoadError::NotALog)),
+                "{len} bytes"
+            );
+        }
     }
 
     /// `fields` as one length-delimited entry of a compressed log.
@@ -580,12 +597,10 @@ mod tests {
     }
 
     #[test]
-    fn probe_reads_a_regular_file_only() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("bviz_execlog_probe.binpb.zst");
+    fn probe_reads_an_opened_file() {
+        let path = std::env::temp_dir().join("bviz_execlog_probe.binpb.zst");
         std::fs::write(&path, encode(&[invocation("abc")])).unwrap();
-        assert_eq!(probe_invocation_id(&path), InvocationId::new("abc"));
-        assert_eq!(probe_invocation_id(&path.with_extension("missing")), None);
-        assert_eq!(probe_invocation_id(&dir), None);
+        let input = Input::open(&path).unwrap();
+        assert_eq!(probe_invocation_id(&input), InvocationId::new("abc"));
     }
 }

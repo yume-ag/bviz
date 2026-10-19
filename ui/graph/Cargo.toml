@@ -15,6 +15,7 @@ bviz_bazel_flags = { workspace = true }
 clap = { workspace = true }
 gpui = { workspace = true, features = ["inspector"] }
 bviz_graph_layout = { path = "../../graph/layout" }
+bviz_input = { workspace = true }
 bviz_invocation = { workspace = true }
 bviz_label = { workspace = true }
 bviz_parallel = { workspace = true }

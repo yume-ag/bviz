@@ -10,6 +10,7 @@ members = [
     "graph/layout",
     "invocation",
     "label",
+    "sniff",
     "terminal",
     "tools/notices",
     "tools/proto_field_numbers",
@@ -31,6 +32,7 @@ members = [
     "ui/trace",
     "ui/trace/args",
     "ui/workspace",
+    "util/input",
     "util/parallel",
 ]
 resolver = "2"
@@ -45,6 +47,7 @@ alacritty_terminal = "0.26"
 bviz_bazel_flags = { path = "bazel_flags" }
 bviz_label = { path = "label" }
 bviz_invocation = { path = "invocation" }
+bviz_input = { path = "util/input" }
 bviz_parallel = { path = "util/parallel" }
 clap = { version = "4", features = ["derive"] }
 crossbeam-channel = "0.5"

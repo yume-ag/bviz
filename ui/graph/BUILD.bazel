@@ -21,6 +21,7 @@ rust_library(
         "//ui/playback",
         "//ui/theme",
         "//ui/workspace",
+        "//util/input",
         "//util/parallel",
         "@crates//:clap",
         "@crates//:fixedbitset",

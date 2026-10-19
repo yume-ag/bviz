@@ -20,6 +20,7 @@ rust_binary(
         "//ui/playback",
         "//ui/trace:trace_lib",
         "//ui/workspace",
+        "//util/input",
         "@crates//:clap",
         "@crates//:gpui",
     ],

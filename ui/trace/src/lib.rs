@@ -1763,10 +1763,20 @@ pub struct Load {
     title: SharedString,
 }
 
-/// The invocation the profile at `source` names itself as written by, read from
-/// the head of the file alone.
-pub fn invocation_id(source: &TraceSource) -> Option<InvocationId> {
-    bviz_trace_profile::probe_invocation_id(&source.path)
+/// The invocation the profile `input` holds names itself as written by, read
+/// from the input's head alone.
+pub fn invocation_id(input: &bviz_input::Input) -> Option<InvocationId> {
+    bviz_trace_profile::probe_invocation_id(input)
+}
+
+impl From<bviz_input::Input> for Load {
+    fn from(input: bviz_input::Input) -> Self {
+        let title = document_label(std::path::Path::new(input.name()));
+        Self {
+            profile: Pending::start(move || Profile::from_input(input).map_err(|e| e.to_string())),
+            title,
+        }
+    }
 }
 
 impl From<TraceSource> for Load {
@@ -1901,25 +1911,22 @@ mod tests {
     }
 
     #[test]
-    fn a_source_names_the_invocation_its_profile_was_written_by() {
+    fn an_input_names_the_invocation_its_profile_was_written_by() {
         let dir = std::env::var_os("TEST_TMPDIR")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(std::env::temp_dir);
-        let source = |name: &str, json: Option<&str>| {
+        let source = |name: &str, json: &str| {
             let path = std::path::Path::new(&dir).join(name);
-            if let Some(json) = json {
-                std::fs::write(&path, json).unwrap();
-            }
-            TraceSource { path }
+            std::fs::write(&path, json).unwrap();
+            bviz_input::Input::open(&path).expect("the profile opens")
         };
         let named = source(
             "named.json",
-            Some(r#"{"otherData":{"build_id":"a5f7f3e6-4fda"},"traceEvents":[]}"#),
+            r#"{"otherData":{"build_id":"a5f7f3e6-4fda"},"traceEvents":[]}"#,
         );
         assert_eq!(invocation_id(&named), InvocationId::new("a5f7f3e6-4fda"));
-        let unnamed = source("unnamed.json", Some(r#"{"traceEvents":[]}"#));
+        let unnamed = source("unnamed.json", r#"{"traceEvents":[]}"#);
         assert_eq!(invocation_id(&unnamed), None);
-        assert_eq!(invocation_id(&source("missing.json", None)), None);
     }
 
     /// A window tall enough that the strip stands at the height it is opened to,

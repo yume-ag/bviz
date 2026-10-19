@@ -23,6 +23,7 @@ rust_library(
         "//ui/theme",
         "//ui/trace/args",
         "//ui/workspace",
+        "//util/input",
         "@crates//:clap",
         "@crates//:gpui",
     ],

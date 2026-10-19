@@ -17,6 +17,7 @@ path = "src/lib.rs"
 [dependencies]
 clap = { workspace = true }
 gpui = { workspace = true }
+bviz_input = { workspace = true }
 bviz_invocation = { workspace = true }
 bviz_terminal = { path = "../../terminal" }
 bviz_ui_assets = { path = "../assets" }

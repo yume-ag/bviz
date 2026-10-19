@@ -4,7 +4,8 @@
 mod group;
 
 use bviz_cli::{Cli, Request, Source, Sources};
-use bviz_invocation::Session;
+use bviz_input::Input;
+use bviz_invocation::{InvocationId, Session};
 use bviz_ui_playback::DocumentClock;
 use bviz_ui_workspace::{Document, Member};
 use clap::Parser;
@@ -27,20 +28,50 @@ impl Load {
     /// wrote it.
     fn start(source: Source) -> File<Self> {
         match source {
-            Source::Trace(source) => File {
-                kind: Kind::Profile,
-                invocation: bviz_ui_trace::invocation_id(&source),
-                file: Self::Trace(source.into()),
+            Source::Trace(source) => Self::read(
+                Kind::Profile,
+                Input::open(&source.path),
+                source,
+                bviz_ui_trace::invocation_id,
+                Self::Trace,
+            ),
+            Source::Console(source) => Self::read(
+                Kind::Bep,
+                Input::open(&source.path),
+                source,
+                bviz_ui_console::invocation_id,
+                Self::Console,
+            ),
+            Source::ExecLog(source) => Self::read(
+                Kind::ExecLog,
+                Input::open(&source.path),
+                source,
+                bviz_ui_execlog::invocation_id,
+                Self::ExecLog,
+            ),
+        }
+    }
+
+    /// [`start`](Self::start) of `source`, through `opened`, the file it names
+    /// opened once for both the probe and the read. A source that did not open
+    /// names no invocation, and is left to its viewer's loader to report why.
+    fn read<S, L: From<S> + From<Input>>(
+        kind: Kind,
+        opened: std::io::Result<Input>,
+        source: S,
+        probe: fn(&Input) -> Option<InvocationId>,
+        load: fn(L) -> Self,
+    ) -> File<Self> {
+        match opened {
+            Ok(input) => File {
+                kind,
+                invocation: probe(&input),
+                file: load(input.into()),
             },
-            Source::Console(source) => File {
-                kind: Kind::Bep,
-                invocation: bviz_ui_console::invocation_id(&source),
-                file: Self::Console(source.into()),
-            },
-            Source::ExecLog(source) => File {
-                kind: Kind::ExecLog,
-                invocation: bviz_ui_execlog::invocation_id(&source),
-                file: Self::ExecLog(source.into()),
+            Err(_) => File {
+                kind,
+                invocation: None,
+                file: load(source.into()),
             },
         }
     }
@@ -141,6 +172,7 @@ fn open_window(sources: Sources) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use bviz_ui_components::LABEL_MAX_CHARS;
     use bviz_ui_workspace::{Panel, ViewKind};
     use std::collections::HashMap;
@@ -205,5 +237,22 @@ mod tests {
                 panic!("{first} and {panel} both call themselves {}", view.as_str());
             }
         }
+    }
+
+    #[test]
+    fn a_file_that_does_not_open_names_no_invocation_and_still_loads() {
+        let dir = std::env::var_os("TEST_TMPDIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        let missing = dir.join("missing.profile.gz");
+        let args = ["bviz".into(), "--profile".into(), missing.into_os_string()];
+        let request = Cli::try_parse_from(args).and_then(Cli::request);
+        let Ok(Request::Open(Sources::Files { first, .. })) = request else {
+            panic!("a profile opens as a file");
+        };
+        let file = Load::start(first);
+        assert!(file.kind == Kind::Profile);
+        assert_eq!(file.invocation, None);
+        assert!(matches!(file.file, Load::Trace(_)));
     }
 }

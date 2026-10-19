@@ -239,12 +239,14 @@ fn count(value: &str) -> usize {
     value.parse().unwrap_or_else(|_| usage())
 }
 
-fn decode<T, E: std::fmt::Display>(
+fn decode<T>(
     path: &Path,
-    parse: impl Fn(&[u8]) -> Result<Vec<T>, E>,
+    read: impl FnOnce(std::fs::File, Option<u64>) -> Result<Vec<T>, streamed_proto::ReadError>,
 ) -> Vec<T> {
-    let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    parse(&bytes).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    let fail = |e: &dyn std::fmt::Display| -> ! { panic!("{}: {e}", path.display()) };
+    let file = std::fs::File::open(path).unwrap_or_else(|e| fail(&e));
+    let size = file.metadata().map(|metadata| metadata.len()).ok();
+    read(file, size).unwrap_or_else(|e| fail(&e))
 }
 
 /// The graph one expansion of `base` draws: only the descendants of expanded

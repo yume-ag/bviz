@@ -681,6 +681,7 @@ version = "0.1.0"
 dependencies = [
  "bviz_alloc",
  "bviz_cli",
+ "bviz_input",
  "bviz_invocation",
  "bviz_ui_components",
  "bviz_ui_console",
@@ -741,6 +742,7 @@ dependencies = [
 name = "bviz_execlog"
 version = "0.1.0"
 dependencies = [
+ "bviz_input",
  "bviz_invocation",
  "bviz_parallel",
  "prost",
@@ -753,6 +755,7 @@ name = "bviz_graph_layout"
 version = "0.1.0"
 dependencies = [
  "bviz_bazel_flags",
+ "bviz_input",
  "bviz_label",
  "bviz_parallel",
  "fastrand",
@@ -767,6 +770,13 @@ dependencies = [
  "regex-automata",
  "regex-syntax",
  "rustc-hash 2.1.3",
+]
+
+[[package]]
+name = "bviz_input"
+version = "0.1.0"
+dependencies = [
+ "prost",
 ]
 
 [[package]]
@@ -814,10 +824,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "bviz_sniff"
+version = "0.1.0"
+dependencies = [
+ "fastrand 2.5.0",
+ "flate2",
+ "prost",
+]
+
+[[package]]
 name = "bviz_terminal"
 version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
+ "bviz_input",
  "bviz_invocation",
  "prost",
  "prost-types",
@@ -839,6 +859,7 @@ dependencies = [
 name = "bviz_trace_profile"
 version = "0.1.0"
 dependencies = [
+ "bviz_input",
  "bviz_invocation",
  "bviz_parallel",
  "crossbeam-channel",
@@ -873,6 +894,7 @@ dependencies = [
 name = "bviz_ui_console"
 version = "0.1.0"
 dependencies = [
+ "bviz_input",
  "bviz_invocation",
  "bviz_terminal",
  "bviz_ui_assets",
@@ -899,6 +921,7 @@ version = "0.1.0"
 dependencies = [
  "bviz_alloc",
  "bviz_execlog",
+ "bviz_input",
  "bviz_invocation",
  "bviz_label",
  "bviz_ui_assets",
@@ -924,6 +947,7 @@ version = "0.1.0"
 dependencies = [
  "bviz_bazel_flags",
  "bviz_graph_layout",
+ "bviz_input",
  "bviz_invocation",
  "bviz_label",
  "bviz_parallel",
@@ -995,6 +1019,7 @@ version = "0.1.0"
 dependencies = [
  "bviz_alloc",
  "bviz_critical_path",
+ "bviz_input",
  "bviz_invocation",
  "bviz_label",
  "bviz_trace_layout",

@@ -1,4 +1,5 @@
 use bviz_graph_layout::graph::Graph;
+use bviz_graph_layout::streamed_proto::ReadError;
 use bviz_graph_layout::transition::Transitions;
 use bviz_graph_layout::{
     Anchor, Id, InputSet, Joint, LaidOut, Names, layout, quotient, streamed_proto,
@@ -16,19 +17,25 @@ pub(crate) fn build_graph(inputs: &[Input]) -> Result<(Joint, Graph), String> {
     let mut q = None;
     for input in inputs {
         let path = input.path.display();
-        let bytes = std::fs::read(&input.path).map_err(|e| format!("{path}: {e}"))?;
-        let undecodable = |e| undecodable(input, e);
+        let opened = bviz_input::Input::open(&input.path).map_err(|e| format!("{path}: {e}"))?;
+        let size = opened.size();
+        let stream = opened.into_reader();
+        let unreadable = |e| match e {
+            ReadError::Io(e) => format!("{path}: {e}"),
+            e => undecodable(input, e),
+        };
         match input.kind {
             InputKind::Aquery => {
                 aq = Some(
-                    streamed_proto::read_action_graph_containers(&bytes).map_err(undecodable)?,
+                    streamed_proto::read_action_graph_containers(stream, size)
+                        .map_err(unreadable)?,
                 );
             }
             InputKind::Cquery => {
-                cq = Some(streamed_proto::read_cquery_results(&bytes).map_err(undecodable)?);
+                cq = Some(streamed_proto::read_cquery_results(stream, size).map_err(unreadable)?);
             }
             InputKind::Query => {
-                q = Some(streamed_proto::read_query_targets(&bytes).map_err(undecodable)?);
+                q = Some(streamed_proto::read_query_targets(stream, size).map_err(unreadable)?);
             }
         }
     }

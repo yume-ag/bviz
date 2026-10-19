@@ -12,6 +12,7 @@ path = "src/lib.rs"
 
 [dependencies]
 bviz_bazel_flags = { workspace = true }
+bviz_input = { workspace = true }
 bviz_label = { workspace = true }
 bviz_parallel = { workspace = true }
 fixedbitset = { workspace = true }

@@ -1,6 +1,7 @@
 use std::borrow::Cow;
-use std::io::{ErrorKind, Read, Seek, SeekFrom};
+use std::io::{ErrorKind, Read};
 
+use bviz_input::ReadAt;
 use bviz_invocation::Recorded;
 use flate2::read::MultiGzDecoder;
 
@@ -74,30 +75,17 @@ pub fn gzip_size_hint(bytes: &[u8]) -> Option<usize> {
     )
 }
 
-/// [`gzip_size_hint`] read directly from an open file without pulling the whole
-/// stream into memory: verifies the leading [`GZIP_MAGIC`], then seeks to the
-/// ISIZE field. The file cursor is left wherever the reads and seeks land; the
-/// caller re-seeks before use.
-pub(crate) fn gzip_size_hint_from_file(file: &mut std::fs::File) -> std::io::Result<Option<usize>> {
-    let mut magic = [0u8; 2];
-    if file.read_exact(&mut magic).is_err() || magic != GZIP_MAGIC {
-        return Ok(None);
-    }
-    let compressed_len = file.metadata().map_or(0, |m| m.len());
+/// [`gzip_size_hint`] of a gzip stream of `compressed_len` bytes, read from
+/// `source` without pulling the whole stream into memory.
+pub(crate) fn gzip_size_hint_at(source: &dyn ReadAt, compressed_len: u64) -> Option<usize> {
     if compressed_len < GZIP_FRAMING_MIN as u64 {
-        return Ok(None);
-    }
-    if file
-        .seek(SeekFrom::End(-(GZIP_ISIZE_BYTES as i64)))
-        .is_err()
-    {
-        return Ok(None);
+        return None;
     }
     let mut trailer = [0u8; GZIP_ISIZE_BYTES];
-    if file.read_exact(&mut trailer).is_err() {
-        return Ok(None);
-    }
-    Ok(size_hint_from_trailer(&trailer, compressed_len))
+    source
+        .read_exact_at(&mut trailer, compressed_len - GZIP_ISIZE_BYTES as u64)
+        .ok()?;
+    size_hint_from_trailer(&trailer, compressed_len)
 }
 
 /// Transcodes an ISO-8859-1 (Latin-1) byte buffer — how Bazel writes profile

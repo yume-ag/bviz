@@ -14,6 +14,7 @@ mod spawn_fields;
 mod test_log;
 mod wire;
 
+use bviz_input::Input;
 use bviz_invocation::Recorded;
 use bviz_invocation::spawn::{LoggedSpawn, LoggedSpawns};
 pub use bviz_invocation::spawn::{Phase, PhaseTiming};
@@ -25,7 +26,8 @@ pub enum LoadError {
     /// through one error.
     Io(std::io::Error),
     Decode(prost::DecodeError),
-    /// The file decodes to no entry: an execution log opens with one.
+    /// The file is no zstd stream, or decodes to no entry: an execution log
+    /// opens with one.
     NotALog,
 }
 
@@ -63,7 +65,12 @@ pub struct ExecLog {
 impl ExecLog {
     /// The log at `path`, as far as it goes where it is cut off.
     pub fn from_path(path: &Path) -> Result<Recorded<ExecLog>, LoadError> {
-        read::read_path(path)
+        ExecLog::from_input(Input::open(path).map_err(LoadError::Io)?)
+    }
+
+    /// The log `input` holds, as far as it goes where it is cut off.
+    pub fn from_input(input: Input) -> Result<Recorded<ExecLog>, LoadError> {
+        read::read_input(input)
     }
 
     /// The log's spawns, for readers that join them to what other outputs of

@@ -15,6 +15,7 @@ mod model;
 pub use console::{ConsolePanel, register_keys};
 use model::ConsoleModel;
 
+use bviz_input::Input;
 use bviz_invocation::{InvocationId, Session};
 use bviz_ui_components::Pending;
 use bviz_ui_console_args::{BEP_LONG, ConsoleArgs, ConsoleSource};
@@ -22,7 +23,7 @@ use bviz_ui_playback::DocumentClock;
 use bviz_ui_workspace::{Document, Member, ViewSpec, document_label};
 use clap::Parser;
 use gpui::{App, Entity, SharedString, Window, prelude::*};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// A build's console output being read and reconstructed.
 pub struct Load {
@@ -30,23 +31,30 @@ pub struct Load {
     title: SharedString,
 }
 
-/// The invocation that wrote the build event stream at `source`, read from the
-/// head of the file alone.
-pub fn invocation_id(source: &ConsoleSource) -> Option<InvocationId> {
-    bviz_terminal::probe_invocation_id(&source.path)
+/// The invocation that wrote the build event stream `input` holds, read from
+/// the input's head alone.
+pub fn invocation_id(input: &Input) -> Option<InvocationId> {
+    bviz_terminal::probe_invocation_id(input)
+}
+
+impl From<Input> for Load {
+    fn from(input: Input) -> Self {
+        Self {
+            title: document_label(Path::new(input.name())),
+            stream: Pending::start(move || model::Stream::read(input)),
+        }
+    }
 }
 
 impl From<ConsoleSource> for Load {
     fn from(source: ConsoleSource) -> Self {
-        let title = document_label(&source.path);
         Self {
+            title: document_label(&source.path),
             stream: Pending::start(move || {
-                let path = source.path.display();
-                let bytes =
-                    std::fs::read(&source.path).map_err(|e| format!("cannot read {path}: {e}"))?;
-                model::Stream::parse(&bytes)
+                let input = Input::open(&source.path)
+                    .map_err(|e| format!("cannot read {}: {e}", source.path.display()))?;
+                model::Stream::read(input)
             }),
-            title,
         }
     }
 }
@@ -110,16 +118,14 @@ mod tests {
     use prost::Message;
 
     #[test]
-    fn a_source_names_the_invocation_its_stream_was_written_by() {
+    fn an_input_names_the_invocation_its_stream_was_written_by() {
         let dir = std::env::var_os("TEST_TMPDIR")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(std::env::temp_dir);
-        let source = |name: &str, stream: Option<&[u8]>| {
-            let path = std::path::Path::new(&dir).join(name);
-            if let Some(stream) = stream {
-                std::fs::write(&path, stream).unwrap();
-            }
-            ConsoleSource { path }
+        let source = |name: &str, stream: &[u8]| {
+            let path = Path::new(&dir).join(name);
+            std::fs::write(&path, stream).unwrap();
+            Input::open(&path).expect("the stream opens")
         };
         let started = BuildEvent {
             payload: Some(Payload::Started(BuildStarted {
@@ -129,10 +135,42 @@ mod tests {
             ..Default::default()
         }
         .encode_length_delimited_to_vec();
-        let named = source("named.bep", Some(&started));
+        let named = source("named.bep", &started);
         assert_eq!(invocation_id(&named), InvocationId::new("a5f7f3e6-4fda"));
-        let unnamed = source("unnamed.bep", Some(&[]));
+        let unnamed = source("unnamed.bep", &[]);
         assert_eq!(invocation_id(&unnamed), None);
-        assert_eq!(invocation_id(&source("missing.bep", None)), None);
+    }
+
+    /// The error reading `load` fails with.
+    fn failure(load: Load) -> String {
+        match load.stream.join() {
+            Ok(_) => panic!("the stream reads"),
+            Err(e) => e,
+        }
+    }
+
+    #[test]
+    fn a_stream_that_cannot_be_read_fails_naming_it() {
+        let dir = std::env::var_os("TEST_TMPDIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        for unopened in [dir.join("missing.bep"), dir.clone()] {
+            let error = failure(
+                ConsoleSource {
+                    path: unopened.clone(),
+                }
+                .into(),
+            );
+            assert!(error.contains(&unopened.display().to_string()), "{error}");
+        }
+        let corrupt = dir.join("corrupt.bep");
+        let no_event = dir.join("empty.bep");
+        std::fs::write(&corrupt, [0xff; 11]).unwrap();
+        std::fs::write(&no_event, []).unwrap();
+        for unread in [corrupt, no_event] {
+            let input = Input::open(&unread).expect("the file opens");
+            let error = failure(input.into());
+            assert!(error.contains(&unread.display().to_string()), "{error}");
+        }
     }
 }

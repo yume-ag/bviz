@@ -20,6 +20,7 @@ rust_library(
         "//ui/spawn_phase",
         "//ui/theme",
         "//ui/workspace",
+        "//util/input",
         "@crates//:clap",
         "@crates//:gpui",
     ],
