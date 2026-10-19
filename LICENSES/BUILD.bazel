@@ -64,6 +64,19 @@ license(
 )
 
 package_metadata(
+    name = "nucleo_patches",
+    attributes = [":nucleo_license"],
+    purl = "pkg:cargo/nucleo@0.5.0",
+    visibility = ["//patches/nucleo:__pkg__"],
+)
+
+license(
+    name = "nucleo_license",
+    kind = "@package_metadata//licenses/spdx:MPL-2.0",
+    text = "@crates//:nucleo_licence",
+)
+
+package_metadata(
     name = "bazel",
     attributes = [":bazel_license"],
     purl = "pkg:github/bazelbuild/bazel@9.2.0",

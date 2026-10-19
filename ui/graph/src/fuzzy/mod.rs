@@ -21,10 +21,6 @@ use std::time::Duration;
 /// for the rows to keep pace with typing.
 const POLL: Duration = Duration::from_millis(16);
 
-/// How long one poll waits on a match pass to finish, in milliseconds: a
-/// small share of a frame, so the UI thread is not held on it.
-const POLL_WAIT_MS: u64 = 1;
-
 /// The weight of the line under a row's matched characters.
 const MATCH_UNDERLINE: Pixels = px(1.);
 
@@ -165,10 +161,10 @@ impl<S> Matching<S> {
         true
     }
 
-    /// Waits briefly on the matcher, and reports whether its result changed
-    /// since the last poll.
+    /// Reports whether the matcher's result changed since the last poll,
+    /// without waiting on it.
     fn tick(&mut self) -> bool {
-        let status = self.nucleo.tick(POLL_WAIT_MS);
+        let status = self.nucleo.try_tick();
         self.running = status.running;
         status.changed
     }
@@ -537,6 +533,57 @@ mod tests {
         let names = RepoNames::of_labels([written].into_iter());
         assert_eq!(names.show(written).text(), "//a/lib");
         assert_eq!(picked_for(&names, written, "a"), [2]);
+    }
+
+    /// Enough candidates that a match pass can still be running when the next
+    /// query is typed.
+    const CANDIDATES: u32 = 100_000;
+
+    /// How many packages the candidates spread over.
+    const PACKAGES: u32 = 97;
+
+    /// Queries typed in quick succession, each polled once with `try_tick`,
+    /// end on the last query's matches once polling finds the matcher at rest.
+    #[test]
+    fn polling_with_try_tick_reaches_the_last_query() {
+        let workers = Some(bviz_parallel::worker_count());
+        let mut nucleo: Nucleo<u32> = Nucleo::new(config(), Arc::new(|| {}), workers, 1);
+        let texts: Vec<String> = (0..CANDIDATES)
+            .map(|index| format!("//pkg{}/sub:target_{index}", index % PACKAGES))
+            .collect();
+        let injector = nucleo.injector();
+        for (index, text) in (0..).zip(&texts) {
+            injector.push(index, |_, columns| columns[0] = text.as_str().into());
+        }
+        let queries = ["p", "pk", "pkg1", "pkg1/s", "t", "ta", "tar3"];
+        let mut typed = "";
+        for query in queries {
+            let narrowing = query.starts_with(typed);
+            nucleo.pattern.reparse(
+                0,
+                query,
+                CaseMatching::Smart,
+                Normalization::Smart,
+                narrowing,
+            );
+            nucleo.try_tick();
+            typed = query;
+        }
+        while nucleo.try_tick().running {
+            std::thread::yield_now();
+        }
+        let pattern = Pattern::parse(typed, CaseMatching::Smart, Normalization::Smart);
+        let mut matcher = Matcher::new(config());
+        let mut chars = Vec::new();
+        let expected = texts
+            .iter()
+            .filter(|text| {
+                let text = Utf32Str::new(text, &mut chars);
+                pattern.score(text, &mut matcher).is_some()
+            })
+            .count();
+        assert!(expected > 0);
+        assert_eq!(nucleo.snapshot().matched_item_count() as usize, expected);
     }
 
     #[test]
