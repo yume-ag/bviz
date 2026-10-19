@@ -502,12 +502,26 @@ impl<P: Clone + PartialEq> Layout<P> {
     /// goes on asking for what it asked for; across that axis, `target` is
     /// parted from `new` by a split of two dividing evenly what `target` held.
     pub fn insert_beside(&mut self, target: &P, side: Side, new: P) -> bool {
+        self.insert_beside_at(target, side, new, EVEN_SHARE)
+    }
+
+    /// [`insert_beside`](Self::insert_beside), a split of two parting
+    /// `target` from `new` laying its leading side out at `leading` of the
+    /// extent.
+    pub(crate) fn insert_beside_at(
+        &mut self,
+        target: &P,
+        side: Side,
+        new: P,
+        leading: f32,
+    ) -> bool {
         let split = match self {
             Layout::Pane(pane) => {
                 if pane != target {
                     return false;
                 }
-                *self = Layout::parted(side, Layout::Pane(pane.clone()), Layout::Pane(new));
+                let held = Layout::Pane(pane.clone());
+                *self = Layout::parted(side, held, Layout::Pane(new), leading);
                 return true;
             }
             Layout::Split(split) => split,
@@ -520,7 +534,9 @@ impl<P: Clone + PartialEq> Layout<P> {
             return false;
         };
         if split.axis != side.axis() || !split.children[at].layout.is_pane(target) {
-            return split.children[at].layout.insert_beside(target, side, new);
+            return split.children[at]
+                .layout
+                .insert_beside_at(target, side, new, leading);
         }
         let half = Flex::new(split.children[at].flex.shares() * BESIDE_SHARE);
         split.children[at].flex = half;
@@ -541,6 +557,13 @@ impl<P: Clone + PartialEq> Layout<P> {
     /// and every other side goes on asking for what it asked for; across that
     /// axis, the whole arrangement is parted from `new` by a split of two.
     pub fn insert_at_edge(&mut self, side: Side, new: P) {
+        self.insert_at_edge_at(side, new, EVEN_SHARE);
+    }
+
+    /// [`insert_at_edge`](Self::insert_at_edge), a split of two parting the
+    /// whole arrangement from `new` laying its leading side out at `leading`
+    /// of the extent.
+    pub(crate) fn insert_at_edge_at(&mut self, side: Side, new: P, leading: f32) {
         if let Layout::Split(split) = self
             && split.axis == side.axis()
         {
@@ -556,17 +579,17 @@ impl<P: Clone + PartialEq> Layout<P> {
             return;
         }
         let held = std::mem::replace(self, Layout::Pane(new.clone()));
-        *self = Layout::parted(side, held, Layout::Pane(new));
+        *self = Layout::parted(side, held, Layout::Pane(new), leading);
     }
 
     /// `held` and `new` either side of a divider, `new` on `side` of `held`,
-    /// the two of them dividing evenly what they are laid out in.
-    fn parted(side: Side, held: Layout<P>, new: Layout<P>) -> Self {
+    /// the leading one laid out at `leading` of what they are laid out in.
+    fn parted(side: Side, held: Layout<P>, new: Layout<P>, leading: f32) -> Self {
         let (first, second) = match side.leads() {
             true => (new, held),
             false => (held, new),
         };
-        Layout::split_at(side.axis(), EVEN_SHARE, first, second)
+        Layout::split_at(side.axis(), leading, first, second)
     }
 
     /// Takes `target` out of the arrangement. What it asked for of its split
