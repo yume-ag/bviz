@@ -1,5 +1,5 @@
 use crate::workspace::{ResetArrangement, ToggleDocuments};
-use crate::{DocumentId, Documents, OpenDocument, ViewId, ViewState, Workspace};
+use crate::{DocumentId, Documents, OpenDocument, ViewId, ViewState, Workspace, documents};
 use bviz_ui_components::{Button, KeyScope, Nesting, action_label, key_text_in, menu_chrome};
 use bviz_ui_theme::{ThemeColors, over};
 use gpui::{
@@ -224,9 +224,7 @@ impl DocumentsMenu {
         let Some(workspace) = self.workspace.upgrade() else {
             return;
         };
-        self.documents.update(cx, |documents, cx| {
-            documents.show(document, view, &workspace, window, cx);
-        });
+        documents::show(document, view, &workspace, window, cx);
     }
 
     fn trigger(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {

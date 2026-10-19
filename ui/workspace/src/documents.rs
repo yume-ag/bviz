@@ -625,38 +625,24 @@ impl Documents {
         }
     }
 
-    /// Shows `view` of `document` in `workspace`: the panel already showing it,
-    /// moved here out of whatever window holds it, or a fresh panel where none
-    /// is open. A reopened view comes back as its document stands, not as its
-    /// last panel had been scrolled or zoomed.
-    pub fn show(
+    /// The panel to show `view` of `document` with: the one already showing
+    /// it, or a fresh one minted where none is open. A reopened view comes back
+    /// as its document stands, not as its last panel had been scrolled or
+    /// zoomed.
+    fn showing(
         &mut self,
         document: DocumentId,
         view: ViewId,
-        workspace: &Entity<Workspace>,
-        window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
-        let Some(held) = self.registered(document) else {
-            return;
-        };
-        let Some((member, found)) = held.view(view) else {
-            return;
-        };
-        let file = member.file.clone();
-        let live = found.live.as_ref().map(|live| live.panel);
-        let mint = found.mint.clone();
-        match live {
-            Some(panel) => self.reveal(panel, workspace, window, cx),
-            None => {
-                let panel = mint(document, &file, cx);
-                self.watch(document, view, &panel, cx);
-                workspace.update(cx, |workspace, cx| {
-                    workspace.add_panel(panel, window, cx);
-                });
-                cx.notify();
-            }
+    ) -> Option<Showing> {
+        let (member, found) = self.registered(document)?.view(view)?;
+        if let Some(live) = &found.live {
+            return Some(Showing::Open(live.panel));
         }
+        let panel = (found.mint.clone())(document, &member.file, cx);
+        self.watch(document, view, &panel, cx);
+        cx.notify();
+        Some(Showing::Minted(panel))
     }
 
     /// Every document the session holds, in the order they opened, each with
@@ -696,27 +682,6 @@ impl Documents {
     pub(crate) fn holds_another_window(&self, workspace: EntityId) -> bool {
         self.open_windows()
             .any(|held| held.entity_id() != workspace)
-    }
-
-    /// Brings `panel` forward where `into` holds it, and otherwise moves it
-    /// there out of the window that does: a panel is rendered in one window at a
-    /// time, and Wayland offers no way to raise the window it sits in.
-    fn reveal(
-        &self,
-        panel: EntityId,
-        into: &Entity<Workspace>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if into.update(cx, |workspace, cx| workspace.reveal(panel, window, cx)) {
-            return;
-        }
-        let elsewhere = take_panel_from(self.workspaces(), panel, into.entity_id(), cx);
-        if let Some(taken) = elsewhere {
-            into.update(cx, |workspace, cx| {
-                workspace.add_panel(taken, window, cx);
-            });
-        }
     }
 
     /// Records `panel` as the one showing `view` of `document`, watched so that
@@ -897,6 +862,48 @@ fn numbered_file(files: &mut Numbering, member: Member) -> Held<ViewSpec> {
         },
         first: member.first,
         rest: member.rest,
+    }
+}
+
+/// Where the panel showing a view comes from.
+enum Showing {
+    /// The panel already showing it, in whichever window holds it.
+    Open(EntityId),
+    Minted(AnyPanel),
+}
+
+/// Shows `view` of `document` in `workspace`: the panel already showing it,
+/// moved here out of whatever window holds it, or a fresh panel where none is
+/// open. Panels move once the registry's update has ended, so a window giving
+/// one up may read the registry.
+pub(crate) fn show(
+    document: DocumentId,
+    view: ViewId,
+    workspace: &Entity<Workspace>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let registry = Documents::global(cx);
+    let showing = registry.update(cx, |registry, cx| registry.showing(document, view, cx));
+    match showing {
+        Some(Showing::Open(panel)) => reveal(panel, workspace, window, cx),
+        Some(Showing::Minted(panel)) => {
+            workspace.update(cx, |workspace, cx| workspace.add_panel(panel, window, cx));
+        }
+        None => {}
+    }
+}
+
+/// Brings `panel` forward where `into` holds it, and otherwise moves it there
+/// out of the window that does: a panel is rendered in one window at a time,
+/// and Wayland offers no way to raise the window it sits in.
+fn reveal(panel: EntityId, into: &Entity<Workspace>, window: &mut Window, cx: &mut App) {
+    if into.update(cx, |workspace, cx| workspace.reveal(panel, window, cx)) {
+        return;
+    }
+    let open = Documents::global(cx).read(cx).workspaces();
+    if let Some(taken) = take_panel_from(open, panel, into.entity_id(), cx) {
+        into.update(cx, |workspace, cx| workspace.add_panel(taken, window, cx));
     }
 }
 
