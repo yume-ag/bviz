@@ -40,6 +40,7 @@ use bviz_graph_layout::metrics::{Measurement, Metrics, Scope, Sizing, Unit};
 use bviz_graph_layout::select::Verdicts;
 use bviz_graph_layout::{Capabilities, Id, Input, InputSet, Kind, Support};
 use bviz_invocation::Revision;
+use bviz_time::Instant;
 use bviz_ui_components::LabelLine;
 use bviz_ui_components::gesture::{self, Clicks, Entry, GestureRow, Gestures, Held, Motion, Place};
 use bviz_ui_components::{
@@ -66,7 +67,7 @@ use placed::Placed;
 use plot::{MIN_RADIUS, Mark, Picked, Plotted, Spot, Zoom};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// The key context scoping the scatter plot's own bindings, so a key pressed
 /// here reaches this panel and no other.
@@ -424,7 +425,7 @@ impl ScatterPanel {
         let unshown = match landing {
             Landing::Marks(marks) => {
                 self.zoom_onto(&marks, None, cx);
-                self.pulsed = Some(Instant::now());
+                self.pulsed = Some(bviz_time::now());
                 let spot = (self.area().zip(self.plot.as_ref()))
                     .map(|(area, plot)| area.spot(area.place(&plot.plotted.marks[marks[0]])));
                 let several = (marks.len() > 1)

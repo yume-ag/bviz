@@ -18,6 +18,7 @@ bviz_critical_path = { path = "../../critical_path" }
 bviz_input = { workspace = true }
 bviz_invocation = { workspace = true }
 bviz_label = { workspace = true }
+bviz_time = { workspace = true }
 bviz_trace_profile = { path = "../../trace/profile" }
 bviz_trace_layout = { path = "../../trace/layout" }
 bviz_ui_assets = { path = "../assets" }

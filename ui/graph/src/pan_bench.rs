@@ -7,6 +7,7 @@ use crate::camera::{Camera, Rect, to_screen, visible_rect};
 use crate::derive;
 use crate::mode::LayoutMode;
 use bviz_graph_layout::Id;
+use bviz_time::Instant;
 use bviz_ui_components::gesture::ZOOM_PER_NOTCH;
 use gpui::{
     App, Entity, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
@@ -14,7 +15,7 @@ use gpui::{
 };
 use std::f32::consts::TAU;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Names the [`Scenario`] to run.
 const SCENARIO_VAR: &str = "BVIZ_PAN_BENCH";
@@ -272,7 +273,7 @@ pub(crate) fn tally(tally: Tally, n: usize) {
 
 /// Times the enclosing scope as `phase` until dropped.
 pub(crate) fn span(phase: Phase) -> Span {
-    Span(RUNNING.load(Relaxed).then(|| (phase, Instant::now())))
+    Span(RUNNING.load(Relaxed).then(|| (phase, bviz_time::now())))
 }
 
 pub(crate) struct Span(Option<(Phase, Instant)>);
@@ -423,7 +424,7 @@ impl Run {
     }
 
     fn step(mut self, window: &mut Window, cx: &mut App) {
-        let now = Instant::now();
+        let now = bviz_time::now();
         let interval = self.last_frame.map_or(Duration::ZERO, |last| now - last);
         self.last_frame = Some(now);
         let sample = take_frame(interval);

@@ -21,3 +21,4 @@ flate2 = { workspace = true }
 bviz_input = { workspace = true }
 bviz_invocation = { workspace = true }
 bviz_parallel = { workspace = true }
+bviz_time = { workspace = true }

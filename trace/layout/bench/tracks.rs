@@ -20,7 +20,7 @@ static GLOBAL: bviz_alloc::MiMalloc = bviz_alloc::MiMalloc;
 fn min_secs(iters: usize, mut f: impl FnMut()) -> f64 {
     (0..iters)
         .map(|_| {
-            let t = std::time::Instant::now();
+            let t = bviz_time::now();
             f();
             t.elapsed().as_secs_f64()
         })
@@ -151,7 +151,7 @@ fn main() {
         weight: FlameWeight::WallShare,
         ..mode
     };
-    let first = std::time::Instant::now();
+    let first = bviz_time::now();
     let wall_agg = ScopeAggregate::build_for_tracks_reusing(&scan, wall_share, &window, |i| {
         threads[i].lane_class != LaneClass::CriticalPath
     });

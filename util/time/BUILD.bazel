@@ -1,0 +1,18 @@
+load("@rules_rs//rs:rust_library.bzl", "rust_library")
+
+rust_library(
+    name = "time",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "bviz_time",
+    visibility = [
+        "//execlog:__pkg__",
+        "//graph/layout:__pkg__",
+        "//terminal:__pkg__",
+        "//trace/layout:__pkg__",
+        "//trace/profile:__pkg__",
+        "//ui/graph:__pkg__",
+        "//ui/playback:__pkg__",
+        "//ui/trace:__pkg__",
+    ],
+    deps = ["@crates//:web-time"],
+)

@@ -52,7 +52,10 @@ rust_binary(
     name = "bench_relayout",
     srcs = ["bench/relayout.rs"],
     crate_name = "bench_relayout",
-    deps = [":layout"],
+    deps = [
+        ":layout",
+        "//util/time",
+    ],
 )
 
 rust_binary(
@@ -63,5 +66,6 @@ rust_binary(
         ":layout",
         "//alloc",
         "//util/input",
+        "//util/time",
     ],
 )

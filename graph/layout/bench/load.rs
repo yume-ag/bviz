@@ -13,7 +13,7 @@ fn main() {
     let usage = "usage: bench_load --query|--cquery|--aquery <file>";
     let kind = args.next().expect(usage);
     let path = args.next().expect(usage);
-    let start = std::time::Instant::now();
+    let start = bviz_time::now();
     let input =
         bviz_input::Input::open(std::path::Path::new(&path)).expect("open streamed_proto file");
     let size = input.size();

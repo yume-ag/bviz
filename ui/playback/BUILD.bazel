@@ -18,6 +18,7 @@ rust_library(
         "//ui/assets",
         "//ui/components",
         "//ui/theme",
+        "//util/time",
         "@crates//:gpui",
     ],
 )

@@ -345,7 +345,6 @@ mod tests {
     use gpui::rgb;
     use std::collections::HashSet;
     use std::sync::Arc;
-    use std::time::Instant;
 
     /// The zooms the caret invariant is checked over, spanning both sides of the
     /// band width at which a container's title stops fitting in it.
@@ -558,7 +557,7 @@ mod tests {
         );
         // The morph's opening frame, which draws every box a whole slide away
         // from where the layout put it.
-        let frame = Transition::at(&t, Instant::now()).expect("the transition was already over");
+        let frame = Transition::at(&t, bviz_time::now()).expect("the transition was already over");
 
         let (mut floating, mut covered) = (0, 0);
         for zoom in ZOOMS {

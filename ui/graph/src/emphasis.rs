@@ -1,7 +1,8 @@
 use crate::GraphPanel;
 use bviz_graph_layout::Id;
+use bviz_time::Instant;
 use gpui::Context;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// How long the just-toggled box stays emphasized before the highlight fades.
 const HIGHLIGHT_LINGER: Duration = Duration::from_millis(1100);
@@ -82,7 +83,7 @@ impl Emphasis {
     /// Starts the fade of the emphasized box, yielding the generation its timer
     /// quotes back to [`Emphasis::tick`]; `None` when no box is emphasized.
     fn begin(&mut self) -> Option<u64> {
-        self.current.as_mut()?.fading_since = Some(Instant::now());
+        self.current.as_mut()?.fading_since = Some(bviz_time::now());
         Some(self.generation)
     }
 

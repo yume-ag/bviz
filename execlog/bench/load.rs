@@ -8,7 +8,7 @@ fn main() {
     let path = std::env::args()
         .nth(1)
         .expect("usage: bench_load <execution log>");
-    let start = std::time::Instant::now();
+    let start = bviz_time::now();
     let read =
         bviz_execlog::ExecLog::from_path(std::path::Path::new(&path)).expect("load execution log");
     let elapsed = start.elapsed().as_secs_f64();

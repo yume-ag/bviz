@@ -64,7 +64,6 @@ use selection::{LaidOut, Step};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Instant;
 use transition::Transition;
 
 /// The key context scoping the panel's own bindings, so a key pressed here
@@ -1177,7 +1176,7 @@ impl ExclusivePanel {
             return;
         }
         let tree = &drawn.shown.tree;
-        drawn.transition = Transition::between(tree, from, drawn.top(), Instant::now());
+        drawn.transition = Transition::between(tree, from, drawn.top(), bviz_time::now());
         self.invalidate_canvas(cx);
         self.reselect(cx);
     }
@@ -3000,7 +2999,7 @@ impl Render for IcicleCanvas {
                 let Some(scene) = scene else {
                     return;
                 };
-                let now = Instant::now();
+                let now = bviz_time::now();
                 paint::paint_icicle(&scene, bounds, now, window, cx);
                 match scene.transition {
                     Some(transition) if transition.ended(now) => {

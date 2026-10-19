@@ -18,6 +18,7 @@ use bviz_graph_layout::dominators::{Dominators, ShownTree, Standing};
 use bviz_graph_layout::metrics::Unit;
 use bviz_graph_layout::select::{Verdict, Verdicts};
 use bviz_graph_layout::shown::{ELLIPSIS, fit_label, name_start};
+use bviz_time::Instant;
 use bviz_ui_assets::shape_line;
 use bviz_ui_components::{Inked, LabelBoxStyle, paint_labeled_box};
 use bviz_ui_theme::{label_on, mix, over};
@@ -28,7 +29,6 @@ use gpui::{
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
-use std::time::Instant;
 
 /// Inset of a cell's name from its edges, above and below as at either side.
 const TEXT_PAD: f32 = 3.0;
@@ -903,7 +903,7 @@ mod tests {
         let tree = Laid::of(&[chain]);
         let (higher, lower) = (Holds::Node(4), Holds::Node(5));
         let bounds = area(100., 12.);
-        let down = Transition::between(&tree, higher, lower, Instant::now()).unwrap();
+        let down = Transition::between(&tree, higher, lower, bviz_time::now()).unwrap();
         let at_rest = |top| frame(&tree, top, None, bounds, ROW);
         let cells = |placed: &[Placed], within: Bounds<Pixels>| -> Vec<Cell> {
             let inside = placed

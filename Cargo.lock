@@ -848,6 +848,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "bviz_time"
+version = "0.1.0"
+dependencies = [
+ "web-time",
+]
+
+[[package]]
 name = "bviz_trace_layout"
 version = "0.1.0"
 dependencies = [
@@ -865,6 +872,7 @@ dependencies = [
  "bviz_input",
  "bviz_invocation",
  "bviz_parallel",
+ "bviz_time",
  "crossbeam-channel",
  "crossbeam-utils",
  "flate2",
@@ -957,6 +965,7 @@ dependencies = [
  "bviz_invocation",
  "bviz_label",
  "bviz_parallel",
+ "bviz_time",
  "bviz_ui_assets",
  "bviz_ui_components",
  "bviz_ui_graph_args",
@@ -985,6 +994,7 @@ name = "bviz_ui_playback"
 version = "0.1.0"
 dependencies = [
  "bviz_invocation",
+ "bviz_time",
  "bviz_ui_assets",
  "bviz_ui_components",
  "bviz_ui_theme",
@@ -1037,6 +1047,7 @@ dependencies = [
  "bviz_input",
  "bviz_invocation",
  "bviz_label",
+ "bviz_time",
  "bviz_trace_layout",
  "bviz_trace_profile",
  "bviz_ui_assets",

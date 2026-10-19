@@ -25,6 +25,7 @@ rust_library(
         "//ui/trace/args",
         "//ui/workspace",
         "//util/input",
+        "//util/time",
         "@crates//:clap",
         "@crates//:gpui",
     ],

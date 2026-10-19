@@ -35,6 +35,7 @@ members = [
     "ui/workspace",
     "util/input",
     "util/parallel",
+    "util/time",
 ]
 resolver = "2"
 
@@ -50,6 +51,7 @@ bviz_label = { path = "label" }
 bviz_invocation = { path = "invocation" }
 bviz_input = { path = "util/input" }
 bviz_parallel = { path = "util/parallel" }
+bviz_time = { path = "util/time" }
 clap = { version = "4", features = ["derive"] }
 crossbeam-channel = "0.5"
 crossbeam-utils = "0.8"
@@ -73,6 +75,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 shlex = "2"
 spdx = "0.13"
+web-time = "1"
 zstd = { version = "0.14", default-features = false }
 org-eclipse-elk-alg-layered = { git = "https://github.com/openedges/elk-rs", tag = "v0.11.0+rs.2" }
 org-eclipse-elk-core = { git = "https://github.com/openedges/elk-rs", tag = "v0.11.0+rs.2" }
