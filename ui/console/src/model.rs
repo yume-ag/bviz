@@ -3,6 +3,7 @@ use bviz_invocation::{Configurations, EpochMicros, Outcomes, Recorded, ReporterI
 use bviz_terminal::{BuildOutput, Replay};
 use bviz_ui_components::{Pending, load_in_background};
 use bviz_ui_playback::{Clock, DocumentClock, OnClock, Span};
+use bviz_ui_session::Reports;
 use gpui::{App, Context, Entity, Task};
 
 pub(crate) type Source = bviz_ui_components::Source<Recorded<Replay>>;
@@ -56,6 +57,9 @@ const UNRECORDED_ORIGIN: EpochMicros = EpochMicros::from_millis(0);
 pub(crate) struct ConsoleModel {
     source: Source,
     on_clock: Option<OnClock>,
+    /// What the build tells its invocation's session, where it is read as one
+    /// of the invocation's outputs.
+    reports: Option<Reports>,
     /// The read that fills `source`, held so that it is not cancelled.
     _load: Task<()>,
 }
@@ -69,17 +73,14 @@ impl ConsoleModel {
         clock: Option<DocumentClock>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let session = session.map(|session| {
-            let by = session.update(cx, |session, _| session.reporter());
-            (session, by)
-        });
+        let reports = session.map(|session| Reports::new(session, cx));
         let load = load_in_background(
             cx,
             move || stream.join(),
             move |model, result, cx| {
                 model.source = match result {
-                    Ok(stream) => Source::Loaded(match session {
-                        Some((session, by)) => session.update(cx, |session, cx| {
+                    Ok(stream) => Source::Loaded(match &model.reports {
+                        Some(reports) => reports.report(cx, |session, by, cx| {
                             cx.notify();
                             stream.replay_telling(session, by)
                         }),
@@ -90,13 +91,14 @@ impl ConsoleModel {
                 model.place_on_clock(cx);
             },
         );
-        Self::new(load, clock)
+        Self::new(load, clock, reports)
     }
 
-    fn new(load: Task<()>, clock: Option<DocumentClock>) -> Self {
+    fn new(load: Task<()>, clock: Option<DocumentClock>, reports: Option<Reports>) -> Self {
         Self {
             source: Source::Loading,
             on_clock: clock.map(OnClock::new),
+            reports,
             _load: load,
         }
     }
@@ -239,7 +241,7 @@ mod tests {
     /// A build whose read has not finished, for exercising what a view reads
     /// off it before one has.
     fn reading() -> ConsoleModel {
-        ConsoleModel::new(Task::ready(()), None)
+        ConsoleModel::new(Task::ready(()), None, None)
     }
 
     /// One `BuildEvent` carrying a `Progress` payload whose `stderr` is `text`,

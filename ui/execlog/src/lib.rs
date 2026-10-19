@@ -80,7 +80,6 @@ pub fn open(
     cx: &mut App,
 ) -> Member {
     let load = load.into();
-    let session = session.as_ref().map(Entity::downgrade);
     let model = cx.new(|cx| ExecLogModel::reading(load.log, session, cx));
     let view = ViewSpec::new(move |cx| cx.new(|cx| SpawnTimePanel::new(model.clone(), cx)));
     Member::new(load.title, view, Vec::new())

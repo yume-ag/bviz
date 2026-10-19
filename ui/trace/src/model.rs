@@ -9,7 +9,7 @@ use crate::{METRICS, Source};
 use bviz_critical_path::{CriticalPath, NearlyCritical, Step, Work};
 use bviz_invocation::spawn::LoggedSpawns;
 use bviz_invocation::{
-    ActionGraph, Chosen, ConfiguredTarget, CriticalStep, Recorded, ReporterId, Revision, Session,
+    ActionGraph, Chosen, ConfiguredTarget, CriticalStep, Recorded, Revision, Session,
 };
 use bviz_label::names::RepoNames;
 use bviz_trace_layout::{
@@ -18,6 +18,7 @@ use bviz_trace_layout::{
 use bviz_trace_profile::{LaneClass, Profile, SliceAt, Str, TimeSpan};
 use bviz_ui_components::{Pending, load_in_background};
 use bviz_ui_playback::{Clock, DocumentClock, OnClock, Span};
+use bviz_ui_session::Reports;
 use gpui::{App, Context, Entity, EventEmitter, Subscription, Task};
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -349,7 +350,7 @@ impl LoadedProfile {
     fn new(
         profile: Profile,
         repos: RepoNames,
-        session: Option<(&Entity<Session>, ReporterId)>,
+        session: Option<&Entity<Session>>,
         cx: &mut Context<TraceModel>,
     ) -> LoadedProfile {
         let flamer = Arc::new(TrackFlamer::new(&Arc::new(profile)));
@@ -368,21 +369,25 @@ impl LoadedProfile {
                 })
                 .ok();
         });
-        let (to, joined) = joined_to(session.map(|(session, _)| session), cx);
+        let (to, joined) = joined_to(session, cx);
         let tracing = trace(flamer.profile().clone(), to, joined, cx);
-        let reporting_timings = session.map(|(session, by)| {
-            let session = session.downgrade();
+        let reporting_timings = session.map(|_| {
             let timed = flamer.profile().clone();
-            cx.spawn(async move |_, cx| {
+            cx.spawn(async move |model, cx| {
                 let (timings, attempts) = cx
                     .background_executor()
                     .spawn(async move { (timed.timings(), timed.attempts()) })
                     .await;
-                session
-                    .update(cx, |session, cx| {
-                        session.report_timings(by, timings);
-                        session.report_attempts(by, attempts.unwrap_or_default());
-                        cx.notify();
+                model
+                    .update(cx, |model, cx| {
+                        let Some(reports) = &model.reports else {
+                            return;
+                        };
+                        reports.report(cx, |session, by, cx| {
+                            session.report_timings(by, timings);
+                            session.report_attempts(by, attempts.unwrap_or_default());
+                            cx.notify();
+                        });
                     })
                     .ok();
             })
@@ -462,10 +467,10 @@ pub(crate) enum TrackPick {
 /// state stays on its panel.
 pub(crate) struct TraceModel {
     source: Source,
-    /// What the other outputs of the profile's invocation tell of it, read to
-    /// name what the profile holds only an id of. `None` for a profile opened
-    /// apart from any.
-    session: Option<(Entity<Session>, ReporterId)>,
+    /// The profile's part in its invocation's session, which tells what the
+    /// other outputs know of it, read to name what the profile holds only an
+    /// id of. `None` for a profile opened apart from any.
+    reports: Option<Reports>,
     /// Where the profile plays, `None` for a profile its document gives no
     /// clock.
     on_clock: Option<OnClock>,
@@ -555,10 +560,7 @@ impl TraceModel {
         let session_changed = session
             .as_ref()
             .map(|session| cx.observe(session, |model, _, cx| model.rejoin(cx)));
-        let session = session.map(|session| {
-            let by = session.update(cx, |session, _| session.reporter());
-            (session, by)
-        });
+        let reports = session.map(|session| Reports::new(session, cx));
         let load = load_in_background(
             cx,
             move || {
@@ -569,11 +571,10 @@ impl TraceModel {
             |model, result: Result<(Recorded<Profile>, RepoNames), String>, cx| {
                 let source = match result {
                     Ok((profile, repos)) => {
-                        let session = model.session.clone();
-                        let session = session.as_ref().map(|(session, by)| (session, *by));
-                        Source::Loaded(
-                            profile.map(|profile| LoadedProfile::new(profile, repos, session, cx)),
-                        )
+                        let session = model.session().cloned();
+                        Source::Loaded(profile.map(|profile| {
+                            LoadedProfile::new(profile, repos, session.as_ref(), cx)
+                        }))
                     }
                     Err(err) => Source::Failed(err),
                 };
@@ -583,7 +584,7 @@ impl TraceModel {
         );
         Self {
             _session_changed: session_changed,
-            ..Self::new(session, clock, load)
+            ..Self::new(reports, clock, load)
         }
     }
 
@@ -601,18 +602,14 @@ impl TraceModel {
         loaded.critical_path.retrace(tracing);
     }
 
-    fn new(
-        session: Option<(Entity<Session>, ReporterId)>,
-        clock: Option<DocumentClock>,
-        load: Task<()>,
-    ) -> Self {
-        let chosen = match &session {
-            Some((session, _)) => HeldChoice::InSession(session.clone()),
+    fn new(reports: Option<Reports>, clock: Option<DocumentClock>, load: Task<()>) -> Self {
+        let chosen = match &reports {
+            Some(reports) => HeldChoice::InSession(reports.session().clone()),
             None => HeldChoice::Alone(None),
         };
         Self {
             source: Source::Loading,
-            session,
+            reports,
             on_clock: clock.map(OnClock::new),
             lanes: RefCell::new(None),
             visible_tracks: Vec::new(),
@@ -641,7 +638,7 @@ impl TraceModel {
     }
 
     pub(crate) fn session(&self) -> Option<&Entity<Session>> {
-        self.session.as_ref().map(|(session, _)| session)
+        self.reports.as_ref().map(Reports::session)
     }
 
     /// Registers the profile with the clock as what it plays, or withdraws it
@@ -766,13 +763,12 @@ impl TraceModel {
     /// leaves as they were, and lets the lane of what the session let go of
     /// with them fall back to its group's sample.
     fn report_critical_path(&mut self, cx: &mut Context<Self>) {
-        let Some((session, by)) = &self.session else {
+        let Some(reports) = &self.reports else {
             return;
         };
-        let by = *by;
         let steps = critical_steps(self.steps());
         let nearly_critical = nearly_critical_actions(self.nearly_critical());
-        session.update(cx, |session, cx| {
+        reports.report(cx, |session, by, cx| {
             if session.report_critical_path(by, steps, nearly_critical) {
                 cx.notify();
             }

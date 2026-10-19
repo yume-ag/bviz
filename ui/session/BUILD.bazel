@@ -1,0 +1,17 @@
+load("@rules_rs//rs:rust_library.bzl", "rust_library")
+
+rust_library(
+    name = "session",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "bviz_ui_session",
+    visibility = [
+        "//ui/console:__pkg__",
+        "//ui/execlog:__pkg__",
+        "//ui/graph:__pkg__",
+        "//ui/trace:__pkg__",
+    ],
+    deps = [
+        "//invocation",
+        "@crates//:gpui",
+    ],
+)

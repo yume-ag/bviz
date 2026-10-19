@@ -23,10 +23,11 @@ use bviz_graph_layout::select;
 use bviz_graph_layout::select::labels::LabelIndex;
 use bviz_graph_layout::target_pattern::TargetIndex;
 use bviz_graph_layout::{Capabilities, Facets, Id, InputSet, Joint, MapLayout, Names, Provenance};
-use bviz_invocation::{ActionGraph, Chosen, Configurations, ReporterId, Revision, Session};
+use bviz_invocation::{ActionGraph, Chosen, Configurations, Revision, Session};
 use bviz_ui_components::{Pending, load_in_background};
 use bviz_ui_graph_args::GraphSource;
 use bviz_ui_playback::{Clock, DocumentClock};
+use bviz_ui_session::Reports;
 use gpui::{App, Context, Entity, EntityId, EventEmitter, SharedString, Subscription, Task};
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
@@ -734,8 +735,7 @@ struct ExclusionNaming {
 struct Joined {
     /// Held for as long as the graph is: a session nothing holds is released,
     /// and tells its observers nothing further.
-    session: Entity<Session>,
-    by: ReporterId,
+    reports: Reports,
     /// Takes up what the build reports whenever the session changes.
     _changed: Subscription,
 }
@@ -778,9 +778,8 @@ impl GraphModel {
         // are taken up as the graph lands and again whenever the session
         // changes.
         let joined = session.map(|session| Joined {
-            by: session.update(cx, |session, _| session.reporter()),
             _changed: cx.observe(&session, |model, _, cx| model.take_up(cx)),
-            session,
+            reports: Reports::new(session, cx),
         });
         let shares = joined.is_some();
         let work = load_in_background(
@@ -800,9 +799,9 @@ impl GraphModel {
                 model.source = match result {
                     Ok((mut read, described, actions)) => {
                         if let Some(joined) = &model.joined {
-                            read.loaded.pass_over_choice(joined.session.read(cx));
-                            let by = joined.by;
-                            joined.session.update(cx, |session, cx| {
+                            read.loaded
+                                .pass_over_choice(joined.reports.session().read(cx));
+                            joined.reports.report(cx, |session, by, cx| {
                                 session.add_configurations(described);
                                 if let Some(actions) = actions {
                                     session.report_action_graph(by, actions);
@@ -832,7 +831,11 @@ impl GraphModel {
 
     /// Takes up what the session's build reports of the loaded graph.
     fn take_up(&mut self, cx: &mut Context<Self>) {
-        let Some(session) = self.joined.as_ref().map(|joined| joined.session.clone()) else {
+        let Some(session) = self
+            .joined
+            .as_ref()
+            .map(|joined| joined.reports.session().clone())
+        else {
             return;
         };
         let (changed, reveal) = self.take_up_from(session.read(cx));
@@ -1362,7 +1365,7 @@ impl GraphModel {
     /// of; `None` for a graph opened as part of none.
     pub(crate) fn configurations<'a>(&self, cx: &'a App) -> Option<&'a Configurations> {
         let joined = self.joined.as_ref()?;
-        Some(joined.session.read(cx).configurations())
+        Some(joined.reports.session().read(cx).configurations())
     }
 
     pub(crate) fn loaded(&self) -> Option<&Loaded> {

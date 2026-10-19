@@ -17,6 +17,7 @@ rust_library(
         "//ui/components",
         "//ui/console/args",
         "//ui/playback",
+        "//ui/session",
         "//ui/theme",
         "//ui/workspace",
         "//util/input",

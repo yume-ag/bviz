@@ -26,6 +26,7 @@ members = [
     "ui/graph",
     "ui/graph/args",
     "ui/playback",
+    "ui/session",
     "ui/shell",
     "ui/spawn_phase",
     "ui/theme",
