@@ -1756,10 +1756,6 @@ mod tests {
         assert!(!derived.deriving_for(LayoutMode::Layered));
     }
 
-    /// A filter set while a derivation runs is owed a restriction that nothing
-    /// else records, so every request made before it lands — an expansion, a
-    /// change of edge set — restricts afresh rather than laying out the graph
-    /// the superseded filter left.
     /// A filter naming what to look at that lands before the map is placed
     /// still asks for the camera to frame what it leaves, and hands the panel
     /// the restriction's map, which is placed once the document's lands.
