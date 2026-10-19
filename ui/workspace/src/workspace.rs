@@ -604,19 +604,15 @@ impl Workspace {
         workspace
     }
 
-    /// Builds a workspace framing the views of `first` and `others`, as
+    /// Builds a workspace framing the views of `documents`, as
     /// [`Workspace::open_documents`] lays them out.
     pub(crate) fn with_documents(
         app_name: impl Into<SharedString>,
-        first: Document,
-        others: Vec<Document>,
+        documents: Vec<Document>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let mut workspace = Self::empty(app_name, window, cx);
-        let mut documents = Vec::with_capacity(1 + others.len());
-        documents.push(first);
-        documents.extend(others);
         workspace.open_documents(documents, window, cx);
         workspace
     }

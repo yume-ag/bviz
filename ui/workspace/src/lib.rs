@@ -73,27 +73,21 @@ pub fn run_viewer<C, I, T, F>(
     T: 'static,
     F: 'static + Fn(T, &mut Window, &mut App) -> Document,
 {
-    let mut documents = documents(C::parse()).into_iter();
-    let Some(first) = documents.next() else {
+    let documents: Vec<T> = documents(C::parse()).into_iter().collect();
+    if documents.is_empty() {
         C::command()
             .error(
                 ErrorKind::MissingRequiredArgument,
                 format!("{required} is required"),
             )
             .exit()
-    };
-    run_panels(
-        app_id,
-        window_size,
-        first,
-        documents.collect(),
-        open,
-        panel_keys,
-    );
+    }
+    run_panels(app_id, window_size, documents, open, panel_keys);
 }
 
 /// Runs an app whose one window frames the [`Document`]s `open` builds from
-/// `first` and then `rest`, their views laid out by [`Role`]. Each of
+/// `documents` in order, their views laid out by [`Role`], and frames no panel
+/// where `documents` is empty. Each of
 /// `panel_keys` registers the bindings of one panel kind the app can show, and
 /// runs before the first window opens. Each runs exactly once per process:
 /// `cx.bind_keys` refreshes every window, which drops what each has cached of
@@ -101,8 +95,7 @@ pub fn run_viewer<C, I, T, F>(
 pub fn run_panels<T, F>(
     app_id: impl Into<String>,
     window_size: Size<Pixels>,
-    first: T,
-    rest: Vec<T>,
+    documents: Vec<T>,
     open: F,
     panel_keys: &'static [fn(&mut App)],
 ) where
@@ -116,14 +109,12 @@ pub fn run_panels<T, F>(
         for register in panel_keys {
             register(cx);
         }
-        let (first, rest) = (first, rest);
         bviz_ui_shell::open_window(&app_id, window_size, cx, |window, cx| {
-            let first = open(first, window, cx);
-            let mut others = Vec::with_capacity(rest.len());
-            for document in rest {
-                others.push(open(document, window, cx));
+            let mut opened = Vec::with_capacity(documents.len());
+            for document in documents {
+                opened.push(open(document, window, cx));
             }
-            cx.new(|cx| Workspace::with_documents(app_id.clone(), first, others, window, cx))
+            cx.new(|cx| Workspace::with_documents(app_id.clone(), opened, window, cx))
         })
         .unwrap();
         cx.activate(true);

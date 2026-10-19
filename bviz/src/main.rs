@@ -146,11 +146,13 @@ fn main() {
 
 fn open_window(sources: Sources) {
     let (first, rest) = group::by_invocation(Load::start_all(sources));
+    let mut openings = Vec::with_capacity(1 + rest.len());
+    openings.push(first);
+    openings.extend(rest);
     bviz_ui_workspace::run_panels(
         "bviz",
         bviz_ui_workspace::WINDOW_SIZE,
-        first,
-        rest,
+        openings,
         open,
         &[
             bviz_ui_graph::register_keys,
