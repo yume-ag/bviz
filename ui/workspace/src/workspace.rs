@@ -36,6 +36,7 @@ use std::collections::{HashMap, VecDeque};
 use std::iter;
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 actions!(
     bviz_workspace,
@@ -153,6 +154,17 @@ const OPEN: &str = "Open";
 
 /// How an empty window says that files dropped on it open.
 const DROP_HINT: &str = "or drop them on this window";
+
+/// How long a note told briefly stands: long enough to be read at a glance
+/// away from whatever the user was doing.
+const BRIEF_NOTE: Duration = Duration::from_secs(4);
+
+/// Adds `note` to `notes` in place of one reading the same, so a note told
+/// again stands once, from when it was last told.
+fn add_note(notes: &mut Vec<Note>, note: Note) {
+    notes.retain(|standing| standing.text != note.text);
+    notes.push(note);
+}
 
 /// What the control dismissing a note says it does.
 const DISMISS_NOTE: &str = "Dismiss";
@@ -905,12 +917,32 @@ impl Workspace {
 
     /// Shows `note` above the window's panes until the user dismisses it.
     pub fn tell(&mut self, note: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.add_note(note.into(), cx);
+    }
+
+    /// Shows `note` above the window's panes for [`BRIEF_NOTE`], or until the
+    /// user dismisses it sooner.
+    pub fn tell_briefly(&mut self, note: impl Into<SharedString>, cx: &mut Context<Self>) {
+        let id = self.add_note(note.into(), cx);
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(BRIEF_NOTE).await;
+            this.update(cx, |workspace, cx| workspace.dismiss_note(id, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    /// Adds a note reading `text`; the id naming it.
+    fn add_note(&mut self, text: SharedString, cx: &mut Context<Self>) -> u64 {
         let id = self.notes_told;
         self.notes_told += 1;
-        self.notes.push(Note {
-            id,
-            text: note.into(),
-        });
+        add_note(&mut self.notes, Note { id, text });
+        cx.notify();
+        id
+    }
+
+    fn dismiss_note(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.notes.retain(|note| note.id != id);
         cx.notify();
     }
 
@@ -923,11 +955,8 @@ impl Workspace {
             let dismiss = Button::new(
                 ElementId::NamedInteger("workspace-note-dismiss".into(), id),
                 move |_, _, cx| {
-                    this.update(cx, |workspace, cx| {
-                        workspace.notes.retain(|note| note.id != id);
-                        cx.notify();
-                    })
-                    .ok();
+                    this.update(cx, |workspace, cx| workspace.dismiss_note(id, cx))
+                        .ok();
                 },
             )
             .ghost()
@@ -3475,6 +3504,20 @@ mod tests {
             CloseDocument
         ));
         assert!(dispatched(bindings(false), "secondary-alt-w", &in_a_panel()).is_none());
+    }
+
+    #[test]
+    fn a_note_told_again_stands_once_as_last_told() {
+        let note = |id, text: &'static str| Note {
+            id,
+            text: text.into(),
+        };
+        let mut notes = Vec::new();
+        add_note(&mut notes, note(0, "copied"));
+        add_note(&mut notes, note(1, "cannot open a"));
+        add_note(&mut notes, note(2, "copied"));
+        let standing: Vec<_> = notes.iter().map(|note| note.id).collect();
+        assert_eq!(standing, [1, 2]);
     }
 
     #[test]
