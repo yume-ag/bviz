@@ -1,13 +1,5 @@
 {
   "declared_licences": {
-    "gpui_shared_string": {
-      "licence": "Apache-2.0",
-      "reason": "A crate of the Zed tree, whose Cargo manifests carry no license field; the crate ships the LICENSE-APACHE that governs it."
-    },
-    "gpui_util": {
-      "licence": "Apache-2.0",
-      "reason": "A crate of the Zed tree, whose Cargo manifests carry no license field; the crate ships the LICENSE-APACHE that governs it."
-    },
     "zstd-sys": {
       "licence": "BSD-3-Clause OR GPL-2.0-only",
       "reason": "The published crate carries a copy of the zstd sources, whose every file offers its terms under either licence, at the user's option, and ships both texts (zstd/LICENSE, zstd/COPYING); the Cargo manifest names only BSD-3-Clause. The copy is not compiled: zstd-sys links the BCR zstd module."

@@ -485,11 +485,15 @@ impl Pointer {
     }
 
     /// A click as an element's click listener receives it, one made from the
-    /// keyboard reading as a single click of the left button.
+    /// keyboard reading as a single click of the left button, a tap as the left
+    /// button, and a long press, which gpui delivers alongside right clicks, as
+    /// the right.
     pub fn click(event: &ClickEvent) -> Pointer {
         let button = match event {
             ClickEvent::Mouse(click) => Button::of(click.up.button),
             ClickEvent::Keyboard(_) => Button::Left,
+            ClickEvent::Touch(touch) if touch.long_press => Button::Right,
+            ClickEvent::Touch(_) => Button::Left,
         };
         Pointer {
             kind: Kind::Up(button, event.click_count()),

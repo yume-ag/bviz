@@ -2762,6 +2762,7 @@ impl Render for ExclusivePanel {
                         _ => false,
                     });
                 }))
+                .hover_listener_mode(gpui::HoverListenerMode::InputModalityIndependent)
                 .on_hover(cx.listener(|view, hovered: &bool, _, cx| {
                     if !hovered {
                         view.clear_hover(cx);

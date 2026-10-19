@@ -1,1 +1,4 @@
-exports_files(["rules_rs-git-crate-archive.patch"])
+exports_files([
+    "rules_rs-git-crate-archive.patch",
+    "rules_rs-inherit-default-features.patch",
+])

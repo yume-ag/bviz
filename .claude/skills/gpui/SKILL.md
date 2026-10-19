@@ -8,18 +8,19 @@ description: How to write, build, and run gpui (Zed's GPU-accelerated UI framewo
 gpui is Zed's GPU-accelerated UI framework. bviz draws all of its UI with it. The
 authoritative reference is real gpui code at a known release tag — read it rather than
 guessing APIs, since the API surface shifts between versions.
-The links below pin to **Zed v1.6.3**. If a local Zed checkout is available, prefer reading
+The links below pin to **Zed v1.24.3**. If a local Zed checkout is available, prefer reading
 it over fetching online; confirm its tag matches the version this repo targets.
 
-- Runnable examples: https://github.com/zed-industries/zed/tree/v1.6.3/crates/gpui/examples
-- Framework source: https://github.com/zed-industries/zed/tree/v1.6.3/crates/gpui/src
+- Runnable examples: https://github.com/zed-industries/zed/tree/v1.24.3/crates/gpui/examples
+- Framework source: https://github.com/zed-industries/zed/tree/v1.24.3/crates/gpui/src
 
 See `references/examples.md` for which example demonstrates what.
 
 **Only part of the Zed tree may be used as a reference.** bviz targets a permissive
-licence. `gpui`, `gpui_platform`, `gpui_linux`, `gpui_wgpu`, `gpui_tokio`, `gpui_macros`,
-`util`, `collections`, `sum_tree`, `refineable` and `scheduler` are Apache-2.0 and are
-open to read and adapt. Everything else — `ui`, `ui_input`, `theme`, `settings`, `menu`,
+licence. `gpui`, `gpui_platform`, `gpui_linux`, `gpui_apple`, `gpui_macos`, `gpui_web`,
+`gpui_wgpu`, `gpui_tokio`, `gpui_macros`, `gpui_util`, `gpui_shared_string`, `util`,
+`collections`, `sum_tree`, `refineable`, `scheduler`, `ztracing` and `zlog` are Apache-2.0
+and are open to read and adapt. Everything else — `ui`, `ui_input`, `theme`, `settings`, `menu`,
 `zed_actions`, `workspace`, `cli`, `editor`, `project_panel`, `title_bar` and the rest —
 is GPL-3.0-or-later and must not be opened for design or implementation guidance, because
 what is written afterwards from a fresh memory of it is a derived work just the same. Each
@@ -631,7 +632,7 @@ adapt, and the rules for gating parallel work and keeping the pools apart; the e
 - **tokio** — futures from libraries that need tokio's reactor (`reqwest`, `tonic`, cloud
   SDKs, `tokio::net`/`time`) panic *"there is no reactor running"* on gpui's executor. Own
   one tokio runtime as a gpui `Global` and turn each tokio `JoinHandle` into a gpui `Task`;
-  dropping the `Task` aborts the tokio work. This is Zed's `crates/gpui_tokio` (v1.6.3, ~100
+  dropping the `Task` aborts the tokio work. This is Zed's `crates/gpui_tokio` (v1.24.3, ~100
   lines) — there is no such crate here yet, so adapt it into `//ui`. For a synchronous
   constructor that calls `Handle::current()`, hold a `Tokio::handle(cx).enter()` guard.
 - **rayon** — a parallel iterator (`par_iter`, `par_sort`) blocks its calling thread until

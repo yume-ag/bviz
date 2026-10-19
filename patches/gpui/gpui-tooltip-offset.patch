@@ -6,37 +6,38 @@ letters. Give the app a setting for how far past the pointer the tooltip
 goes, flipping before the pointer by the same distance at the window's
 edges; it is one pixel until the app sets it.
 
-License: Apache-2.0 (Zed v1.6.3)
+License: Apache-2.0 (Zed v1.24.3)
 
 diff --git a/crates/gpui/src/app.rs b/crates/gpui/src/app.rs
+index 58d439d..6a4f02f 100644
 --- a/crates/gpui/src/app.rs
 +++ b/crates/gpui/src/app.rs
-@@ -54,7 +54,7 @@ use crate::{
-     ThermalState, Window, WindowAppearance, WindowButtonLayout, WindowHandle, WindowId,
-     WindowInvalidator,
+@@ -56,7 +56,7 @@ use crate::{
+     TextRenderingMode, TextSystem, ThermalState, Window, WindowAppearance, WindowButtonLayout,
+     WindowHandle, WindowId, WindowInvalidator, WindowingRequest,
      colors::{Colors, GlobalColors},
 -    hash, init_app_menus,
 +    hash, init_app_menus, px,
  };
  
  mod async_context;
-@@ -685,6 +685,7 @@ pub struct App {
-     pub(crate) window_update_stack: Vec<WindowId>,
-     pub(crate) mode: GpuiMode,
-     pub(crate) cursor_hide_mode: CursorHideMode,
+@@ -840,6 +840,7 @@ pub struct App {
+     pub(crate) reduce_motion: bool,
+     /// Origin of the shared clock that phase-locks synced repeating animations.
+     pub(crate) synced_animation_epoch: Instant,
 +    pub(crate) tooltip_offset: Pixels,
      /// Whether the app was created by [`Application::new_inaccessible`]. No
      /// accesskit APIs will be called when this flag is set.
      pub(crate) accessibility_force_disabled: bool,
-@@ -777,6 +778,7 @@ impl App {
-                 quit_mode: QuitMode::default(),
-                 quitting: false,
+@@ -944,6 +945,7 @@ impl App {
                  cursor_hide_mode: CursorHideMode::default(),
+                 reduce_motion: false,
+                 synced_animation_epoch,
 +                tooltip_offset: px(1.),
                  accessibility_force_disabled: false,
  
                  #[cfg(any(test, feature = "test-support", debug_assertions))]
-@@ -930,6 +932,12 @@ impl App {
+@@ -1206,6 +1208,12 @@ impl App {
          self.cursor_hide_mode = mode;
      }
  
@@ -50,9 +51,10 @@ diff --git a/crates/gpui/src/app.rs b/crates/gpui/src/app.rs
      /// platform. This will report `false` after a keyboard input has hidden
      /// the cursor and the user has not yet moved the mouse to restore it.
 diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
+index a4815fb..a4b77a4 100644
 --- a/crates/gpui/src/window.rs
 +++ b/crates/gpui/src/window.rs
-@@ -2865,15 +2865,16 @@ impl Window {
+@@ -3770,15 +3770,16 @@ impl Window {
              let mouse_position = tooltip_request.tooltip.mouse_position;
              let tooltip_size = element.layout_as_root(AvailableSpace::min_size(), self, cx);
  
@@ -71,7 +73,7 @@ diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
                  if new_x >= Pixels::ZERO {
                      tooltip_bounds.origin.x = new_x;
                  } else {
-@@ -2885,7 +2886,7 @@ impl Window {
+@@ -3790,7 +3791,7 @@ impl Window {
              }
  
              if tooltip_bounds.bottom() > window_bounds.bottom() {

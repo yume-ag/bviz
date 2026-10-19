@@ -6,100 +6,61 @@ a toolbar shows each one only after a pause. Show a tooltip at once
 while the window shows another, and for a short time after the last
 one hid in any window.
 
-License: Apache-2.0 (Zed v1.6.3)
+License: Apache-2.0 (Zed v1.24.3)
 
 diff --git a/crates/gpui/src/app.rs b/crates/gpui/src/app.rs
+index 6a4f02f..b91eec6 100644
 --- a/crates/gpui/src/app.rs
 +++ b/crates/gpui/src/app.rs
-@@ -686,6 +686,8 @@ pub struct App {
-     pub(crate) mode: GpuiMode,
-     pub(crate) cursor_hide_mode: CursorHideMode,
+@@ -841,6 +841,8 @@ pub struct App {
+     /// Origin of the shared clock that phase-locks synced repeating animations.
+     pub(crate) synced_animation_epoch: Instant,
      pub(crate) tooltip_offset: Pixels,
 +    /// When a window last drew a frame without the tooltip its previous frame showed.
 +    pub(crate) tooltip_hidden_at: Option<Instant>,
      /// Whether the app was created by [`Application::new_inaccessible`]. No
      /// accesskit APIs will be called when this flag is set.
      pub(crate) accessibility_force_disabled: bool,
-@@ -779,6 +781,7 @@ impl App {
-                 quitting: false,
-                 cursor_hide_mode: CursorHideMode::default(),
+@@ -946,6 +948,7 @@ impl App {
+                 reduce_motion: false,
+                 synced_animation_epoch,
                  tooltip_offset: px(1.),
 +                tooltip_hidden_at: None,
                  accessibility_force_disabled: false,
  
                  #[cfg(any(test, feature = "test-support", debug_assertions))]
 diff --git a/crates/gpui/src/elements/div.rs b/crates/gpui/src/elements/div.rs
+index fc292f2..56b00cb 100644
 --- a/crates/gpui/src/elements/div.rs
 +++ b/crates/gpui/src/elements/div.rs
-@@ -47,6 +47,9 @@ use super::ImageCacheProvider;
+@@ -51,6 +51,9 @@ type StackSafe<T> = T;
  
  const DRAG_THRESHOLD: f64 = 2.;
- const TOOLTIP_SHOW_DELAY: Duration = Duration::from_millis(500);
-+/// How long after a tooltip hides another shows without [`TOOLTIP_SHOW_DELAY`],
-+/// so the pointer can sweep across a row of controls reading each one's.
+ const DEFAULT_TOOLTIP_SHOW_DELAY: Duration = Duration::from_millis(500);
++/// How long after a tooltip hides another shows without waiting out its show
++/// delay, so the pointer can sweep across a row of controls reading each one's.
 +const TOOLTIP_SKIP_DELAY: Duration = Duration::from_millis(300);
  const HOVERABLE_TOOLTIP_HIDE_DELAY: Duration = Duration::from_millis(500);
  
  /// The styling information for a given group.
-@@ -3314,6 +3317,13 @@ fn handle_tooltip_mouse_move(
+@@ -3878,6 +3881,16 @@ fn handle_tooltip_mouse_move(
              // Cancel waiting to show tooltip when it is no longer hovered.
              active_tooltip.borrow_mut().take();
          }
-+        Action::ScheduleShow if skips_show_delay(window, cx) => show_tooltip(
-+            active_tooltip,
-+            build_tooltip,
-+            check_is_hovered_during_prepaint,
-+            window,
-+            cx,
-+        ),
++        Action::ScheduleShow if skips_show_delay(window, cx) => {
++            show_tooltip(
++                active_tooltip,
++                build_tooltip,
++                check_is_hovered_during_prepaint,
++                None,
++                window,
++                cx,
++            );
++        }
          Action::ScheduleShow => {
              let delayed_show_task = window.spawn(cx, {
                  let weak_active_tooltip = Rc::downgrade(active_tooltip);
-@@ -3325,36 +3335,13 @@ fn handle_tooltip_mouse_move(
-                         return;
-                     };
-                     cx.update(|window, cx| {
--                        let new_tooltip =
--                            build_tooltip(window, cx).map(|(view, tooltip_is_hoverable)| {
--                                let weak_active_tooltip = Rc::downgrade(&active_tooltip);
--                                ActiveTooltip::Visible {
--                                    tooltip: AnyTooltip {
--                                        view,
--                                        mouse_position: window.mouse_position(),
--                                        check_visible_and_update: Rc::new(
--                                            move |tooltip_bounds, window, cx| {
--                                                let Some(active_tooltip) =
--                                                    weak_active_tooltip.upgrade()
--                                                else {
--                                                    return false;
--                                                };
--                                                handle_tooltip_check_visible_and_update(
--                                                    &active_tooltip,
--                                                    tooltip_is_hoverable,
--                                                    &check_is_hovered_during_prepaint,
--                                                    tooltip_bounds,
--                                                    window,
--                                                    cx,
--                                                )
--                                            },
--                                        ),
--                                    },
--                                    is_hoverable: tooltip_is_hoverable,
--                                }
--                            });
--                        *active_tooltip.borrow_mut() = new_tooltip;
--                        window.refresh();
-+                        show_tooltip(
-+                            &active_tooltip,
-+                            &build_tooltip,
-+                            &check_is_hovered_during_prepaint,
-+                            window,
-+                            cx,
-+                        )
-                     })
-                     .ok();
-                 }
-@@ -3369,6 +3356,50 @@ fn handle_tooltip_mouse_move(
+@@ -3911,6 +3924,15 @@ fn handle_tooltip_mouse_move(
      }
  }
  
@@ -112,48 +73,14 @@ diff --git a/crates/gpui/src/elements/div.rs b/crates/gpui/src/elements/div.rs
 +        })
 +}
 +
-+fn show_tooltip(
-+    active_tooltip: &Rc<RefCell<Option<ActiveTooltip>>>,
-+    build_tooltip: &Rc<dyn Fn(&mut Window, &mut App) -> Option<(AnyView, bool)>>,
-+    check_is_hovered_during_prepaint: &Rc<dyn Fn(&Window) -> bool>,
-+    window: &mut Window,
-+    cx: &mut App,
-+) {
-+    let new_tooltip = build_tooltip(window, cx).map(|(view, tooltip_is_hoverable)| {
-+        let weak_active_tooltip = Rc::downgrade(active_tooltip);
-+        let check_is_hovered_during_prepaint = check_is_hovered_during_prepaint.clone();
-+        ActiveTooltip::Visible {
-+            tooltip: AnyTooltip {
-+                view,
-+                mouse_position: window.mouse_position(),
-+                check_visible_and_update: Rc::new(move |tooltip_bounds, window, cx| {
-+                    let Some(active_tooltip) = weak_active_tooltip.upgrade() else {
-+                        return false;
-+                    };
-+                    handle_tooltip_check_visible_and_update(
-+                        &active_tooltip,
-+                        tooltip_is_hoverable,
-+                        &check_is_hovered_during_prepaint,
-+                        tooltip_bounds,
-+                        window,
-+                        cx,
-+                    )
-+                }),
-+            },
-+            is_hoverable: tooltip_is_hoverable,
-+        }
-+    });
-+    *active_tooltip.borrow_mut() = new_tooltip;
-+    window.refresh();
-+}
-+
- /// Returns a callback which will be called by window prepaint to update tooltip visibility. The
- /// purpose of doing this logic here instead of the mouse move handler is that the mouse move
- /// handler won't get called when the element is not painted (e.g. via use of `visible_on_hover`).
+ fn show_tooltip(
+     active_tooltip: &Rc<RefCell<Option<ActiveTooltip>>>,
+     build_tooltip: &Rc<dyn Fn(&mut Window, &mut App) -> Option<(AnyView, bool)>>,
 diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
+index a4b77a4..cce5063 100644
 --- a/crates/gpui/src/window.rs
 +++ b/crates/gpui/src/window.rs
-@@ -2754,7 +2754,7 @@ impl Window {
+@@ -3639,7 +3639,7 @@ impl Window {
  
      fn draw_roots(&mut self, cx: &mut App) {
          self.invalidator.set_phase(DrawPhase::Prepaint);
@@ -162,7 +89,7 @@ diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
  
          self.a11y.sync_active_flag();
          if self.a11y.is_active() {
-@@ -2805,6 +2805,9 @@ impl Window {
+@@ -3703,6 +3703,9 @@ impl Window {
          } else {
              tooltip_element = self.prepaint_tooltip(cx);
          }

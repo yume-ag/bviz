@@ -1,12 +1,12 @@
 load("@rules_rs//rs:rust_binary.bzl", "rust_binary")
 
-# The exported-type list is transcribed from gpui_macos's build script.
+# The exported-type list is transcribed from gpui_apple's build script.
 filegroup(
     name = "scene_header_gen_src",
     srcs = ["scene_header_gen.rs"],
     package_metadata = [
         "//:package_metadata",
-        "//LICENSES:gpui",
+        "//LICENSES:gpui_derived_source",
     ],
 )
 
@@ -22,7 +22,7 @@ rust_binary(
 genrule(
     name = "scene_h",
     srcs = [
-        "@crates//:gpui_macos_metal_renderer_src",
+        "@crates//:gpui_apple_metal_renderer_src",
         "@crates//:gpui_scene_src",
         "@crates//:gpui_shader_type_srcs",
     ],
@@ -34,9 +34,9 @@ $(execpath :scene_header_gen) $@ \\
     $$gpui_src/color.rs \\
     $$gpui_src/window.rs \\
     $$gpui_src/platform.rs \\
-    $(execpath @crates//:gpui_macos_metal_renderer_src)
+    $(execpath @crates//:gpui_apple_metal_renderer_src)
 """,
     tools = [":scene_header_gen"],
-    # gpui_macos's build script consumes this from its own generated repository.
+    # gpui_apple's build script consumes this from its own generated repository.
     visibility = ["//visibility:public"],
 )

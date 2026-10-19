@@ -56,7 +56,7 @@ modified. The upstream distribution carries no NOTICE file of its own.
     tools/scene_header/scene_header_gen.rs
         from crates/gpui_macos/build.rs
 
-Apache License 2.0: //LICENSES:gpui
+Apache License 2.0: //LICENSES:gpui_derived_source
 
 The URL pattern in terminal/src/display/mod.rs is alacritty's own hint regex,
 taken as it stands from alacritty/src/config/ui_config.rs
@@ -107,8 +107,8 @@ Eclipse Layout Kernel, Rust port 0.11.0+rs.2 — Eclipse Public License 2.0
 Each of those patches carries blocks of Eclipse Public License 2.0 source and
 rewrites them, so the patches are themselves available under that licence.
 
-The patches against the Zed crates carry Apache-2.0 lines from the same Zed
-tree the derived files above come from, under //LICENSES:gpui. Every other
+The patches against the Zed crates carry Apache-2.0 lines from the Zed tree
+they patch (tag v1.24.3), under //LICENSES:gpui_patches. Every other
 patch reshapes too little of what it applies to for attribution, and carries no
 declaration.
 

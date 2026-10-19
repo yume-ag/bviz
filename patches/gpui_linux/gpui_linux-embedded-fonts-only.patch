@@ -4,12 +4,14 @@ Enumerating every system font holds up startup on the main thread. The
 application registers its own embedded faces, which cover its
 ASCII/Latin-1 labels.
 
-License: Apache-2.0 (Zed v1.6.3)
+License: Apache-2.0 (Zed v1.24.3)
 
+diff --git a/crates/gpui_linux/src/linux/platform.rs b/crates/gpui_linux/src/linux/platform.rs
+index 44aa658..d9c903f 100644
 --- a/crates/gpui_linux/src/linux/platform.rs
 +++ b/crates/gpui_linux/src/linux/platform.rs
-@@ -130,7 +130,7 @@
-         let (main_sender, main_receiver) = PriorityQueueCalloopReceiver::new();
+@@ -122,7 +122,7 @@ impl LinuxCommon {
+         let (power_sender, power_receiver) = calloop::channel::channel();
  
          #[cfg(any(feature = "wayland", feature = "x11"))]
 -        let text_system = Arc::new(crate::linux::CosmicTextSystem::new("IBM Plex Sans"));

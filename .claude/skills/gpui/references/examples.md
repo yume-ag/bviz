@@ -1,7 +1,7 @@
 # gpui examples index
 
 Runnable examples live in the Zed repo under `crates/gpui/examples/`, browsable at
-https://github.com/zed-industries/zed/tree/v1.6.3/crates/gpui/examples (prefer a local Zed
+https://github.com/zed-industries/zed/tree/v1.24.3/crates/gpui/examples (prefer a local Zed
 checkout if available). They are the most reliable, version-accurate API reference. Read
 the relevant one before writing similar code. Grouped by what they teach.
 

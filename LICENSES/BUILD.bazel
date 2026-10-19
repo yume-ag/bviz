@@ -9,18 +9,25 @@ load("@package_metadata//rules:package_metadata.bzl", "package_metadata")
 # its own terms from the archive it arrives in.
 
 package_metadata(
-    name = "gpui",
+    name = "gpui_derived_source",
     attributes = [":gpui_license"],
     purl = "pkg:github/zed-industries/zed@v1.6.3",
     visibility = [
-        "//patches/gpui:__pkg__",
-        "//patches/gpui_linux:__pkg__",
-        "//patches/gpui_macos:__pkg__",
-        "//patches/gpui_wgpu:__pkg__",
-        "//patches/media:__pkg__",
         "//tools/scene_header:__pkg__",
         "//ui/components:__pkg__",
         "//ui/shell:__pkg__",
+    ],
+)
+
+package_metadata(
+    name = "gpui_patches",
+    attributes = [":gpui_license"],
+    purl = "pkg:github/zed-industries/zed@v1.24.3",
+    visibility = [
+        "//patches/gpui:__pkg__",
+        "//patches/gpui_apple:__pkg__",
+        "//patches/gpui_linux:__pkg__",
+        "//patches/gpui_wgpu:__pkg__",
     ],
 )
 

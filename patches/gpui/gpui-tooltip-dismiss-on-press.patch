@@ -7,12 +7,13 @@ element until the pointer leaves the element. The press itself then
 keeps the tooltip from showing while the button is held, which the
 hover checks no longer need to.
 
-License: Apache-2.0 (Zed v1.6.3)
+License: Apache-2.0 (Zed v1.24.3)
 
 diff --git a/crates/gpui/src/elements/div.rs b/crates/gpui/src/elements/div.rs
+index 56b00cb..0a1d590 100644
 --- a/crates/gpui/src/elements/div.rs
 +++ b/crates/gpui/src/elements/div.rs
-@@ -2720,30 +2720,21 @@ impl Interactivity {
+@@ -3192,10 +3192,6 @@ impl Interactivity {
                      .active_tooltip
                      .get_or_insert_with(Default::default)
                      .clone();
@@ -20,10 +21,10 @@ diff --git a/crates/gpui/src/elements/div.rs b/crates/gpui/src/elements/div.rs
 -                    .pending_mouse_down
 -                    .get_or_insert_with(Default::default)
 -                    .clone();
--
-                 let tooltip_is_hoverable = tooltip_builder.hoverable;
-                 let build_tooltip = Rc::new(move |window: &mut Window, cx: &mut App| {
-                     Some(((tooltip_builder.build)(window, cx), tooltip_is_hoverable))
+                 let long_press_tooltip_active = element_state
+                     .long_press_tooltip_active
+                     .get_or_insert_with(Default::default)
+@@ -3207,19 +3203,15 @@ impl Interactivity {
                  });
                  // Use bounds instead of testing hitbox since this is called during prepaint.
                  let check_is_hovered_during_prepaint = Rc::new({
@@ -44,7 +45,7 @@ diff --git a/crates/gpui/src/elements/div.rs b/crates/gpui/src/elements/div.rs
                  });
                  register_tooltip_mouse_handlers(
                      &active_tooltip,
-@@ -3149,6 +3140,9 @@ pub(crate) enum ActiveTooltip {
+@@ -3669,6 +3661,9 @@ pub(crate) enum ActiveTooltip {
          tooltip: AnyTooltip,
          _task: Task<()>,
      },
@@ -54,7 +55,7 @@ diff --git a/crates/gpui/src/elements/div.rs b/crates/gpui/src/elements/div.rs
  }
  
  pub(crate) fn clear_active_tooltip(
-@@ -3157,19 +3151,28 @@ pub(crate) fn clear_active_tooltip(
+@@ -3677,19 +3672,28 @@ pub(crate) fn clear_active_tooltip(
  ) {
      match active_tooltip.borrow_mut().take() {
          None => {}
@@ -85,7 +86,7 @@ diff --git a/crates/gpui/src/elements/div.rs b/crates/gpui/src/elements/div.rs
          Some(ActiveTooltip::Visible { is_hoverable, .. }) => !is_hoverable,
          Some(ActiveTooltip::WaitingForHide { .. }) => false,
      };
-@@ -3185,7 +3188,7 @@ pub(crate) fn set_tooltip_on_window(
+@@ -3705,7 +3709,7 @@ pub(crate) fn set_tooltip_on_window(
  ) -> Option<TooltipId> {
      let tooltip = match active_tooltip.borrow().as_ref() {
          None => return None,
@@ -94,7 +95,7 @@ diff --git a/crates/gpui/src/elements/div.rs b/crates/gpui/src/elements/div.rs
          Some(ActiveTooltip::Visible { tooltip, .. }) => tooltip.clone(),
          Some(ActiveTooltip::WaitingForHide { tooltip, .. }) => tooltip.clone(),
      };
-@@ -3223,8 +3226,14 @@ pub(crate) fn register_tooltip_mouse_handlers(
+@@ -3748,8 +3752,14 @@ pub(crate) fn register_tooltip_mouse_handlers(
  
      window.on_mouse_event({
          let active_tooltip = active_tooltip.clone();
@@ -110,7 +111,7 @@ diff --git a/crates/gpui/src/elements/div.rs b/crates/gpui/src/elements/div.rs
                  clear_active_tooltip_if_not_hoverable(&active_tooltip, window);
              }
          }
-@@ -3269,6 +3278,7 @@ fn handle_tooltip_mouse_move(
+@@ -3833,6 +3843,7 @@ fn handle_tooltip_mouse_move(
          CancelShow,
          ScheduleShow,
          CheckVisible,
@@ -118,7 +119,7 @@ diff --git a/crates/gpui/src/elements/div.rs b/crates/gpui/src/elements/div.rs
      }
  
      let action = match active_tooltip.borrow().as_ref() {
-@@ -3309,6 +3319,13 @@ fn handle_tooltip_mouse_move(
+@@ -3873,6 +3884,13 @@ fn handle_tooltip_mouse_move(
                  Action::None
              }
          }
@@ -132,7 +133,7 @@ diff --git a/crates/gpui/src/elements/div.rs b/crates/gpui/src/elements/div.rs
      };
  
      match action {
-@@ -3353,6 +3370,9 @@ fn handle_tooltip_mouse_move(
+@@ -3921,6 +3939,9 @@ fn handle_tooltip_mouse_move(
                  });
          }
          Action::CheckVisible => cx.notify(current_view),
@@ -142,7 +143,7 @@ diff --git a/crates/gpui/src/elements/div.rs b/crates/gpui/src/elements/div.rs
      }
  }
  
-@@ -3441,7 +3461,9 @@ fn handle_tooltip_check_visible_and_update(
+@@ -4018,7 +4039,9 @@ fn handle_tooltip_check_visible_and_update(
                  Action::None
              }
          }
@@ -154,9 +155,10 @@ diff --git a/crates/gpui/src/elements/div.rs b/crates/gpui/src/elements/div.rs
  
      match action {
 diff --git a/crates/gpui/src/elements/text.rs b/crates/gpui/src/elements/text.rs
+index d1896ad..ef80041 100644
 --- a/crates/gpui/src/elements/text.rs
 +++ b/crates/gpui/src/elements/text.rs
-@@ -1198,26 +1198,22 @@ impl Element for InteractiveText {
+@@ -1261,26 +1261,22 @@ impl Element for InteractiveText {
                      let check_is_hovered_during_prepaint = Rc::new({
                          let source_bounds = hitbox.bounds;
                          let text_layout = text_layout.clone();

@@ -2,10 +2,10 @@
 # the Zed tree under that tree's terms.
 package(default_package_metadata = [
     "//:package_metadata",
-    "//LICENSES:gpui",
+    "//LICENSES:gpui_patches",
 ])
 
 exports_files(
-    ["gpui_macos-prebuilt-scene-header.patch"],
+    ["gpui_apple-prebuilt-scene-header.patch"],
     visibility = ["//visibility:public"],
 )

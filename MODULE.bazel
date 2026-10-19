@@ -42,7 +42,10 @@ single_version_override(
 single_version_override(
     module_name = "rules_rs",
     patch_strip = 1,
-    patches = ["//patches/rules_rs:rules_rs-git-crate-archive.patch"],
+    patches = [
+        "//patches/rules_rs:rules_rs-git-crate-archive.patch",
+        "//patches/rules_rs:rules_rs-inherit-default-features.patch",
+    ],
 )
 
 rs_toolchains = use_extension("@rules_rs//rs/toolchains:module_extension.bzl", "toolchains")
@@ -96,7 +99,7 @@ register_toolchains("@llvm_toolchains//:all")
 
 # The macOS sysroot the llvm module fetches carries a small default set of
 # frameworks, which this tag replaces wholesale; the defaults are therefore
-# repeated alongside the ones gpui's macOS backend and the media crate bind.
+# repeated alongside the ones gpui's macOS backend binds.
 # ColorSync, FontServices and ImageIO come from the sysroot itself:
 # ApplicationServices symlinks into them, and Bazel refuses to act on a dangling
 # symlink. CFNetwork, CoreImage and CoreServices are re-exported by stub
@@ -111,7 +114,6 @@ osx.frameworks(names = [
     "CoreFoundation",
     "CoreGraphics",
     "CoreImage",
-    "CoreMedia",
     "CoreServices",
     "CoreText",
     "CoreVideo",
@@ -126,6 +128,7 @@ osx.frameworks(names = [
     "QuartzCore",
     "Security",
     "SystemConfiguration",
+    "UserNotifications",
 ])
 
 DARWIN_TRIPLES = [
@@ -159,10 +162,10 @@ crate.annotation(
     git_archive_url = "https://github.com/openedges/elk-rs/archive/{commit}.tar.gz",
 )
 crate.annotation(
-    crate = "wgpu",
-    git_archive_sha256 = "bf81d80523511b4503d4097f081a496e1161fddbebaea2339c70fd6b38dcf3fb",
-    git_archive_strip_prefix = "wgpu-{commit}",
-    git_archive_url = "https://github.com/zed-industries/wgpu/archive/{commit}.tar.gz",
+    crate = "wasm_thread",
+    git_archive_sha256 = "4dc9b3324038ed7f761f8b32811c27eb8e5234a940fa741a6d5214eb88a7abb6",
+    git_archive_strip_prefix = "wasm_thread-{commit}",
+    git_archive_url = "https://github.com/zed-industries/wasm_thread/archive/{commit}.tar.gz",
 )
 crate.annotation(
     crate = "zed-font-kit",
@@ -222,7 +225,6 @@ crate.annotation(
         "//patches/gpui_linux:gpui_linux-clear-hover-on-leave.patch",
         "//patches/gpui_linux:gpui_linux-embedded-fonts-only.patch",
         "//patches/gpui_linux:gpui_linux-platform-drag.patch",
-        "//patches/gpui_linux:gpui_linux-keymap-no-default-includes.patch",
         "//patches/gpui_linux:gpui_linux-initial-appearance.patch",
     ],
 )
@@ -232,17 +234,12 @@ crate.annotation(
     patches = ["//patches/gpui_wgpu:gpui_wgpu-reserve-path-vertices.patch"],
 )
 
-# gpui_macos's build script generates the C header its Metal shaders share with
+# gpui_apple's build script generates the C header its Metal shaders share with
 # Rust by running cbindgen over gpui's sources. rules_rs does not surface a git
 # crate's build-dependencies, so //tools/scene_header generates the header and the
 # build script takes its path from GPUI_SCENE_HEADER. The runtime_shaders feature
 # stitches that header into the shader source for the app to compile at run time;
 # the other path shells out to `xcrun metal`, which only macOS has.
-#
-# rustc compiles against an absolute CARGO_MANIFEST_DIR, and gpui retains that
-# value in GPUI_MANIFEST_DIR, which bakes the exec root into every build of the
-# crate. Point it at the manifest's path within gpui's source tree so the
-# compiled output stays independent of where the build ran.
 crate.annotation(
     additive_build_file_content = """filegroup(
     name = "licence",
@@ -267,7 +264,7 @@ filegroup(
         "gpui_scene_src": "scene_src",
         "gpui_shader_type_srcs": "shader_type_srcs",
     },
-    git_archive_sha256 = "7a6027d133ff601228410e96459c4a02924c9ea93fa8f143a2dcb73825e37aba",
+    git_archive_sha256 = "8d2814d861ba4a2de232721c60d49cb4175b79b95ffa7155fdd556bcf2308405",
     git_archive_strip_prefix = "zed-{commit}",
     git_archive_url = "https://github.com/zed-industries/zed/archive/{commit}.tar.gz",
     patch_args = ["-p1"],
@@ -279,7 +276,6 @@ filegroup(
         "//patches/gpui:gpui-tooltip-dismiss-on-escape.patch",
         "//patches/gpui:gpui-tooltip-optional.patch",
     ],
-    rustc_env = {"CARGO_MANIFEST_DIR": "crates/gpui"},
 )
 crate.annotation(
     additive_build_file_content = """filegroup(
@@ -292,13 +288,13 @@ crate.annotation(
     # Location expressions resolve in the crate repository, which has no apparent
     # name for bviz's own.
     build_script_env = {"GPUI_SCENE_HEADER": "$(execpath @@//tools/scene_header:scene_h)"},
-    crate = "gpui_macos",
-    extra_aliased_targets = {"gpui_macos_metal_renderer_src": "metal_renderer_src"},
+    crate = "gpui_apple",
+    extra_aliased_targets = {"gpui_apple_metal_renderer_src": "metal_renderer_src"},
     patch_args = ["-p1"],
-    patches = ["//patches/gpui_macos:gpui_macos-prebuilt-scene-header.patch"],
+    patches = ["//patches/gpui_apple:gpui_apple-prebuilt-scene-header.patch"],
 )
 crate.annotation_select(
-    crate = "gpui_macos",
+    crate = "gpui_apple",
     crate_features = ["runtime_shaders"],
     triples = DARWIN_TRIPLES,
 )
@@ -307,8 +303,6 @@ crate.annotation_select(
 # that bind them.
 crate.annotation(
     crate = "xkbcommon",
-    patch_args = ["-p1"],
-    patches = ["//patches/xkbcommon:xkbcommon-drop-x11.patch"],
     deps = ["//third_party:xkbcommon"],
 )
 crate.annotation(
@@ -338,35 +332,12 @@ crate.annotation(
     crate = "rav1e",
 )
 
-# media generates its CoreMedia declarations with bindgen, which the patch
-# removes; turning the build script off keeps bindgen out of the build.
-crate.annotation(
-    crate = "media",
-    gen_build_script = "off",
-    patch_args = ["-p1"],
-    patches = ["//patches/media:media-drop-the-generated-core-media-bindings.patch"],
-)
-
 # freetype-sys compiles in C++ mode, so the cc crate would link GNU libstdc++.
 # The hermetic toolchain ships libc++ instead, so emit no explicit C++ stdlib and
 # let freetype's symbols resolve against the toolchain's libc++.
 crate.annotation(
     build_script_env = {"CXXSTDLIB": ""},
     crate = "freetype-sys",
-)
-
-# wgpu's `vulkan` feature does not propagate to wgpu-core/wgpu-hal through wgpu's
-# platform shim under rules_rs resolution, so no GPU backend gets compiled and
-# surface creation fails. Enable the Vulkan backend on the crates that gate it.
-crate.annotation_select(
-    crate = "wgpu-core",
-    crate_features = ["vulkan"],
-    triples = LINUX_TRIPLES,
-)
-crate.annotation_select(
-    crate = "wgpu-hal",
-    crate_features = ["vulkan"],
-    triples = LINUX_TRIPLES,
 )
 
 # objc-sys locates its ObjFW compatibility headers through a build-time

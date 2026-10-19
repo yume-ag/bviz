@@ -560,6 +560,7 @@ impl Timeline {
             .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
             .on_pinch(cx.listener(Self::on_pinch))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
+            .hover_listener_mode(gpui::HoverListenerMode::InputModalityIndependent)
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                 if !*hovered {
                     let cleared = this.crosshair.take().is_some() | this.card.leave();

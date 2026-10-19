@@ -3,13 +3,13 @@ Restore the floating window size on untile
 gpui restores the floating window size on un-maximize but not un-tile,
 leaving the window stuck at the tiled size.
 
-License: Apache-2.0 (Zed v1.6.3)
+License: Apache-2.0 (Zed v1.24.3)
 
 diff --git a/crates/gpui_linux/src/linux/wayland/window.rs b/crates/gpui_linux/src/linux/wayland/window.rs
-index 9d5c85b..db50a6c 100644
+index be447f8..d5200c7 100644
 --- a/crates/gpui_linux/src/linux/wayland/window.rs
 +++ b/crates/gpui_linux/src/linux/wayland/window.rs
-@@ -620,6 +620,8 @@ impl WaylandWindowStatePtr {
+@@ -1098,6 +1098,8 @@ impl WaylandWindowStatePtr {
  
                  if let Some(mut configure) = state.in_progress_configure.take() {
                      let got_unmaximized = state.maximized && !configure.maximized;
@@ -18,39 +18,43 @@ index 9d5c85b..db50a6c 100644
                      state.fullscreen = configure.fullscreen;
                      state.maximized = configure.maximized;
                      state.tiling = configure.tiling;
-@@ -631,16 +633,27 @@ impl WaylandWindowStatePtr {
-                         state.resize_throttle = true;
-                     }
-                     if !configure.fullscreen && !configure.maximized {
--                        configure.size = if got_unmaximized {
--                            Some(state.window_bounds.size)
-+                        if configure.tiling.is_tiled() {
-+                            // Tiled (snapped by the compositor): take the requested
-+                            // size but keep window_bounds so it can be restored when
-+                            // the window is untiled.
-+                            configure.size = compute_outer_size(
-+                                state.inset(),
-+                                configure.size,
-+                                configure.tiling,
-+                            );
-                         } else {
--                            compute_outer_size(state.inset(), configure.size, state.tiling)
--                        };
--                        if let Some(size) = configure.size {
--                            state.window_bounds = Bounds {
--                                origin: Point::default(),
--                                size,
-+                            configure.size = if got_unmaximized || got_untiled {
-+                                Some(state.window_bounds.size)
-+                            } else {
-+                                compute_outer_size(state.inset(), configure.size, configure.tiling)
-                             };
-+                            if let Some(size) = configure.size {
-+                                state.window_bounds = Bounds {
-+                                    origin: Point::default(),
-+                                    size,
-+                                };
-+                            }
+@@ -1112,16 +1114,31 @@ impl WaylandWindowStatePtr {
+                             state.resize_throttle = true;
+                         }
+                         if !configure.fullscreen && !configure.maximized {
+-                            configure.size = if got_unmaximized {
+-                                Some(state.window_bounds.size)
++                            if configure.tiling.is_tiled() {
++                                // Tiled (snapped by the compositor): take the requested
++                                // size but keep window_bounds so it can be restored when
++                                // the window is untiled.
++                                configure.size = compute_outer_size(
++                                    state.inset(),
++                                    configure.size,
++                                    configure.tiling,
++                                );
+                             } else {
+-                                compute_outer_size(state.inset(), configure.size, state.tiling)
+-                            };
+-                            if let Some(size) = configure.size {
+-                                state.window_bounds = Bounds {
+-                                    origin: Point::default(),
+-                                    size,
++                                configure.size = if got_unmaximized || got_untiled {
++                                    Some(state.window_bounds.size)
++                                } else {
++                                    compute_outer_size(
++                                        state.inset(),
++                                        configure.size,
++                                        configure.tiling,
++                                    )
+                                 };
++                                if let Some(size) = configure.size {
++                                    state.window_bounds = Bounds {
++                                        origin: Point::default(),
++                                        size,
++                                    };
++                                }
+                             }
                          }
                      }
-                     drop(state);

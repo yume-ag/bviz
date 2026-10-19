@@ -1,10 +1,12 @@
 Clear hover when the pointer leaves the window
 
-License: Apache-2.0 (Zed v1.6.3)
+License: Apache-2.0 (Zed v1.24.3)
 
+diff --git a/crates/gpui_linux/src/linux/wayland/client.rs b/crates/gpui_linux/src/linux/wayland/client.rs
+index bc73fc3..4b88758 100644
 --- a/crates/gpui_linux/src/linux/wayland/client.rs
 +++ b/crates/gpui_linux/src/linux/wayland/client.rs
-@@ -1810,6 +1810,17 @@
+@@ -2352,6 +2352,17 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandClientStatePtr {
              }
              wl_pointer::Event::Leave { .. } => {
                  if let Some(focused_window) = state.mouse_focused_window.clone() {
@@ -22,7 +24,7 @@ License: Apache-2.0 (Zed v1.6.3)
                      let input = PlatformInput::MouseExited(MouseExitEvent {
                          position: state.mouse_location.unwrap(),
                          pressed_button: state.button_pressed,
-@@ -1821,6 +1832,7 @@
+@@ -2363,6 +2374,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandClientStatePtr {
                      state.cursor_hidden_window = None;
  
                      drop(state);

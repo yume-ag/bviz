@@ -1,7 +1,7 @@
 Carry a platform drag over Wayland
 
 gpui's Wayland backend binds wl_data_device for the clipboard and for
-incoming file drops alone. Carry a drag the application offers over on a
+drags of files alone. Carry a drag the application offers over on a
 wl_data_source with an icon surface of its own, and report a drag
 carrying the mime type the application takes to whichever window it is
 carried over.
@@ -24,25 +24,27 @@ session a release over the desktop reaches the application as
 PlatformDragEnd::Cancelled and tearing a panel out of its window does
 nothing.
 
-License: Apache-2.0 (Zed v1.6.3)
+License: Apache-2.0 (Zed v1.24.3)
 
 diff --git a/crates/gpui_linux/src/linux/wayland/client.rs b/crates/gpui_linux/src/linux/wayland/client.rs
+index 4b88758..68015a2 100644
 --- a/crates/gpui_linux/src/linux/wayland/client.rs
 +++ b/crates/gpui_linux/src/linux/wayland/client.rs
-@@ -1,7 +1,9 @@
+@@ -1,8 +1,10 @@
  use std::{
      cell::{RefCell, RefMut},
 +    fs::File,
      hash::Hash,
--    os::fd::{AsRawFd, BorrowedFd},
 +    io::Write,
-+    os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd},
+     os::{
+-        fd::{AsRawFd, BorrowedFd, FromRawFd as _, RawFd},
++        fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd as _, RawFd},
+         unix::net::UnixStream,
+     },
      path::PathBuf,
-     rc::{Rc, Weak},
-     time::{Duration, Instant},
-@@ -59,6 +61,9 @@ use wayland_protocols::xdg::decoration::
+@@ -66,6 +68,9 @@ use wayland_protocols::xdg::shell::client::{
+     xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
  };
- use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
  use wayland_protocols::xdg::system_bell::v1::client::xdg_system_bell_v1;
 +use wayland_protocols::xdg::toplevel_drag::v1::client::{
 +    xdg_toplevel_drag_manager_v1, xdg_toplevel_drag_v1,
@@ -50,42 +52,41 @@ diff --git a/crates/gpui_linux/src/linux/wayland/client.rs b/crates/gpui_linux/s
  use wayland_protocols::{
      wp::cursor_shape::v1::client::{wp_cursor_shape_device_v1, wp_cursor_shape_manager_v1},
      xdg::dialog::v1::client::xdg_wm_dialog_v1::{self, XdgWmDialogV1},
-@@ -92,12 +97,12 @@ use crate::linux::{
+@@ -99,13 +104,13 @@ use crate::linux::{
      xdg_desktop_portal::{Event as XDPEvent, XDPEventSource},
  };
  use gpui::{
--    AnyWindowHandle, Bounds, Capslock, CursorStyle, DevicePixels, DisplayId, FileDropEvent,
--    ForegroundExecutor, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, ModifiersChangedEvent,
--    MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection,
--    Pixels, PlatformDisplay, PlatformInput, PlatformKeyboardLayout, PlatformWindow, Point,
--    ScrollDelta, ScrollWheelEvent, SharedString, Size, TouchPhase, WindowButtonLayout,
--    WindowParams, point, profiler, px, size,
-+    AnyWindowHandle, Bounds, Capslock, CursorStyle, DevicePixels, DisplayId, DragIcon,
-+    FileDropEvent, ForegroundExecutor, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers,
-+    ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent,
-+    MouseUpEvent, NavigationDirection, Pixels, PlatformDisplay, PlatformDragEnd, PlatformDragEvent,
-+    PlatformInput, PlatformKeyboardLayout, PlatformWindow, Point, ScrollDelta, ScrollWheelEvent,
-+    SharedString, Size, TouchPhase, WindowButtonLayout, WindowParams, point, profiler, px, size,
+-    AnyWindowHandle, Bounds, Capslock, CursorStyle, DevicePixels, ExternalDragPayload,
++    AnyWindowHandle, Bounds, Capslock, CursorStyle, DevicePixels, DragIcon, ExternalDragPayload,
+     FileDragPaths, FileDropEvent, ForegroundExecutor, GraphicalEnvironment, KeyDownEvent,
+     KeyUpEvent, Keystroke, Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent,
+     MouseExitEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection, Pixels, PlatformDisplay,
+-    PlatformFrameSignal, PlatformInput, PlatformKeyboardLayout, PlatformWindow, Point, ScrollDelta,
+-    ScrollWheelEvent, SharedString, Size, TouchPhase, WindowButtonLayout, WindowKind, WindowParams,
+-    point, px, size,
++    PlatformDragEnd, PlatformDragEvent, PlatformFrameSignal, PlatformInput, PlatformKeyboardLayout,
++    PlatformWindow, Point, ScrollDelta, ScrollWheelEvent, SharedString, Size, TouchPhase,
++    WindowButtonLayout, WindowKind, WindowParams, point, px, size,
  };
  use gpui_wgpu::{CompositorGpuHint, GpuContext};
  use wayland_protocols::wp::linux_dmabuf::zv1::client::{
-@@ -131,6 +136,7 @@ pub struct Globals {
+@@ -258,6 +263,7 @@ pub struct Globals {
      pub gesture_manager: Option<zwp_pointer_gestures_v1::ZwpPointerGesturesV1>,
      pub dialog: Option<xdg_wm_dialog_v1::XdgWmDialogV1>,
      pub system_bell: Option<xdg_system_bell_v1::XdgSystemBellV1>,
 +    pub toplevel_drag_manager: Option<xdg_toplevel_drag_manager_v1::XdgToplevelDragManagerV1>,
      pub executor: ForegroundExecutor,
+     pub frame_ping: Ping,
  }
- 
-@@ -173,6 +179,7 @@ impl Globals {
+@@ -308,6 +314,7 @@ impl Globals {
              gesture_manager: globals.bind(&qh, 1..=3, ()).ok(),
              dialog: globals.bind(&qh, dialog_v..=dialog_v, ()).ok(),
              system_bell: globals.bind(&qh, 1..=1, ()).ok(),
 +            toplevel_drag_manager: globals.bind(&qh, 1..=1, ()).ok(),
              executor,
              qh,
-         }
-@@ -260,6 +267,12 @@ pub(crate) struct WaylandClientState {
+             frame_ping,
+@@ -398,6 +405,12 @@ pub(crate) struct WaylandClientState {
      clipboard: Clipboard,
      data_offers: Vec<DataOffer<WlDataOffer>>,
      primary_data_offer: Option<DataOffer<ZwpPrimarySelectionOfferV1>>,
@@ -97,11 +98,11 @@ diff --git a/crates/gpui_linux/src/linux/wayland/client.rs b/crates/gpui_linux/s
 +    outgoing_drag: Option<OutgoingDrag>,
      cursor: Cursor,
      pending_activation: Option<PendingActivation>,
-     event_loop: Option<EventLoop<'static, WaylandClientStatePtr>>,
-@@ -270,6 +283,118 @@ pub struct DragState {
-     data_offer: Option<wl_data_offer::WlDataOffer>,
-     window: Option<WaylandWindowStatePtr>,
+     startup_activation_token: Option<String>,
+@@ -414,6 +427,14 @@ struct DragState<DataOffer = wl_data_offer::WlDataOffer, Window = WaylandWindowS
+     window: Option<Window>,
      position: Point<Pixels>,
+     uri_read_generation: u64,
 +    /// Whether the drag carried over a window of this client offers the mime
 +    /// type the application takes one under, which parts a drag reported as a
 +    /// [`PlatformDragEvent`] from the drop of files reported as a
@@ -110,8 +111,38 @@ diff --git a/crates/gpui_linux/src/linux/wayland/client.rs b/crates/gpui_linux/s
 +    /// the drag's own can be let go of before it is dropped, and reading it
 +    /// afresh would then make a file drop of it.
 +    accepted: bool,
-+}
-+
+ }
+ 
+ impl<DataOffer, Window> DragState<DataOffer, Window> {
+@@ -455,10 +476,15 @@ where
+         self.invalidate_uri_read();
+         let window = self.window.clone()?;
+         let data_offer = self.data_offer.clone()?;
++        let input = match self.accepted {
++            true => PlatformInput::PlatformDrag(PlatformDragEvent::Left),
++            false => PlatformInput::FileDrop(FileDropEvent::Exited {}),
++        };
+         data_offer.destroy();
+         self.data_offer = None;
+         self.window = None;
+-        Some((window, PlatformInput::FileDrop(FileDropEvent::Exited {})))
++        self.accepted = false;
++        Some((window, input))
+     }
+ 
+     fn handle_drop(&mut self) -> Option<(Window, PlatformInput)> {
+@@ -493,6 +519,7 @@ where
+         self.data_offer = Some(data_offer);
+         self.window = Some(window.clone());
+         self.position = position;
++        self.accepted = false;
+         Some((
+             window,
+             PlatformInput::FileDrop(FileDropEvent::Entered { position, paths }),
+@@ -524,6 +551,110 @@ fn file_uri_list(paths: &FileDragPaths) -> String {
+         })
+ }
+ 
 +/// A drag handed to the compositor, held from the `start_drag` request until
 +/// the compositor reports the gesture over.
 +///
@@ -136,8 +167,8 @@ diff --git a/crates/gpui_linux/src/linux/wayland/client.rs b/crates/gpui_linux/s
 +    toplevel_drag: Option<xdg_toplevel_drag_v1::XdgToplevelDragV1>,
 +}
 +
-+/// Marks a [`wl_data_source::WlDataSource`] as a drag's, so that its events
-+/// dispatch apart from those of the sources serving the clipboard.
++/// Marks a [`wl_data_source::WlDataSource`] as a platform drag's, so that its
++/// events dispatch apart from those of the sources [`DataSourceKind`] marks.
 +pub struct DragSourceData;
 +
 +/// The only action a drag this client hands over offers, and the only one it
@@ -214,10 +245,12 @@ diff --git a/crates/gpui_linux/src/linux/wayland/client.rs b/crates/gpui_linux/s
 +        .outgoing_drag
 +        .as_mut()
 +        .filter(|drag| drag.source.id() == source.id())
- }
- 
++}
++
  pub struct ClickState {
-@@ -316,6 +441,76 @@ impl WaylandClientStatePtr {
+     last_mouse_button: Option<MouseButton>,
+     last_click: Instant,
+@@ -667,6 +798,76 @@ impl WaylandClientStatePtr {
              Some(PendingActivation::Window(window));
      }
  
@@ -237,7 +270,7 @@ diff --git a/crates/gpui_linux/src/linux/wayland/client.rs b/crates/gpui_linux/s
 +    ) -> bool {
 +        let client = self.get_client();
 +        let mut state = client.borrow_mut();
-+        if state.outgoing_drag.is_some() {
++        if state.outgoing_drag.is_some() || state.external_drag.is_some() {
 +            return false;
 +        }
 +        let (Some(data_device_manager), Some(data_device)) = (
@@ -249,7 +282,7 @@ diff --git a/crates/gpui_linux/src/linux/wayland/client.rs b/crates/gpui_linux/s
 +        // A drag is started from the press holding the pointer, and the
 +        // compositor ignores a request naming no press at all.
 +        let serial = state.serial_tracker.get(SerialKind::MousePress);
-+        if serial == 0 {
++        if serial.as_raw() == 0 {
 +            return false;
 +        }
 +        let Some((icon_surface, buffer)) = drag_icon(&state.globals, &icon) else {
@@ -267,7 +300,7 @@ diff --git a/crates/gpui_linux/src/linux/wayland/client.rs b/crates/gpui_linux/s
 +            .map(|manager| manager.get_xdg_toplevel_drag(&source, &state.globals.qh, ()));
 +        // The surface takes its role from this request, so what it shows is
 +        // attached only once the compositor knows what it is for.
-+        data_device.start_drag(Some(&source), surface, Some(&icon_surface), serial);
++        data_device.start_drag(Some(&source), surface, Some(&icon_surface), serial.as_raw());
 +        icon_surface.attach(Some(&buffer), 0, 0);
 +        let size = icon.size();
 +        let scale = icon.scale().get();
@@ -294,15 +327,15 @@ diff --git a/crates/gpui_linux/src/linux/wayland/client.rs b/crates/gpui_linux/s
      pub fn enable_ime(&self) {
          let client = self.get_client();
          let mut state = client.borrow_mut();
-@@ -682,6 +877,7 @@ impl WaylandClient {
-                 data_offer: None,
+@@ -1048,6 +1249,7 @@ impl WaylandConnection {
                  window: None,
                  position: Point::default(),
+                 uri_read_generation: 0,
 +                accepted: false,
              },
+             external_drag: None,
              click: ClickState {
-                 last_click: Instant::now(),
-@@ -720,6 +916,8 @@ impl WaylandClient {
+@@ -1087,6 +1289,8 @@ impl WaylandConnection {
              clipboard: Clipboard::new(conn.clone(), handle.clone()),
              data_offers: Vec::new(),
              primary_data_offer: None,
@@ -310,8 +343,8 @@ diff --git a/crates/gpui_linux/src/linux/wayland/client.rs b/crates/gpui_linux/s
 +            outgoing_drag: None,
              cursor,
              pending_activation: None,
-             event_loop: Some(event_loop),
-@@ -1150,6 +1348,8 @@ delegate_noop!(WaylandClientStatePtr: ig
+             startup_activation_token: activation_token,
+@@ -1611,6 +1815,8 @@ delegate_noop!(WaylandClientStatePtr: ignore zwp_text_input_manager_v3::ZwpTextI
  delegate_noop!(WaylandClientStatePtr: ignore org_kde_kwin_blur::OrgKdeKwinBlur);
  delegate_noop!(WaylandClientStatePtr: ignore wp_viewporter::WpViewporter);
  delegate_noop!(WaylandClientStatePtr: ignore wp_viewport::WpViewport);
@@ -320,9 +353,9 @@ diff --git a/crates/gpui_linux/src/linux/wayland/client.rs b/crates/gpui_linux/s
  
  impl Dispatch<WlCallback, ObjectId> for WaylandClientStatePtr {
      fn event(
-@@ -2278,6 +2478,21 @@ impl Dispatch<wl_data_device::WlDataDevi
-                         return;
+@@ -2826,6 +3032,21 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for WaylandClientStatePtr {
                      };
+                     let uri_read_generation = state.drag.begin_uri_read();
  
 +                    if carries_accepted(&state, &data_offer) {
 +                        data_offer.set_actions(DND_ACTIONS, DND_ACTIONS);
@@ -342,15 +375,7 @@ diff --git a/crates/gpui_linux/src/linux/wayland/client.rs b/crates/gpui_linux/s
                      const ACTIONS: DndAction = DndAction::Copy;
                      data_offer.set_actions(ACTIONS, ACTIONS);
  
-@@ -2336,6 +2551,7 @@ impl Dispatch<wl_data_device::WlDataDevi
-                             state.drag.data_offer = Some(data_offer);
-                             state.drag.window = Some(drag_window.clone());
-                             state.drag.position = position;
-+                            state.drag.accepted = false;
- 
-                             drop(state);
-                             drag_window.handle_input(input);
-@@ -2350,7 +2566,10 @@ impl Dispatch<wl_data_device::WlDataDevi
+@@ -2903,7 +3124,10 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for WaylandClientStatePtr {
                  let position = Point::new(x.into(), y.into());
                  state.drag.position = position;
  
@@ -362,54 +387,33 @@ diff --git a/crates/gpui_linux/src/linux/wayland/client.rs b/crates/gpui_linux/s
                  drop(state);
                  drag_window.handle_input(input);
              }
-@@ -2359,12 +2578,16 @@ impl Dispatch<wl_data_device::WlDataDevi
-                     return;
-                 };
-                 let data_offer = state.drag.data_offer.clone().unwrap();
-+                let input = match state.drag.accepted {
-+                    true => PlatformInput::PlatformDrag(PlatformDragEvent::Left),
-+                    false => PlatformInput::FileDrop(FileDropEvent::Exited {}),
-+                };
-                 data_offer.destroy();
- 
-                 state.drag.data_offer = None;
-                 state.drag.window = None;
-+                state.drag.accepted = false;
- 
--                let input = PlatformInput::FileDrop(FileDropEvent::Exited {});
-                 drop(state);
-                 drag_window.handle_input(input);
+@@ -2915,6 +3139,25 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for WaylandClientStatePtr {
+                 }
              }
-@@ -2373,17 +2596,23 @@ impl Dispatch<wl_data_device::WlDataDevi
-                     return;
-                 };
-                 let data_offer = state.drag.data_offer.clone().unwrap();
--                data_offer.finish();
--                data_offer.destroy();
-+                let position = state.drag.position;
-+                let input = match state.drag.accepted {
-+                    true => PlatformInput::PlatformDrag(PlatformDragEvent::Dropped(position)),
-+                    false => PlatformInput::FileDrop(FileDropEvent::Submit { position }),
-+                };
- 
-                 state.drag.data_offer = None;
-                 state.drag.window = None;
-+                state.drag.accepted = false;
- 
--                let input = PlatformInput::FileDrop(FileDropEvent::Submit {
--                    position: state.drag.position,
--                });
+             wl_data_device::Event::Drop => {
++                if state.drag.accepted {
++                    let (Some(drag_window), Some(data_offer)) =
++                        (state.drag.window.take(), state.drag.data_offer.take())
++                    else {
++                        return;
++                    };
++                    state.drag.accepted = false;
++                    let input = PlatformInput::PlatformDrag(PlatformDragEvent::Dropped(
++                        state.drag.position,
++                    ));
++                    drop(state);
++                    // The window takes what was dropped before the source hears the
++                    // transfer finished, so that a drag between two windows of one
++                    // client has landed by the time its source is told it is over.
++                    drag_window.handle_input(input);
++                    data_offer.finish();
++                    data_offer.destroy();
++                    return;
++                }
+                 let input = state.drag.handle_drop();
                  drop(state);
-+                // The window takes what was dropped before the source hears the
-+                // transfer finished, so that a drag between two windows of one
-+                // client has landed by the time its source is told it is over.
-                 drag_window.handle_input(input);
-+                data_offer.finish();
-+                data_offer.destroy();
-             }
-             _ => {}
-         }
-@@ -2450,6 +2679,68 @@ impl Dispatch<wl_data_source::WlDataSour
+                 if let Some((drag_window, input)) = input {
+@@ -3006,6 +3249,68 @@ impl Dispatch<wl_data_source::WlDataSource, DataSourceKind> for WaylandClientSta
      }
  }
  
@@ -478,7 +482,16 @@ diff --git a/crates/gpui_linux/src/linux/wayland/client.rs b/crates/gpui_linux/s
  impl Dispatch<zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1, ()>
      for WaylandClientStatePtr
  {
+@@ -3200,6 +3505,7 @@ mod tests {
+             window: None,
+             position: Point::default(),
+             uri_read_generation: 0,
++            accepted: false,
+         }
+     }
+ 
 diff --git a/crates/gpui_linux/src/linux/wayland/clipboard.rs b/crates/gpui_linux/src/linux/wayland/clipboard.rs
+index 86dc7da..e8052f9 100644
 --- a/crates/gpui_linux/src/linux/wayland/clipboard.rs
 +++ b/crates/gpui_linux/src/linux/wayland/clipboard.rs
 @@ -72,7 +72,7 @@ impl<T: ReceiveData> DataOffer<T> {
@@ -491,10 +504,11 @@ diff --git a/crates/gpui_linux/src/linux/wayland/clipboard.rs b/crates/gpui_linu
      }
  
 diff --git a/crates/gpui_linux/src/linux/wayland/window.rs b/crates/gpui_linux/src/linux/wayland/window.rs
+index d5200c7..835b710 100644
 --- a/crates/gpui_linux/src/linux/wayland/window.rs
 +++ b/crates/gpui_linux/src/linux/wayland/window.rs
-@@ -1462,6 +1462,17 @@ impl PlatformWindow for WaylandWindow {
-         }
+@@ -2066,6 +2066,17 @@ impl PlatformWindow for WaylandWindow {
+         state.client.start_external_drag(&state.surface, payload)
      }
  
 +    fn start_platform_drag(&self, mime_type: &str, icon: gpui::DragIcon) -> bool {

@@ -113,7 +113,7 @@ license(
 package_metadata(
     name = "zed_package_metadata",
     attributes = [":zed_license"],
-    purl = "pkg:github/zed-industries/zed@v1.6.3",
+    purl = "pkg:github/zed-industries/zed@v1.24.3",
     visibility = ["//bviz:__pkg__"],
 )
 

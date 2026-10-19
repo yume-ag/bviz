@@ -1,13 +1,15 @@
 Reserve a path batch's vertex staging buffer up front
 
-License: Apache-2.0 (Zed v1.6.3)
+License: Apache-2.0 (Zed v1.24.3)
 
+diff --git a/crates/gpui_wgpu/src/wgpu_renderer.rs b/crates/gpui_wgpu/src/wgpu_renderer.rs
+index 8387528..4f78c29 100644
 --- a/crates/gpui_wgpu/src/wgpu_renderer.rs
 +++ b/crates/gpui_wgpu/src/wgpu_renderer.rs
-@@ -1575,7 +1575,8 @@
+@@ -1839,7 +1839,8 @@ impl WgpuRendererCore {
          paths: &[Path<ScaledPixels>],
          instance_offset: &mut u64,
-     ) -> bool {
+     ) -> Result<bool> {
 -        let mut vertices = Vec::new();
 +        let mut vertices =
 +            Vec::with_capacity(paths.iter().map(|path| path.vertices.len()).sum());
