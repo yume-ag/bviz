@@ -204,6 +204,12 @@ impl Joinable {
     }
 }
 
+/// That the session has closed the document named, whose panels have left
+/// every window and whose views can be shown no more.
+pub struct Closed(pub DocumentId);
+
+impl EventEmitter<Closed> for Documents {}
+
 /// That the session has opened or closed a window, so where the panels of the
 /// windows still open can be moved to has changed.
 pub(crate) struct WindowsChanged;
@@ -610,6 +616,15 @@ impl Documents {
         Ok(minted.into_iter().map(|(_, panel)| panel).collect())
     }
 
+    /// Forgets `document`, which [`close`] calls for once no window holds a
+    /// panel showing it.
+    fn forget(&mut self, document: DocumentId, cx: &mut Context<Self>) {
+        if self.remove(document).is_some() {
+            cx.emit(Closed(document));
+            cx.notify();
+        }
+    }
+
     /// Shows `view` of `document` in `workspace`: the panel already showing it,
     /// moved here out of whatever window holds it, or a fresh panel where none
     /// is open. A reopened view comes back as its document stands, not as its
@@ -863,6 +878,14 @@ impl<S> Registry<S> {
     fn position(&self, document: DocumentId) -> Option<usize> {
         self.documents.iter().position(|held| held.id == document)
     }
+
+    /// Takes `document` out of the registry, which lets go of what its files
+    /// share and of every model its views were minted over. The numbers its
+    /// labels took stay taken.
+    fn remove(&mut self, document: DocumentId) -> Option<Registered<S>> {
+        let at = self.position(document)?;
+        Some(self.documents.remove(at))
+    }
 }
 
 /// `member` as a file of a document, its label numbered by `files`.
@@ -880,23 +903,54 @@ fn numbered_file(files: &mut Numbering, member: Member) -> Held<ViewSpec> {
 /// Takes `panel` out of whichever of `open` holds it, for a caller re-homing it
 /// in the window it frames. The workspace `here` names is left alone: it is the
 /// caller's own, which takes the panel out for itself. `None` where none of the
-/// others holds it, and where the window framing the one that does has closed.
+/// others holds it.
 pub(crate) fn take_panel_from(
     open: Vec<Entity<Workspace>>,
     panel: EntityId,
     here: EntityId,
     cx: &mut App,
 ) -> Option<AnyPanel> {
+    find_in_other_workspaces(open, here, cx, |workspace, window, cx| {
+        workspace.take_panel(panel, window, cx)
+    })
+}
+
+/// [`Workspace::close_document`] on `here`.
+pub(crate) fn close(
+    document: DocumentId,
+    here: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    here.drop_panels_of(document, window, cx);
+    let documents = Documents::global(cx);
+    let open = documents.read(cx).workspaces();
+    find_in_other_workspaces(open, cx.entity_id(), cx, |workspace, window, cx| {
+        workspace.drop_panels_of(document, window, cx);
+        None::<()>
+    });
+    documents.update(cx, |documents, cx| documents.forget(document, cx));
+}
+
+/// The first thing `visit` finds in the workspaces of `open`, visited in turn
+/// in the windows they frame. The workspace `here` names is left alone, as the
+/// caller holds it, and so is one whose window has closed.
+fn find_in_other_workspaces<T>(
+    open: Vec<Entity<Workspace>>,
+    here: EntityId,
+    cx: &mut App,
+    mut visit: impl FnMut(&mut Workspace, &mut Window, &mut Context<Workspace>) -> Option<T>,
+) -> Option<T> {
     for elsewhere in open {
         if elsewhere.entity_id() == here {
             continue;
         }
         let handle = elsewhere.read(cx).window();
-        let taken = handle.update(cx, |_, window, cx| {
-            elsewhere.update(cx, |workspace, cx| workspace.take_panel(panel, window, cx))
+        let found = handle.update(cx, |_, window, cx| {
+            elsewhere.update(cx, |workspace, cx| visit(workspace, window, cx))
         });
-        if let Ok(Some(taken)) = taken {
-            return Some(taken);
+        if let Ok(Some(found)) = found {
+            return Some(found);
         }
     }
     None
@@ -1805,5 +1859,33 @@ mod tests {
                 "build.bep (2)"
             ]
         );
+    }
+
+    /// A closed document is found no more, by its invocation or otherwise, and
+    /// the documents opened beside it stay as they were.
+    #[test]
+    fn a_closed_document_is_gone_and_the_others_stay() {
+        let mut registry = TestRegistry::new();
+        let closed = open_unshown(&mut registry, session("a5f7f3e6", "a.profile.gz"));
+        let kept = open_unshown(&mut registry, session("0b437916", "b.profile.gz"));
+        assert!(registry.remove(closed).is_some());
+        assert!(registry.registered(closed).is_none());
+        assert!(registry.by_invocation(&id("a5f7f3e6")).is_none());
+        assert_eq!(listing(&registry, kept).0, "Invocation 0b437916");
+        assert!(registry.remove(closed).is_none());
+    }
+
+    /// A number a closed document took is not handed to the next document
+    /// bearing its label, and the documents still open keep theirs.
+    #[test]
+    fn numbers_are_not_reused_after_a_close() {
+        let mut registry = TestRegistry::new();
+        let profile = || lone(profile_member("build.profile.gz"));
+        let first = open_unshown(&mut registry, profile());
+        let second = open_unshown(&mut registry, profile());
+        registry.remove(second);
+        let third = open_unshown(&mut registry, profile());
+        assert_eq!(listing(&registry, first).0, "build.profile.gz");
+        assert_eq!(listing(&registry, third).0, "build.profile.gz (3)");
     }
 }

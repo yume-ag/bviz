@@ -7,8 +7,8 @@ use crate::panel::keys_focus;
 use crate::panel_menu::{Deed, Standing};
 use crate::regions::{Placement, placement};
 use crate::{
-    AnyPanel, Arrangement, DividerId, Document, Documents, Framing, Joinable, Layout, Maximize,
-    Member, Pane, PaneEvent, Regions, Removal, Role, Shared, Side, Split, SplitSide,
+    AnyPanel, Arrangement, DividerId, Document, DocumentId, Documents, Framing, Joinable, Layout,
+    Maximize, Member, Pane, PaneEvent, Regions, Removal, Role, Shared, Side, Split, SplitSide,
     WindowsChanged, documents, drag_icon, drop, panel_menu,
 };
 use bviz_ui_components::gesture::Pointer;
@@ -418,6 +418,41 @@ impl Workspace {
         Self::new(app_name, Document::open(first, others, cx), window, cx)
     }
 
+    /// Closes `document` in every window: each panel showing one of its views
+    /// leaves the window holding it, and the registry then lets the document
+    /// go, with the models its views were minted over.
+    pub fn close_document(
+        &mut self,
+        document: DocumentId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        documents::close(document, self, window, cx);
+    }
+
+    /// Takes every panel showing a view of `document` out of the pane holding
+    /// it, letting it go.
+    pub(crate) fn drop_panels_of(
+        &mut self,
+        document: DocumentId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let panels: Vec<EntityId> = self
+            .arrangement
+            .layout()
+            .panes()
+            .flat_map(|pane| {
+                let held = pane.read(cx).panels();
+                held.filter(|panel| panel.document() == document)
+                    .map(AnyPanel::entity_id)
+            })
+            .collect();
+        for panel in panels {
+            self.take_panel(panel, window, cx);
+        }
+    }
+
     /// Joins the files `open` makes to the open document `to` names, as
     /// [`Documents::join`] does, and lays their views out here as
     /// [`placement`] puts them. `Err` hands `open` back unrun where the
@@ -599,6 +634,12 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Option<AnyPanel> {
         let (pane, _) = self.holder(panel, cx)?;
+        // A menu names the panes its rows would move a panel to, which taking
+        // a panel out may take away; and the bar may drive the clock of the
+        // taken panel's document, which closing the document lets go of. The
+        // next frame puts up the bar of the active panel's document afresh.
+        self.panel_menu = None;
+        self.playback = None;
         self.vacate(&pane, panel, window, cx)
     }
 

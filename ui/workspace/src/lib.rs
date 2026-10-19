@@ -21,7 +21,7 @@ mod testing;
 mod workspace;
 
 pub(crate) use arrangement::{Arrangement, Maximize};
-pub use documents::{DocumentId, Documents, Joinable, ViewSpec};
+pub use documents::{Closed, DocumentId, Documents, Joinable, ViewSpec};
 pub(crate) use documents::{OpenDocument, ViewId, ViewState, WindowsChanged};
 pub use gestures::chrome_gestures;
 pub(crate) use group::PanelGroup;
