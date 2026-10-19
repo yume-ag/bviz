@@ -7,9 +7,9 @@ use crate::panel::keys_focus;
 use crate::panel_menu::{Deed, Standing};
 use crate::regions::{Placement, placement};
 use crate::{
-    AnyPanel, Arrangement, DividerId, Document, Documents, Framing, Layout, Maximize, Pane,
-    PaneEvent, Regions, Removal, Role, Side, Split, SplitSide, WindowsChanged, documents,
-    drag_icon, drop, panel_menu,
+    AnyPanel, Arrangement, DividerId, Document, Documents, Framing, Joinable, Layout, Maximize,
+    Member, Pane, PaneEvent, Regions, Removal, Role, Shared, Side, Split, SplitSide,
+    WindowsChanged, documents, drag_icon, drop, panel_menu,
 };
 use bviz_ui_components::gesture::Pointer;
 use bviz_ui_components::{
@@ -346,6 +346,9 @@ pub struct Workspace {
     /// Draws the window afresh as the session's windows open and close, which
     /// changes where a panel of this one can be carried to.
     _windows_changed: Subscription,
+    /// Draws the window afresh as the registry changes, which renames a
+    /// document whose playback bar it may show.
+    _documents_changed: Subscription,
 }
 
 impl Workspace {
@@ -361,6 +364,7 @@ impl Workspace {
         let documents_menu = cx.new(|cx| DocumentsMenu::new(this, window, cx));
         let documents = Documents::global(cx);
         let windows_changed = cx.subscribe(&documents, |_, _, _: &WindowsChanged, cx| cx.notify());
+        let documents_changed = cx.observe(&documents, |_, _, cx| cx.notify());
         let mut workspace = Self {
             app_name: app_name.into(),
             window_focus: cx.focus_handle(),
@@ -376,6 +380,7 @@ impl Workspace {
             panel_menu: None,
             playback: None,
             _windows_changed: windows_changed,
+            _documents_changed: documents_changed,
         };
         for pane in panes {
             workspace.watch(&pane, window, cx);
@@ -411,6 +416,28 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Self {
         Self::new(app_name, Document::open(first, others, cx), window, cx)
+    }
+
+    /// Joins the files `open` makes to the open document `to` names, as
+    /// [`Documents::join`] does, and lays their views out here as
+    /// [`placement`] puts them. `Err` hands `open` back unrun where the
+    /// document has closed.
+    pub fn join_document<F>(
+        &mut self,
+        to: &Joinable,
+        open: F,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), F>
+    where
+        F: FnOnce(&Shared, &mut Window, &mut App) -> (Member, Vec<Member>),
+    {
+        let joined = Documents::global(cx)
+            .update(cx, |documents, cx| documents.join(to, open, window, cx))?;
+        for panel in joined {
+            self.add_panel(panel, window, cx);
+        }
+        Ok(())
     }
 
     pub fn active_pane(&self) -> &Entity<Pane> {
@@ -1296,9 +1323,10 @@ impl Workspace {
         }
     }
 
-    /// The bar driving the clock `panel`'s document plays back on, kept while
-    /// the active panel's document stays the same one, and `None` for a
-    /// document that does not play back.
+    /// The bar driving the clock `panel`'s document plays back on, labelled
+    /// with the name the document goes by, kept while the active panel's
+    /// document stays the same one, and `None` for a document that does not
+    /// play back.
     fn playback_bar(
         &mut self,
         panel: &AnyPanel,
@@ -1309,12 +1337,13 @@ impl Workspace {
             self.playback = None;
             return None;
         };
-        let current = self
-            .playback
-            .as_ref()
-            .is_some_and(|bar| *bar.read(cx).clock() == clock);
-        if !current {
-            self.playback = Some(cx.new(|cx| PlaybackBar::new(name, clock, cx)));
+        match self.playback.as_ref() {
+            Some(bar) if *bar.read(cx).clock() == clock => {
+                if *bar.read(cx).name() != name {
+                    bar.update(cx, |bar, cx| bar.rename(name, cx));
+                }
+            }
+            _ => self.playback = Some(cx.new(|cx| PlaybackBar::new(name, clock, cx))),
         }
         self.playback.clone()
     }

@@ -187,6 +187,8 @@ struct OpenWindow {
 /// finds it.
 pub struct Joinable {
     document: DocumentId,
+    /// The invocation the document was found by.
+    invocation: InvocationId,
     /// The kinds of the views its files show, in their order.
     views: Vec<ViewKind>,
 }
@@ -361,6 +363,33 @@ impl<S> Registered<S> {
         self.name.listed_as(&self.first.file)
     }
 
+    /// Appends `members` to the document's files, numbered by `files` after
+    /// every file opened before them, and lists a document that was a file's
+    /// alone under the label of `invocation`, numbered by `joined`, from here
+    /// on. The place of the first file appended among the document's.
+    fn append(
+        &mut self,
+        invocation: &InvocationId,
+        members: impl IntoIterator<Item = Member>,
+        files: &mut Numbering,
+        joined: &mut Numbering,
+    ) -> usize {
+        let start = 1 + self.rest.len();
+        let held = members
+            .into_iter()
+            .map(|member| numbered_file(files, member));
+        self.rest.extend(held.map(|held| held.registered()));
+        if let Name::File { .. } = self.name {
+            let label = invocation_label(invocation);
+            let ordinal = joined.take(&label);
+            self.name = Name::Invocation {
+                id: invocation.clone(),
+                label: numbered(label, ordinal),
+            };
+        }
+        start
+    }
+
     /// The document as a reader choosing among what is open is given it,
     /// `state` saying what each view has on screen. The views are in the order
     /// the document's files give them.
@@ -446,14 +475,7 @@ impl<S> Registry<S> {
     fn numbered(&mut self, document: DocumentOf<S>) -> Registration<S> {
         let DocumentOf { members, shared } = document;
         let files = &mut self.files;
-        let mut held = |member: Member| Held {
-            file: FileName {
-                ordinal: files.take(&member.label),
-                label: member.label,
-            },
-            first: member.first,
-            rest: member.rest,
-        };
+        let mut held = |member: Member| numbered_file(files, member);
         match members {
             Members::Alone { member, invocation } => {
                 let plays = member.plays_alone;
@@ -539,6 +561,53 @@ impl Documents {
             following.extend(more);
         }
         (lead, following)
+    }
+
+    /// Joins the files `open` makes to the document `to` names, sharing what
+    /// that document's files share, and mints a panel for each of their views,
+    /// in the order the files and their views are given. The document's clock
+    /// is joined before `open` runs, so the readers it opens place their times
+    /// on the clock of an invocation. `Err` hands `open` back unrun where the
+    /// document has closed, for the caller to open the files otherwise.
+    pub fn join<F>(
+        &mut self,
+        to: &Joinable,
+        open: F,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<Vec<AnyPanel>, F>
+    where
+        F: FnOnce(&Shared, &mut Window, &mut App) -> (Member, Vec<Member>),
+    {
+        let Some(at) = self.position(to.document) else {
+            return Err(open);
+        };
+        let shared = self.documents[at].shared.clone();
+        shared.clock().update(cx, |clock, cx| clock.join(cx));
+        let (first, rest) = open(&shared, window, cx);
+        let registered = &mut self.documents[at];
+        let start = registered.append(
+            &to.invocation,
+            iter::once(first).chain(rest),
+            &mut self.files,
+            &mut self.joined,
+        );
+        let joined = || registered.members().enumerate().skip(start);
+        let mut minted = Vec::with_capacity(joined().map(|(_, held)| held.view_count()).sum());
+        for (member, held) in joined() {
+            let (first, more) = held.mint(to.document, cx);
+            minted.extend(iter::once(first).chain(more).map(|panel| (member, panel)));
+        }
+        for (member, panel) in &minted {
+            let kind = panel.view_kind();
+            let view = ViewId {
+                member: *member,
+                kind,
+            };
+            self.watch(to.document, view, panel, cx);
+        }
+        cx.notify();
+        Ok(minted.into_iter().map(|(_, panel)| panel).collect())
     }
 
     /// Shows `view` of `document` in `workspace`: the panel already showing it,
@@ -786,8 +855,25 @@ impl<S> Registry<S> {
         }
         Some(Joinable {
             document: found.id,
+            invocation: id.clone(),
             views,
         })
+    }
+
+    fn position(&self, document: DocumentId) -> Option<usize> {
+        self.documents.iter().position(|held| held.id == document)
+    }
+}
+
+/// `member` as a file of a document, its label numbered by `files`.
+fn numbered_file(files: &mut Numbering, member: Member) -> Held<ViewSpec> {
+    Held {
+        file: FileName {
+            ordinal: files.take(&member.label),
+            label: member.label,
+        },
+        first: member.first,
+        rest: member.rest,
     }
 }
 
@@ -1619,5 +1705,105 @@ mod tests {
             registered.name.plays()
         };
         assert_eq!([still, console, joined].map(plays), [false, true, true]);
+    }
+
+    /// The document `id` names, as a registry lists it while no panel shows
+    /// a view: its name and its views.
+    fn listing(registry: &TestRegistry, id: DocumentId) -> (String, Vec<ViewId>) {
+        let registered = registry.registered(id).expect("an open document");
+        let listed = registered.listed(&mut |_| ViewState::Closed);
+        let views = listed.views.iter().map(|view| view.id).collect();
+        (listed.label.to_string(), views)
+    }
+
+    /// Appends `members` to the document `to` names, as joining it does, and
+    /// gives the place of the first among the document's files.
+    fn append(registry: &mut TestRegistry, to: &Joinable, members: Vec<Member>) -> usize {
+        let at = registry.position(to.document).expect("an open document");
+        let (files, joined) = (&mut registry.files, &mut registry.joined);
+        registry.documents[at].append(&to.invocation, members, files, joined)
+    }
+
+    /// A file by itself that another of its invocation joins becomes that
+    /// invocation's document: listed under its label, playing back, and
+    /// holding its first file's views where they were, the joining file's
+    /// after them.
+    #[test]
+    fn a_file_joined_by_another_of_its_invocation_becomes_the_invocation_s() {
+        let mut registry = TestRegistry::new();
+        let profile =
+            DocumentOf::alone(profile_member("build.profile.gz"), Some(id("a5f7f3e6")), ());
+        let opened = open_unshown(&mut registry, profile);
+        let to = registry
+            .by_invocation(&id("a5f7f3e6"))
+            .expect("the invocation");
+        assert_eq!(
+            append(&mut registry, &to, vec![member("build.bep", &[CONSOLE])]),
+            1
+        );
+        let (name, views) = listing(&registry, opened);
+        assert_eq!(name, "Invocation a5f7f3e6");
+        assert_eq!(
+            views,
+            [
+                ViewId::for_test(0, TIMELINE),
+                ViewId::for_test(0, FLAME),
+                ViewId::for_test(1, CONSOLE),
+            ]
+        );
+        let registered = registry.registered(opened).expect("an open document");
+        assert!(registered.name.plays());
+        assert_eq!(
+            registry.joined_name(opened),
+            Some("Invocation a5f7f3e6".into())
+        );
+    }
+
+    /// A document renamed on joining takes the next number of its
+    /// invocation's label, as one opened joined does.
+    #[test]
+    fn a_renamed_document_is_numbered_among_the_joined_ones() {
+        let mut registry = TestRegistry::new();
+        open_unshown(&mut registry, session("a5f7f3e6", "a.profile.gz"));
+        let profile = DocumentOf::alone(profile_member("b.profile.gz"), Some(id("a5f7f3e6")), ());
+        let lone = open_unshown(&mut registry, profile);
+        let to = Joinable {
+            document: lone,
+            invocation: id("a5f7f3e6"),
+            views: Vec::new(),
+        };
+        append(&mut registry, &to, vec![member("build.bep", &[CONSOLE])]);
+        assert_eq!(listing(&registry, lone).0, "Invocation a5f7f3e6 (2)");
+    }
+
+    /// Files joining an invocation's document leave its name as it is, and are
+    /// numbered among every file opened before them.
+    #[test]
+    fn files_joining_an_invocation_s_document_keep_its_name() {
+        let mut registry = TestRegistry::new();
+        let joined = open_unshown(&mut registry, session("a5f7f3e6", "build.profile.gz"));
+        let to = registry
+            .by_invocation(&id("a5f7f3e6"))
+            .expect("the invocation");
+        let joining = vec![
+            member("aquery.pb", &[GRAPH]),
+            member("build.bep", &[CONSOLE]),
+        ];
+        assert_eq!(append(&mut registry, &to, joining), 2);
+        assert_eq!(listing(&registry, joined).0, "Invocation a5f7f3e6");
+        let registered = registry.registered(joined).expect("an open document");
+        let files: Vec<String> = registered
+            .members()
+            .map(|held| held.file.numbered().to_string())
+            .collect();
+        assert_eq!(
+            files,
+            [
+                "build.profile.gz",
+                "build.bep",
+                "aquery.pb",
+                "build.bep (2)"
+            ]
+        );
     }
 }

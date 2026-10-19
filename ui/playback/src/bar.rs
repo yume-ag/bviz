@@ -80,6 +80,16 @@ impl PlaybackBar {
         &self.clock
     }
 
+    pub fn name(&self) -> &SharedString {
+        &self.name
+    }
+
+    /// Labels the bar with `name`, for a document that goes by another.
+    pub fn rename(&mut self, name: SharedString, cx: &mut Context<Self>) {
+        self.name = name;
+        cx.notify();
+    }
+
     /// Seeks to `fraction` of the way through the range. Grabbing the scrubber
     /// pauses; the drag that follows only seeks, so a play toggled from the
     /// keyboard mid-drag stands.
