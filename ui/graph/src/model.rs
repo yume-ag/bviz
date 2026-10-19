@@ -896,7 +896,7 @@ impl GraphModel {
             move || placing.join(),
             |model, placed, cx| match land(&mut model.source, placed, landing) {
                 Some(map) => {
-                    derive_levels(map, cx);
+                    derive_levels(map, cx.background_executor());
                     cx.emit(MapPlaced);
                 }
                 None => model.replaced(cx),
