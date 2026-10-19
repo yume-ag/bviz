@@ -13,8 +13,9 @@ use crate::{
 };
 use bviz_ui_components::gesture::Pointer;
 use bviz_ui_components::{
-    Divider, DragEnd, GestureGroup, KeyScope, KeyStyle, KeysHelp, Menu, MenuEvent, action_label,
-    declare_scopes, declared_scopes, keys_in_effect, overlay_canvas, text_input, track_drag,
+    Button, Divider, DragEnd, GestureGroup, KeyScope, KeyStyle, KeysHelp, Menu, MenuEvent,
+    action_label, declare_scopes, declared_scopes, keys_in_effect, note_strip, overlay_canvas,
+    text_input, track_drag,
 };
 use bviz_ui_playback::{
     Clock, KEY_CONTEXT as PLAYBACK_KEY_CONTEXT, PlayPause, PlaybackBar, SeekEnd, SeekStart,
@@ -138,6 +139,9 @@ const MARK_FILL: f32 = 0.3;
 /// puts over the window, so that the menu stands over everything the window
 /// holds.
 const MENU_LAYER: usize = 1;
+
+/// What the control dismissing a note says it does.
+const DISMISS_NOTE: &str = "Dismiss";
 
 pub(crate) fn register_keys(cx: &mut App) {
     declare_scopes(
@@ -510,6 +514,14 @@ fn mark_revealed(revealed: Vec<Entity<Pane>>, cx: &mut Context<Workspace>) {
     cx.notify();
 }
 
+/// Something a window tells its user until dismissed.
+struct Note {
+    /// Names the note apart from every other the window has been told, so its
+    /// dismissal reaches it whichever notes go before it.
+    id: u64,
+    text: SharedString,
+}
+
 /// What a window shows below its title bar.
 enum Body {
     /// No panel at all: the window stands open for documents to be opened
@@ -543,6 +555,10 @@ pub struct Workspace {
     /// The bar driving the clock of the active panel's document, while that
     /// document plays back.
     playback: Option<Entity<PlaybackBar>>,
+    /// What the window has to tell its user, each shown until dismissed.
+    notes: Vec<Note>,
+    /// How many notes the window has been told, which numbers the next.
+    notes_told: u64,
     /// Draws the window afresh as the session's windows open and close, which
     /// changes where a panel of this one can be carried to.
     _windows_changed: Subscription,
@@ -584,6 +600,8 @@ impl Workspace {
             body_bounds: None,
             carrying: Carrying::new(),
             playback: None,
+            notes: Vec::new(),
+            notes_told: 0,
             _windows_changed: windows_changed,
             _documents_changed: documents_changed,
         };
@@ -720,6 +738,50 @@ impl Workspace {
             self.add_panel(panel, window, cx);
         }
         Ok(())
+    }
+
+    /// Shows `note` above the window's panes until the user dismisses it.
+    pub fn tell(&mut self, note: impl Into<SharedString>, cx: &mut Context<Self>) {
+        let id = self.notes_told;
+        self.notes_told += 1;
+        self.notes.push(Note {
+            id,
+            text: note.into(),
+        });
+        cx.notify();
+    }
+
+    /// A strip for each note the window holds, with the control dismissing it.
+    fn note_strips(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Vec<Div> {
+        let mut strips = Vec::with_capacity(self.notes.len());
+        for note in &self.notes {
+            let this = cx.weak_entity();
+            let id = note.id;
+            let dismiss = Button::new(
+                ElementId::NamedInteger("workspace-note-dismiss".into(), id),
+                move |_, _, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.notes.retain(|note| note.id != id);
+                        cx.notify();
+                    })
+                    .ok();
+                },
+            )
+            .ghost()
+            .icon("x")
+            .compact()
+            .tooltip(DISMISS_NOTE);
+            strips.push(
+                note_strip(note.text.clone(), colors)
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(dismiss),
+            );
+        }
+        strips
     }
 
     pub fn active_pane(&self) -> Option<&Entity<Pane>> {
@@ -2504,11 +2566,12 @@ impl Render for Workspace {
             .child(self.body_element(&colors, cx))
             .child(measure_body(cx));
         let playback = self.playback_bar(panel, cx);
+        let notes = self.note_strips(&colors, cx);
         let key_context = self.key_context(cx);
         let chrome = Chrome::new(&self.window_focus)
             .title(window_title(&self.app_name, panel))
             .menu(self.documents_menu.clone())
-            .child(room_left().child(panes).children(playback));
+            .child(room_left().children(notes).child(panes).children(playback));
         let chrome = match panel.and_then(|panel| panel.status(cx)) {
             Some(status) => chrome.status(status),
             None => chrome,
