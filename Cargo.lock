@@ -928,6 +928,7 @@ dependencies = [
  "bviz_ui_assets",
  "bviz_ui_components",
  "bviz_ui_execlog_args",
+ "bviz_ui_playback",
  "bviz_ui_session",
  "bviz_ui_spawn_phase",
  "bviz_ui_theme",

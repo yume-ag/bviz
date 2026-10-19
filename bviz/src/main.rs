@@ -98,7 +98,7 @@ impl Load {
             Self::Graph(load) => bviz_ui_graph::open(load, session, clock, sharing, window, cx),
             Self::Trace(load) => bviz_ui_trace::open(load, session, clock, window, cx),
             Self::Console(load) => bviz_ui_console::open(load, session, clock, window, cx),
-            Self::ExecLog(load) => bviz_ui_execlog::open(load, session, sharing, window, cx),
+            Self::ExecLog(load) => bviz_ui_execlog::open(load, session, clock, sharing, window, cx),
         }
     }
 }
@@ -109,7 +109,12 @@ fn open(opening: Opening<Load>, window: &mut Window, cx: &mut App) -> Document {
     let shared = Shared::new(cx);
     match opening {
         Opening::Alone { file, invocation } => {
-            let member = file.open(&shared, Sharing::Alone, window, cx);
+            let sharing = if invocation.is_some() {
+                Sharing::Invocation
+            } else {
+                Sharing::Alone
+            };
+            let member = file.open(&shared, sharing, window, cx);
             Document::alone(member, invocation, shared)
         }
         Opening::Invocation {

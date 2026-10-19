@@ -3,12 +3,15 @@
 use bviz_invocation::{ReporterId, Session};
 use gpui::{App, Context, Entity, Subscription};
 
-/// Whether a file opens as one of an invocation's outputs, whose views read
-/// what it tells its session.
+/// Whether other outputs of an invocation read, or may come to read, what a
+/// file tells its session.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Sharing {
-    /// A file in a document of its own, whose session no other file reads.
+    /// A file in a document of its own that no other file joins, as it names
+    /// no invocation.
     Alone,
+    /// A file of an invocation's document, or alone in one that the other
+    /// outputs of the invocation it names may join.
     Invocation,
 }
 
