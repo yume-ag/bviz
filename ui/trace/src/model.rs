@@ -160,11 +160,34 @@ fn repo_names(profile: &Profile) -> RepoNames {
     RepoNames::of_labels(targets.into_iter().map(|target| profile.str(target)))
 }
 
+/// How a profile is shown from its first paint on, derived with its read off
+/// the UI thread.
+struct Presentation {
+    /// The names the repositories the profile's labels name are shown by.
+    repos: RepoNames,
+    /// The full thread/counter lane layout, which the chart restacks into
+    /// groups.
+    lanes: LaneLayout,
+}
+
+impl Presentation {
+    fn of(profile: &Profile) -> Presentation {
+        let t = bviz_time::now();
+        let lanes = lay_out_lanes(profile, &METRICS);
+        if std::env::var_os("BVIZ_TRACE_TIMING").is_some() {
+            eprintln!("[timing] lay_out_lanes: {:.3}s", t.elapsed().as_secs_f64());
+        }
+        Presentation {
+            repos: repo_names(profile),
+            lanes,
+        }
+    }
+}
+
 /// A loaded profile with what is derived from it once for every reader of it.
 pub(crate) struct LoadedProfile {
     flamer: Arc<TrackFlamer>,
-    /// The names the repositories the profile's labels name are shown by.
-    repos: RepoNames,
+    presentation: Presentation,
     working_lanes: Derived<WorkingLanes>,
     critical_path: TracedPath,
     /// Derives the profile's action timings and attempts and reports them to
@@ -325,7 +348,7 @@ impl LoadedProfile {
     /// to the model of `cx`, its critical path joined to what `session` holds.
     fn new(
         profile: Profile,
-        repos: RepoNames,
+        presentation: Presentation,
         session: &Entity<Session>,
         cx: &mut Context<TraceModel>,
     ) -> LoadedProfile {
@@ -353,18 +376,18 @@ impl LoadedProfile {
                 working_lanes: deriving,
                 critical_path: tracing,
             },
-            repos,
+            presentation,
         )
     }
 
     fn deriving(
         flamer: Arc<TrackFlamer>,
         derivations: Derivations,
-        repos: RepoNames,
+        presentation: Presentation,
     ) -> LoadedProfile {
         LoadedProfile {
             flamer,
-            repos,
+            presentation,
             working_lanes: Derived::Deriving {
                 _derivation: derivations.working_lanes,
             },
@@ -417,20 +440,6 @@ pub(crate) enum TrackPick {
 /// plus the layouts and aggregates cached from those.
 pub(crate) struct TraceState {
     source: Source,
-    /// The full thread/counter lane layout for the loaded profile, built on first
-    /// use. It depends only on the immutable profile, so it is cleared only when a
-    /// new profile loads.
-    ///
-    /// This and the two layouts derived from it are the model's lazy caches, and
-    /// the cell around each is what keeps their readers read-only: every hit-test
-    /// and paint asks for a layout through a shared `&TraceModel`, several of them
-    /// from inside a `read` of a panel that holds the model, where no `&mut` to
-    /// the model can be taken. Filling on demand through the cell keeps
-    /// [`Self::chart_lanes`] callable from those paths; the alternative is either
-    /// an exclusive borrow threaded through every read helper or building the
-    /// layouts eagerly on each visibility change, which would move the cost of
-    /// [`lay_out_lanes`] onto the load path.
-    lanes: RefCell<Option<Rc<LaneLayout>>>,
     /// Which tracks the flame chart draws, indexed by `profile.threads()` order.
     visible_tracks: Vec<bool>,
     /// [`shared_names`] over the loaded profile, which counting the names of
@@ -461,8 +470,8 @@ pub(crate) struct TraceState {
     /// The track a shift-click range-selection extends from, if any.
     select_anchor: Option<usize>,
     /// The lane layout restricted to the visible tracks and restacked into
-    /// lane-class groups, derived from `lanes` and cleared whenever the
-    /// [`GroupLayoutState`] it was built under moves.
+    /// lane-class groups, derived from the loaded profile's full layout and
+    /// cleared whenever the [`GroupLayoutState`] it was built under moves.
     visible_lanes: RefCell<Option<Rc<ChartLanes>>>,
     /// The group headers and show-more rows over `visible_lanes`, built and
     /// cleared alongside it.
@@ -529,19 +538,20 @@ impl TraceModel {
             cx,
             move || {
                 let profile = profile.join()?;
-                let repos = repo_names(profile.get());
-                Ok((profile, repos))
+                let presentation = Presentation::of(profile.get());
+                Ok((profile, presentation))
             },
-            |model, result: Result<(Recorded<Profile>, RepoNames), String>, cx| {
-                let source = match result {
-                    Ok((profile, repos)) => {
-                        let session = model.session().clone();
-                        Source::Loaded(
-                            profile.map(|profile| LoadedProfile::new(profile, repos, &session, cx)),
-                        )
-                    }
-                    Err(err) => Source::Failed(err),
-                };
+            |model, result: Result<(Recorded<Profile>, Presentation), String>, cx| {
+                let source =
+                    match result {
+                        Ok((profile, presentation)) => {
+                            let session = model.session().clone();
+                            Source::Loaded(profile.map(|profile| {
+                                LoadedProfile::new(profile, presentation, &session, cx)
+                            }))
+                        }
+                        Err(err) => Source::Failed(err),
+                    };
                 model.set_source(source, cx);
                 model.place_on_clock(cx);
             },
@@ -895,7 +905,6 @@ impl TraceState {
     fn new() -> Self {
         Self {
             source: Source::Loading,
-            lanes: RefCell::new(None),
             visible_tracks: Vec::new(),
             shared_track_names: Vec::new(),
             selected_tracks: Vec::new(),
@@ -943,7 +952,7 @@ impl TraceState {
     /// The names the loaded profile's repositories are shown by.
     pub(crate) fn repos(&self) -> Option<&RepoNames> {
         match &self.source {
-            Source::Loaded(loaded) => Some(&loaded.get().repos),
+            Source::Loaded(loaded) => Some(&loaded.get().presentation.repos),
             _ => None,
         }
     }
@@ -1090,7 +1099,6 @@ impl TraceState {
     fn replace_source(&mut self, source: Source, session: &mut Session) -> bool {
         let Self {
             source: replaced,
-            lanes,
             visible_tracks,
             shared_track_names,
             selected_tracks,
@@ -1107,7 +1115,6 @@ impl TraceState {
             aggregates,
             agg,
         } = self;
-        lanes.get_mut().take();
         visible_lanes.get_mut().take();
         group_chrome.get_mut().take();
         *aggregates = None;
@@ -1133,21 +1140,6 @@ impl TraceState {
         session.chosen().is_some() && session.choose(None)
     }
 
-    /// The full lane layout for the loaded profile, built on first use and reused
-    /// across paints and mouse handlers. `None` until a profile is loaded.
-    fn full_lane_layout(&self) -> Option<Rc<LaneLayout>> {
-        let profile = self.profile()?;
-        if self.lanes.borrow().is_none() {
-            let t = bviz_time::now();
-            let layout = lay_out_lanes(profile, &METRICS);
-            if std::env::var_os("BVIZ_TRACE_TIMING").is_some() {
-                eprintln!("[timing] lay_out_lanes: {:.3}s", t.elapsed().as_secs_f64());
-            }
-            *self.lanes.borrow_mut() = Some(Rc::new(layout));
-        }
-        self.lanes.borrow().clone()
-    }
-
     /// The lanes the flame chart draws: the full layout restricted to the
     /// visible tracks and restacked into lane-class groups, cached until the
     /// state it is built under moves. Every paint and hit-test
@@ -1166,19 +1158,21 @@ impl TraceState {
     }
 
     /// Builds and caches the grouped lane layout and its chrome if stale.
+    ///
+    /// It fills their cells through `&self` because every hit-test and paint
+    /// asks for a layout through a shared `&TraceModel`, several of them from
+    /// inside a `read` of a panel that holds the model, where no `&mut` to the
+    /// model can be taken.
     fn ensure_grouped(&self) {
         if self.visible_lanes.borrow().is_some() {
             return;
         }
-        let Some(full) = self.full_lane_layout() else {
-            return;
-        };
-        let Some(profile) = self.profile() else {
+        let Some(loaded) = self.loaded() else {
             return;
         };
         let (layout, chrome) = build_grouped_layout(
-            profile,
-            &full,
+            loaded.profile(),
+            &loaded.presentation.lanes,
             &GroupLayoutState {
                 visible: &self.visible_tracks,
                 collapsed: &self.collapsed_groups,
@@ -1334,7 +1328,7 @@ fn clock_source(profile: &Profile) -> Option<bviz_ui_playback::Source> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Chosen, Derivations, Joined, LoadedProfile, Recorded, RepoNames, TraceState, TracedPath,
+        Chosen, Derivations, Joined, LoadedProfile, Presentation, Recorded, TraceState, TracedPath,
         Tracing, clock_source, critical_steps, nearly_critical_actions, step_slices,
     };
     use crate::groups::STACKED_GROUPS;
@@ -1440,7 +1434,7 @@ mod tests {
         model.source = Source::Loaded(Recorded::Complete(LoadedProfile::deriving(
             loaded.clone(),
             derivations(),
-            RepoNames::default(),
+            Presentation::of(loaded.profile()),
         )));
         assert!(!model.adopt_working_lanes(&replaced, replaced.working_lanes()));
         assert!(model.working_lanes().is_none());
@@ -1461,7 +1455,7 @@ mod tests {
         model.source = Source::Loaded(Recorded::Complete(LoadedProfile::deriving(
             loaded.clone(),
             derivations(),
-            RepoNames::default(),
+            Presentation::of(loaded.profile()),
         )));
         assert!(!model.adopt_critical_path(replaced.profile(), unlogged, None));
         assert!(matches!(
@@ -1486,7 +1480,7 @@ mod tests {
         model.source = Source::Loaded(Recorded::Complete(LoadedProfile::deriving(
             loaded.clone(),
             derivations(),
-            RepoNames::default(),
+            Presentation::of(loaded.profile()),
         )));
         assert!(model.adopt_critical_path(loaded.profile(), unlogged, None));
 
@@ -1513,13 +1507,13 @@ mod tests {
         model.source = Source::Loaded(Recorded::Complete(LoadedProfile::deriving(
             loaded.clone(),
             derivations(),
-            RepoNames::default(),
+            Presentation::of(loaded.profile()),
         )));
         assert!(!model.cut_off());
         model.source = Source::Loaded(Recorded::CutOff(LoadedProfile::deriving(
             loaded.clone(),
             derivations(),
-            RepoNames::default(),
+            Presentation::of(loaded.profile()),
         )));
         assert!(model.cut_off());
         assert!(
@@ -1539,7 +1533,7 @@ mod tests {
         model.source = Source::Loaded(Recorded::Complete(LoadedProfile::deriving(
             loaded.clone(),
             derivations(),
-            RepoNames::default(),
+            Presentation::of(loaded.profile()),
         )));
         assert!(model.adopt_critical_path(loaded.profile(), ungraphed, None));
 
@@ -1578,7 +1572,7 @@ mod tests {
         model.source = Source::Loaded(Recorded::Complete(LoadedProfile::deriving(
             loaded.clone(),
             derived,
-            RepoNames::default(),
+            Presentation::of(loaded.profile()),
         )));
         assert!(model.adopt_critical_path(loaded.profile(), graphed, None));
         let Some(loaded_profile) = model.loaded() else {
@@ -1596,8 +1590,11 @@ mod tests {
         let logged = Joined::of(&session);
         let mut model = model();
         let loaded = flamer();
-        let mut loaded_profile =
-            LoadedProfile::deriving(loaded.clone(), derivations(), RepoNames::default());
+        let mut loaded_profile = LoadedProfile::deriving(
+            loaded.clone(),
+            derivations(),
+            Presentation::of(loaded.profile()),
+        );
         loaded_profile.critical_path.retrace(tracing(logged));
         model.source = Source::Loaded(Recorded::Complete(loaded_profile));
         assert!(matches!(
@@ -1656,7 +1653,7 @@ mod tests {
         model.source = Source::Loaded(Recorded::Complete(LoadedProfile::deriving(
             loaded.clone(),
             derivations(),
-            RepoNames::default(),
+            Presentation::of(loaded.profile()),
         )));
         assert!(model.adopt_critical_path(loaded.profile(), Joined::default(), path));
         let tracks = loaded.profile().threads().len();
