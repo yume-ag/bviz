@@ -223,7 +223,6 @@ pub(crate) struct Completions {
     /// The targets, as their indices among `candidates`.
     targets: Vec<u32>,
     patterns: Vec<Pattern>,
-    readable: Readable,
 }
 
 impl Completions {
@@ -241,12 +240,10 @@ impl Completions {
             .collect();
         let labels = targets.iter().map(|&index| &*held.get(index).text);
         let patterns = patterns(labels);
-        let readable = Readable::of(&shared.base, &shared.capabilities);
         Completions {
             candidates,
             targets,
             patterns,
-            readable,
         }
     }
 
@@ -665,12 +662,15 @@ pub(super) fn list(
     let listing = *palette;
     let rows = uniform_list("chip-completions", count, move |range, _, cx| {
         let view = entity.read(cx);
-        let Some(offered) = view.completer.offered.as_ref() else {
+        let (Some(offered), Some(loaded)) = (
+            view.completer.offered.as_ref(),
+            view.model.read(cx).loaded(),
+        ) else {
             return Vec::new();
         };
-        let inputs = offered.completions.shared().inputs.inputs();
+        let inputs = loaded.shared.inputs.inputs();
         let commands: Vec<Command> = inputs.map(command).collect();
-        let readable = offered.completions.get().readable;
+        let readable = loaded.readable;
         range
             .filter_map(|index| {
                 let (completion, row) = offered.row(index)?;

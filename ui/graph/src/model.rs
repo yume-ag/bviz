@@ -18,7 +18,9 @@ use bviz_graph_layout::dominators::{Dominators, Roots, ScopeGraph};
 use bviz_graph_layout::graph::Graph;
 use bviz_graph_layout::lod::{DEFAULT_MAX_EDGES, DEFAULT_MAX_NODES, Overflow};
 use bviz_graph_layout::metrics::{Measurement, Scope, measure};
-use bviz_graph_layout::query_lang::{Evaluation, Exclusion, Outcome, Prefixes, Stack, Universe};
+use bviz_graph_layout::query_lang::{
+    Evaluation, Exclusion, Outcome, Prefixes, Readable, Stack, Universe,
+};
 use bviz_graph_layout::select;
 use bviz_graph_layout::select::labels::LabelIndex;
 use bviz_graph_layout::target_pattern::TargetIndex;
@@ -114,6 +116,8 @@ pub(crate) struct Opening {
 pub(crate) struct Loaded {
     pub(crate) shared: Shared,
     pub(crate) opening: Opening,
+    /// What the graph's inputs state of the data some query functions read.
+    pub(crate) readable: Readable,
     measures: Passes<Scope, Measurement>,
     /// What the build of the graph's invocation reports of its nodes.
     statuses: Statuses,
@@ -178,6 +182,7 @@ impl Loaded {
             completions,
             universe,
             writers,
+            readable: Readable::of(&shared.base, &shared.capabilities),
             shared,
             opening,
             measures: Passes::keeping_all(),
