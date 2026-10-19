@@ -16,7 +16,7 @@ use std::rc::Rc;
 
 /// The priority a menu is deferred at, above that of any other deferred element
 /// a view draws.
-const MENU_PRIORITY: usize = 1;
+pub(crate) const MENU_PRIORITY: usize = 1;
 
 /// The tallest a list stands before it scrolls, short enough that a list of
 /// many rows leaves the window's own edges in view.

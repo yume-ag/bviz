@@ -4,6 +4,7 @@ mod background;
 mod button;
 mod by_room;
 mod canvas;
+pub mod dialog;
 mod divider;
 mod drag;
 mod dropdown;
@@ -103,6 +104,7 @@ pub fn register_keys(cx: &mut App) {
         cx,
         [
             text_input::KEY_CONTEXT,
+            dialog::KEY_CONTEXT,
             multi_select::KEY_CONTEXT,
             dropdown::KEY_CONTEXT,
             keys_help::KEY_CONTEXT,
@@ -110,6 +112,7 @@ pub fn register_keys(cx: &mut App) {
         ],
     );
     keys_help::bind_keys(cx);
+    dialog::bind_keys(cx);
     text_input::bind_keys(cx);
     multi_select::bind_keys(cx);
     dropdown::bind_keys(cx);
