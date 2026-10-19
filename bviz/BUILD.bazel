@@ -14,9 +14,11 @@ rust_binary(
         "//alloc",
         "//cli",
         "//invocation",
+        "//sniff",
         "//ui/console:console_lib",
         "//ui/execlog:execlog_lib",
         "//ui/graph:graph_lib",
+        "//ui/graph/args",
         "//ui/session",
         "//ui/trace:trace_lib",
         "//ui/workspace",
@@ -29,7 +31,9 @@ rust_binary(
 rust_test(
     name = "bviz_test",
     size = "small",
+    compile_data = ["//terminal:testdata/sample.bep"],
     crate = ":bviz",
+    rustc_env = {"SAMPLE_BEP": "$(execpath //terminal:testdata/sample.bep)"},
     deps = ["//ui/components"],
 )
 

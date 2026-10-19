@@ -83,7 +83,7 @@ impl<T> Gathering<T> {
     fn invocation(&mut self, id: &InvocationId) -> Option<&mut Gathered<T>> {
         match self {
             Self::Invocation(gathered) if gathered.id == *id => Some(gathered),
-            _ => None,
+            Self::Invocation(_) | Self::Alone { .. } => None,
         }
     }
 

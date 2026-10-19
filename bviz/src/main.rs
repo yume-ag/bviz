@@ -1,16 +1,21 @@
-//! The bviz window: a document per file named on the command line, the files
-//! of one Bazel invocation sharing one.
+//! The bviz window: a document per file named on the command line or to a
+//! running window, the files of one Bazel invocation sharing one.
 
+mod classify;
 mod group;
 
 use bviz_cli::{Cli, Request, Source, Sources};
 use bviz_input::Input;
 use bviz_invocation::InvocationId;
+use bviz_ui_graph_args::GraphSource;
 use bviz_ui_session::Sharing;
-use bviz_ui_workspace::{Document, Member, Shared};
+use bviz_ui_workspace::{Document, Member, PathOpener, Shared, Workspace};
 use clap::Parser;
-use gpui::{App, Window};
+use classify::Classified;
+use gpui::{App, Context, WeakEntity, Window};
 use group::{File, Given, Kind, Opening};
+use std::iter;
+use std::path::PathBuf;
 
 #[global_allocator]
 static GLOBAL: bviz_alloc::MiMalloc = bviz_alloc::MiMalloc;
@@ -76,6 +81,15 @@ impl Load {
         }
     }
 
+    /// The load reading `input`, a file of `kind`.
+    fn of(kind: Kind, input: Input) -> Self {
+        match kind {
+            Kind::Profile => Self::Trace(input.into()),
+            Kind::Bep => Self::Console(input.into()),
+            Kind::ExecLog => Self::ExecLog(input.into()),
+        }
+    }
+
     fn start_all(sources: Sources) -> Given<Self> {
         let start_each = |files: Vec<Source>| files.into_iter().map(Self::start).collect();
         match sources {
@@ -135,6 +149,118 @@ fn open(opening: Opening<Load>, window: &mut Window, cx: &mut App) -> Document {
     }
 }
 
+/// Opens `paths`, named to the window `into` frames, once a background task
+/// has told what each holds.
+fn open_paths(paths: Vec<PathBuf>, into: WeakEntity<Workspace>, window: &mut Window, cx: &mut App) {
+    let classifying = cx
+        .background_executor()
+        .spawn(async move { classify::classify(paths) });
+    window
+        .spawn(cx, async move |cx| {
+            let classified = classifying.await;
+            into.update_in(cx, |workspace, window, cx| {
+                place(classified, workspace, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+}
+
+/// Opens what `classified` names into `workspace`, as documents grouped as
+/// the command line groups them, and tells the user of each file it cannot
+/// open.
+fn place(
+    classified: Classified,
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let Classified {
+        graph,
+        further_graphs,
+        files,
+        unknown,
+        unreadable,
+    } = classified;
+    if !unknown.is_empty() {
+        workspace.tell(
+            format!(
+                "Not opened, holding nothing bviz reads: {}",
+                listed(&unknown)
+            ),
+            cx,
+        );
+    }
+    for (path, error) in unreadable {
+        workspace.tell(format!("Cannot open {}: {error}", path.display()), cx);
+    }
+    let files = files
+        .into_iter()
+        .map(|file| File {
+            file: Load::of(file.kind, file.file),
+            kind: file.kind,
+            invocation: file.invocation,
+        })
+        .collect();
+    let Some(given) = given(graph.source(), files) else {
+        return;
+    };
+    let (first, rest) = group::by_invocation(given);
+    let further = further_graphs.into_iter().map(|graph| Opening::Alone {
+        file: Load::Graph(graph.into()),
+        invocation: None,
+    });
+    let mut documents = Vec::with_capacity(1 + rest.len() + further.len());
+    for opening in iter::once(first).chain(rest).chain(further) {
+        documents.push(open(opening, window, cx));
+    }
+    workspace.open_documents(documents, window, cx);
+}
+
+/// What `graph` and `files` name, `None` where they name nothing.
+fn given(graph: Option<GraphSource>, files: Vec<File<Load>>) -> Option<Given<Load>> {
+    if let Some(graph) = graph {
+        return Some(Given::Graph {
+            graph: Load::Graph(graph.into()),
+            files,
+        });
+    }
+    let mut files = files.into_iter();
+    let first = files.next()?;
+    Some(Given::Files {
+        first,
+        rest: files.collect(),
+    })
+}
+
+/// How many paths a note names before it counts the rest.
+const NAMED_IN_A_NOTE: usize = 3;
+
+const PATH_SEPARATOR: &str = ", ";
+
+/// `paths` in one line: the first [`NAMED_IN_A_NOTE`] of them, and how many
+/// more there are.
+fn listed(paths: &[PathBuf]) -> String {
+    let named = &paths[..paths.len().min(NAMED_IN_A_NOTE)];
+    let more = paths.len() - named.len();
+    let more = (more > 0).then(|| format!(" and {more} more"));
+    let mut line = String::with_capacity(
+        named
+            .iter()
+            .map(|path| path.as_os_str().len() + PATH_SEPARATOR.len())
+            .sum::<usize>()
+            + more.as_ref().map_or(0, String::len),
+    );
+    for path in named {
+        if !line.is_empty() {
+            line.push_str(PATH_SEPARATOR);
+        }
+        line.push_str(&path.to_string_lossy());
+    }
+    line.extend(more);
+    line
+}
+
 fn main() {
     // SAFETY: the first statement of main, before any other thread starts.
     unsafe { bviz_alloc::retain_freed_memory_across_load() };
@@ -157,7 +283,7 @@ fn open_window(openings: Vec<Opening<Load>>) {
         bviz_ui_workspace::WINDOW_SIZE,
         openings,
         open,
-        None,
+        Some(PathOpener::new(open_paths)),
         &[
             bviz_ui_graph::register_keys,
             bviz_ui_trace::register_keys,
@@ -234,6 +360,16 @@ mod tests {
                 panic!("{first} and {panel} both call themselves {}", view.as_str());
             }
         }
+    }
+
+    #[test]
+    fn a_note_names_a_few_paths_and_counts_the_rest() {
+        let paths = |names: &[&str]| names.iter().map(PathBuf::from).collect::<Vec<_>>();
+        assert_eq!(listed(&paths(&["a", "b"])), "a, b");
+        assert_eq!(
+            listed(&paths(&["a", "b", "c", "d", "e"])),
+            "a, b, c and 2 more"
+        );
     }
 
     #[test]
