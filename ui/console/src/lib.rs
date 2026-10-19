@@ -72,7 +72,7 @@ pub fn open(
     let label = load.title;
     let model = cx.new(|cx| ConsoleModel::reading(load.stream, session, clock, cx));
     let console = ViewSpec::new(move |cx| cx.new(|cx| ConsolePanel::new(model.clone(), cx)));
-    Member::new(label, console, Vec::new())
+    Member::new(label, console, Vec::new()).playing_alone()
 }
 
 /// Replays the console output of a Bazel build. Each file given opens a replay
@@ -110,7 +110,7 @@ pub fn run() {
                 window,
                 cx,
             );
-            Document::alone(member, None, shared).playing()
+            Document::alone(member, None, shared)
         },
         &[console::register_keys],
     );

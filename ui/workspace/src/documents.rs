@@ -248,6 +248,7 @@ pub(crate) enum Name {
     /// A file opened by itself, listed under its numbered label.
     File {
         invocation: Option<InvocationId>,
+        /// Whether the file has time to play back by itself.
         plays: bool,
     },
     /// Files of the invocation `id`, listed under its label.
@@ -255,7 +256,6 @@ pub(crate) enum Name {
         id: InvocationId,
         /// The invocation's label, its number included.
         label: SharedString,
-        plays: bool,
     },
 }
 
@@ -276,12 +276,13 @@ impl Name {
         }
     }
 
-    /// Whether the document plays back, as it was opened [playing].
-    ///
-    /// [playing]: DocumentOf::playing
+    /// Whether the document plays back: every invocation's does, its files'
+    /// times standing where the wall clock puts them, and a file's alone where
+    /// it has time to play by itself.
     fn plays(&self) -> bool {
         match self {
-            Self::File { plays, .. } | Self::Invocation { plays, .. } => *plays,
+            Self::File { plays, .. } => *plays,
+            Self::Invocation { .. } => true,
         }
     }
 }
@@ -443,11 +444,7 @@ impl<S> Registry<S> {
     /// opened before it. A file opened by itself is listed under its numbered
     /// label, which is how its panels' titles name it.
     fn numbered(&mut self, document: DocumentOf<S>) -> Registration<S> {
-        let DocumentOf {
-            members,
-            shared,
-            plays,
-        } = document;
+        let DocumentOf { members, shared } = document;
         let files = &mut self.files;
         let mut held = |member: Member| Held {
             file: FileName {
@@ -459,6 +456,7 @@ impl<S> Registry<S> {
         };
         match members {
             Members::Alone { member, invocation } => {
+                let plays = member.plays_alone;
                 let first = held(member);
                 Registration {
                     name: Name::File { invocation, plays },
@@ -482,7 +480,6 @@ impl<S> Registry<S> {
                     name: Name::Invocation {
                         id: invocation,
                         label: numbered(label, ordinal),
-                        plays,
                     },
                     first,
                     rest: others,
@@ -1157,7 +1154,6 @@ mod tests {
                 _ => Name::Invocation {
                     id: InvocationId::new(&label).expect("a non-empty id"),
                     label: label.into(),
-                    plays: true,
                 },
             };
             let mut members = members.into_iter();
@@ -1609,16 +1605,15 @@ mod tests {
         assert!(found.shows(CONSOLE));
     }
 
-    /// A document plays back where it was opened playing, whether one file's
-    /// or an invocation's.
+    /// Every invocation's document plays back; a file by itself plays only
+    /// where it has time to play by itself.
     #[test]
-    fn a_document_opened_playing_plays_back() {
+    fn an_invocation_and_a_file_playing_alone_play_back() {
         let mut registry = TestRegistry::new();
         let still = open_unshown(&mut registry, lone(profile_member("build.profile.gz")));
-        let console = lone(member("build.bep", &[CONSOLE])).playing();
+        let console = lone(member("build.bep", &[CONSOLE]).playing_alone());
         let console = open_unshown(&mut registry, console);
-        let joined = session("a5f7f3e6", "a.profile.gz").playing();
-        let joined = open_unshown(&mut registry, joined);
+        let joined = open_unshown(&mut registry, session("a5f7f3e6", "a.profile.gz"));
         let plays = |document| {
             let registered = registry.registered(document).expect("an open document");
             registered.name.plays()

@@ -104,22 +104,13 @@ impl Load {
 }
 
 /// The document `opening` is shown as: a file's own, or an invocation's files
-/// joined, each with a session and a clock of its own. The window offers
-/// playback for a build's console replay alone and for every invocation; one
-/// whose files give it no time to play, such as an execution log with a graph,
-/// shows no playback bar.
+/// joined, each with a session and a clock of its own.
 fn open(opening: Opening<Load>, window: &mut Window, cx: &mut App) -> Document {
     let shared = Shared::new(cx);
     match opening {
         Opening::Alone { file, invocation } => {
-            let plays_alone = matches!(file, Load::Console(_));
             let member = file.open(&shared, Sharing::Alone, window, cx);
-            let document = Document::alone(member, invocation, shared);
-            if plays_alone {
-                document.playing()
-            } else {
-                document
-            }
+            Document::alone(member, invocation, shared)
         }
         Opening::Invocation {
             id,
@@ -134,7 +125,7 @@ fn open(opening: Opening<Load>, window: &mut Window, cx: &mut App) -> Document {
             for load in rest {
                 others.push(open(load));
             }
-            Document::join(id, first, second, others, shared).playing()
+            Document::join(id, first, second, others, shared)
         }
     }
 }

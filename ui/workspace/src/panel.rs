@@ -289,11 +289,27 @@ pub struct Member {
     pub(crate) label: SharedString,
     pub(crate) first: ViewSpec,
     pub(crate) rest: Vec<ViewSpec>,
+    /// Whether the file has time to play back by itself, so a document it
+    /// makes up alone plays back.
+    pub(crate) plays_alone: bool,
 }
 
 impl Member {
     pub fn new(label: SharedString, first: ViewSpec, rest: Vec<ViewSpec>) -> Self {
-        Self { label, first, rest }
+        Self {
+            label,
+            first,
+            rest,
+            plays_alone: false,
+        }
+    }
+
+    /// This file, as one with time to play back by itself.
+    pub fn playing_alone(self) -> Self {
+        Self {
+            plays_alone: true,
+            ..self
+        }
     }
 }
 
@@ -332,9 +348,6 @@ pub type Document = DocumentOf<Shared>;
 pub struct DocumentOf<S> {
     pub(crate) members: Members,
     pub(crate) shared: S,
-    /// Whether the window drives the document's clock from a bar while one of
-    /// its panels is the active one.
-    pub(crate) plays: bool,
 }
 
 pub(crate) enum Members {
@@ -361,7 +374,6 @@ impl<S> DocumentOf<S> {
         Self {
             members: Members::Alone { member, invocation },
             shared,
-            plays: false,
         }
     }
 
@@ -383,16 +395,6 @@ impl<S> DocumentOf<S> {
                 rest,
             },
             shared,
-            plays: false,
-        }
-    }
-
-    /// This document, played back from a bar while one of its panels is the
-    /// active one.
-    pub fn playing(self) -> Self {
-        Self {
-            plays: true,
-            ..self
         }
     }
 }
