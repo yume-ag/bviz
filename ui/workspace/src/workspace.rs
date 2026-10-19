@@ -5,12 +5,14 @@ use crate::gestures::{CHROME_GESTURES, ChromeIntent, chrome_gestures};
 use crate::pane::Handover;
 use crate::panel::keys_focus;
 use crate::panel_menu::{Deed, Standing};
+use crate::path_prompt::{PathPrompt, PathPromptEvent};
 use crate::regions::{Placement, placement};
 use crate::{
     AnyPanel, Arrangement, DividerId, Document, DocumentId, Documents, Framing, Joinable, Layout,
     Maximize, Member, Pane, PaneEvent, PathOpener, Regions, Removal, Role, Shared, Side, Split,
     SplitSide, WindowsChanged, documents, drag_icon, drop, panel_menu,
 };
+use bviz_ui_components::dialog;
 use bviz_ui_components::gesture::Pointer;
 use bviz_ui_components::{
     Button, Divider, DragEnd, GestureGroup, KeyScope, KeyStyle, KeysHelp, Menu, MenuEvent,
@@ -25,9 +27,10 @@ use bviz_ui_shell::Chrome;
 use bviz_ui_theme::ThemeColors;
 use gpui::{
     Action, AnyElement, AnyWindowHandle, App, Axis, Bounds, Canvas, Div, ElementId, Entity,
-    EntityId, FocusHandle, IconScale, IntoElement, KeyBinding, KeyContext, MouseDownEvent,
-    PathPromptOptions, Pixels, PlatformDragEvent, Point, Rems, Render, SharedString, Size,
-    Stateful, Subscription, WeakEntity, Window, actions, deferred, div, point, prelude::*, px,
+    EntityId, FocusHandle, Focusable, IconScale, IntoElement, KeyBinding, KeyContext,
+    MouseDownEvent, PathPromptOptions, Pixels, PlatformDragEvent, Point, Rems, Render,
+    SharedString, Size, Stateful, Subscription, WeakEntity, Window, actions, deferred, div, point,
+    prelude::*, px,
 };
 use std::collections::HashMap;
 use std::iter;
@@ -145,9 +148,6 @@ const MENU_LAYER: usize = 1;
 
 /// What a file chooser's control choosing the files says it does.
 const OPEN: &str = "Open";
-
-/// What a window says where the platform offers no file chooser.
-const NO_CHOOSER: &str = "No file chooser is available to open files with.";
 
 /// What the control dismissing a note says it does.
 const DISMISS_NOTE: &str = "Dismiss";
@@ -541,6 +541,12 @@ struct Note {
     text: SharedString,
 }
 
+/// The window's own dialog asking for paths, and what it answers into.
+struct AskingForPaths {
+    prompt: Entity<PathPrompt>,
+    _answered: Subscription,
+}
+
 /// What a window shows below its title bar.
 enum Body {
     /// No panel at all: the window stands open for documents to be opened
@@ -578,6 +584,8 @@ pub struct Workspace {
     notes: Vec<Note>,
     /// How many notes the window has been told, which numbers the next.
     notes_told: u64,
+    /// The window's own dialog asking for files to open, while it stands open.
+    path_prompt: Option<AskingForPaths>,
     /// Draws the window afresh as the session's windows open and close, which
     /// changes where a panel of this one can be carried to.
     _windows_changed: Subscription,
@@ -621,6 +629,7 @@ impl Workspace {
             playback: None,
             notes: Vec::new(),
             notes_told: 0,
+            path_prompt: None,
             _windows_changed: windows_changed,
             _documents_changed: documents_changed,
         };
@@ -759,8 +768,9 @@ impl Workspace {
         Ok(())
     }
 
-    /// Asks which files to open through the platform's file chooser, and hands
-    /// them to the app's [`PathOpener`].
+    /// Asks which files to open, through the platform's file chooser or, where
+    /// the platform offers none, the window's own dialog, and hands them to the
+    /// app's [`PathOpener`].
     fn open_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !cx.has_global::<PathOpener>() {
             return;
@@ -776,11 +786,30 @@ impl Workspace {
             this.update_in(cx, |workspace, window, cx| match chosen {
                 Ok(Ok(Some(paths))) => workspace.open_paths(paths, window, cx),
                 Ok(Ok(None)) => {}
-                Ok(Err(_)) | Err(_) => workspace.tell(NO_CHOOSER, cx),
+                Ok(Err(_)) | Err(_) => workspace.ask_for_paths(window, cx),
             })
             .ok();
         })
         .detach();
+    }
+
+    /// Opens the window's own dialog asking for the paths of files to open.
+    fn ask_for_paths(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let prompt = cx.new(PathPrompt::new);
+        let answered = cx.subscribe_in(&prompt, window, |workspace, _, event, window, cx| {
+            workspace.path_prompt = None;
+            if let PathPromptEvent::Chosen(paths) = event {
+                workspace.open_paths(paths.clone(), window, cx);
+            }
+            workspace.focus_active_panel(window, cx);
+            cx.notify();
+        });
+        window.focus(&prompt.read(cx).focus_handle(cx), cx);
+        self.path_prompt = Some(AskingForPaths {
+            prompt,
+            _answered: answered,
+        });
+        cx.notify();
     }
 
     /// Hands `paths` to the app's [`PathOpener`] to open into this window.
@@ -2724,11 +2753,18 @@ impl Render for Workspace {
         let body = towards::<FocusUp, MovePanelUp, SplitUp>(body, Side::Top, cx);
         let body = towards::<FocusDown, MovePanelDown, SplitDown>(body, Side::Bottom, cx);
         let dragging = self.panel_drag_overlay(&colors, window, cx);
+        let path_prompt = self.path_prompt.as_ref().map(|asking| {
+            let answer = asking.prompt.focus_handle(cx);
+            dialog::over_window(div().child(asking.prompt.clone()), &answer, window, &colors)
+        });
         let menu = self
             .frame()
             .and_then(|frame| frame.panel_menu.as_ref())
             .map(|open| deferred(open.menu.clone()).with_priority(MENU_LAYER));
-        body.child(chrome).children(dragging).children(menu)
+        let body = body.child(chrome).children(dragging).children(menu);
+        // A sibling of the body, so that no key or action of the workspace's
+        // reaches through the dialog to what it stands over.
+        div().size_full().child(body).children(path_prompt)
     }
 }
 
@@ -3345,6 +3381,33 @@ mod tests {
             OpenFiles
         ));
         assert!(dispatched(bindings(false), "secondary-o", &in_a_panel()).is_none());
+    }
+
+    /// The path dialog is drawn outside the workspace's key context, so with
+    /// focus in its field the window's keys act on nothing it stands over.
+    #[test]
+    fn the_window_keys_reach_nothing_through_the_path_dialog() {
+        let in_the_dialog = [
+            bviz_ui_components::dialog::KEY_CONTEXT.id(),
+            bviz_ui_components::text_input::KEY_CONTEXT.id(),
+        ];
+        assert!(is(
+            dispatched(bindings(true), "secondary-w", &in_a_panel()),
+            ClosePanel
+        ));
+        for keys in [
+            "secondary-w",
+            "secondary-o",
+            "ctrl-tab",
+            "secondary-shift-n",
+        ] {
+            let mut window_keys = bindings(true);
+            window_keys.extend(bviz_ui_shell::bindings());
+            assert!(
+                dispatched(window_keys, keys, &in_the_dialog).is_none(),
+                "{keys}"
+            );
+        }
     }
 
     /// The keys help of a panel the last frame's path to focus left out still

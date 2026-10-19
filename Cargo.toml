@@ -71,6 +71,7 @@ rustc-hash = "2"
 semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+shlex = "2"
 spdx = "0.13"
 zstd = { version = "0.14", default-features = false }
 org-eclipse-elk-alg-layered = { git = "https://github.com/openedges/elk-rs", tag = "v0.11.0+rs.2" }

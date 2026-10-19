@@ -21,6 +21,7 @@ rust_library(
         "//ui/theme",
         "@crates//:clap",
         "@crates//:gpui",
+        "@crates//:shlex",
     ],
 )
 

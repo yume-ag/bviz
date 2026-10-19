@@ -1067,6 +1067,7 @@ dependencies = [
  "bviz_ui_theme",
  "clap",
  "gpui",
+ "shlex",
 ]
 
 [[package]]

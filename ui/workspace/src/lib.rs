@@ -16,6 +16,7 @@ mod opener;
 mod pane;
 mod panel;
 mod panel_menu;
+mod path_prompt;
 mod regions;
 #[cfg(test)]
 mod testing;
