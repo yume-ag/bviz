@@ -121,6 +121,14 @@ impl ExecLog {
         })
     }
 
+    /// The spawns of each mnemonic, whichever runner ran them, in descending
+    /// order of summed total time.
+    pub fn by_mnemonic_of_every_runner(&self) -> Vec<Group<'_>> {
+        self.group(self.spawns.mnemonics(), |spawn| {
+            Some(spawn.mnemonic_index())
+        })
+    }
+
     /// Sums the spawns `key` assigns a name in `names`, skipping those it
     /// assigns none.
     fn group<'a>(
@@ -286,6 +294,18 @@ mod tests {
             ]
         );
         assert!(log.by_mnemonic("worker").is_empty());
+    }
+
+    #[test]
+    fn mnemonics_of_every_runner_sum_across_runners() {
+        let log = sample();
+        assert_eq!(
+            summary(&log.by_mnemonic_of_every_runner()),
+            [
+                ("CppCompile".into(), 4, ms(113)),
+                ("CppLink".into(), 1, ms(30))
+            ]
+        );
     }
 
     #[test]
