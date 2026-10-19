@@ -85,6 +85,11 @@ impl TimeTables {
         cx.notify();
     }
 
+    fn pick_runner(&mut self, runner: usize, cx: &mut Context<Self>) {
+        (self.runner_picker).update(cx, |picker, cx| picker.set_selected(runner, cx));
+        cx.notify();
+    }
+
     fn show(&mut self, list: List, cx: &mut Context<Self>) {
         self.list = list;
         cx.notify();
@@ -120,7 +125,14 @@ impl TimeTables {
             .flex_1()
             .min_h_0()
             .gap_3()
-            .child(runner_table(&COLUMNS, &runners, palette))
+            .child(runner_table(
+                &COLUMNS,
+                &runners,
+                Some(self.runner_picker.read(cx).selected()),
+                palette,
+                cx,
+                Self::pick_runner,
+            ))
             .child(scrolling_table(
                 header,
                 rows,

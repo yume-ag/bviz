@@ -10,7 +10,7 @@ use bviz_execlog::ByteMeasure;
 use bviz_label::names::RepoNames;
 use bviz_label::shown::Parts;
 use bviz_ui_components::amount::{self, bytes};
-use bviz_ui_components::gesture::{Gestures, Pointer};
+use bviz_ui_components::gesture::{Button, Entry, Gestures, Input, Place, Pointer};
 use bviz_ui_components::{
     ByRoom, Dropdown, HintedLabelLine, LabelLine, ListScroll, MenuItem, OverflowRows, Presentation,
     Priority, SCROLLBAR_THICKNESS, Sort, TextTooltip, ToggleGroup, ToggleSegment, ToolbarGroup,
@@ -39,10 +39,18 @@ const NOTE_WIDTH: Pixels = px(110.);
 #[derive(Clone, Copy)]
 pub(crate) enum TableIntent {
     Sort,
+    PickRunner,
 }
 
-pub(crate) const GESTURES: Gestures<TableIntent> =
-    Gestures::new(&[sort_gesture(TableIntent::Sort)]);
+pub(crate) const GESTURES: Gestures<TableIntent> = Gestures::new(&[
+    sort_gesture(TableIntent::Sort),
+    Entry::new(
+        Input::click(Button::Left),
+        Place::On("a runner"),
+        "Show its mnemonics",
+        TableIntent::PickRunner,
+    ),
+]);
 
 /// What a table of groups is ordered by.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -264,6 +272,7 @@ pub(crate) fn sorting_cell<V: 'static>(
                     sort(view, cx);
                     true
                 }
+                TableIntent::PickRunner => false,
             });
         }))
         .into_any_element()
@@ -335,24 +344,44 @@ pub(crate) fn group_row(
 }
 
 /// The runners' spawns in sum, one row each laid out in `columns`; few enough
-/// to lay out whole.
-pub(crate) fn runner_table(
+/// to lay out whole. The row of the runner at `picked`, if any, is marked as
+/// the one the mnemonics below sum, and a click on a row asks `pick` for its
+/// runner's.
+pub(crate) fn runner_table<V: 'static>(
     columns: &[GroupColumn],
     runners: &[GroupRow],
+    picked: Option<usize>,
     palette: &Palette,
+    cx: &mut Context<V>,
+    pick: fn(&mut V, usize, &mut Context<V>),
 ) -> Div {
     let longest = longest(runners);
+    let hover = palette.colors.element_hover;
+    let rows = (runners.iter().enumerate()).map(|(index, runner)| {
+        group_row(("runner", index), columns, runner, longest, palette)
+            .when(picked == Some(index), |row| {
+                row.bg(palette.colors.selection)
+            })
+            .cursor_pointer()
+            .hover(move |row| row.bg(hover))
+            .on_click(cx.listener(move |view, e, _, cx| {
+                GESTURES.dispatch(Pointer::click(e), |intent| match intent {
+                    TableIntent::PickRunner => {
+                        pick(view, index, cx);
+                        true
+                    }
+                    TableIntent::Sort => false,
+                });
+            }))
+    });
+    let rows: Vec<_> = rows.collect();
     div()
         .flex()
         .flex_col()
         .flex_shrink_0()
         .pr(px(SCROLLBAR_THICKNESS))
         .child(plain_header(columns, "Runner", palette))
-        .children(
-            (runners.iter().enumerate()).map(|(index, runner)| {
-                group_row(("runner", index), columns, runner, longest, palette)
-            }),
-        )
+        .children(rows)
 }
 
 /// The columns naming a spawn in a list of spawns: what the spawn made, its

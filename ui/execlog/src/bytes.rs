@@ -76,9 +76,20 @@ pub struct BytesTables {
 }
 
 impl BytesTables {
+    /// The runner picked, of the summary's, or `None` where every runner is.
+    fn picked_runner(&self, cx: &App) -> Option<usize> {
+        self.runner_picker.read(cx).selected().checked_sub(1)
+    }
+
+    /// Picks the runner at `runner` of the summary's.
+    fn pick_runner(&mut self, runner: usize, cx: &mut Context<Self>) {
+        (self.runner_picker).update(cx, |picker, cx| picker.set_selected(runner + 1, cx));
+        cx.notify();
+    }
+
     /// The spawns of the runner picked, or of every runner, by mnemonic.
     fn mnemonics(&self, cx: &App) -> &[GroupRow] {
-        match self.runner_picker.read(cx).selected().checked_sub(1) {
+        match self.picked_runner(cx) {
             None => &self.summary.mnemonics,
             Some(runner) => &self.summary.runners[runner].mnemonics,
         }
@@ -133,7 +144,14 @@ impl BytesTables {
             .flex_1()
             .min_h_0()
             .gap_3()
-            .child(runner_table(&COLUMNS, &runners, palette))
+            .child(runner_table(
+                &COLUMNS,
+                &runners,
+                self.picked_runner(cx),
+                palette,
+                cx,
+                Self::pick_runner,
+            ))
             .child(scrolling_table(
                 header,
                 rows,
@@ -267,7 +285,7 @@ impl Tables for BytesTables {
             .group(list_group(this.list, LARGEST, choose, focus, window));
         match this.list {
             List::ByMnemonic => {
-                let set = this.runner_picker.read(cx).selected() != 0;
+                let set = this.picked_runner(cx).is_some();
                 row.group(picker_group("runner", &this.runner_picker, set, cx))
             }
             List::Spawns => row,
