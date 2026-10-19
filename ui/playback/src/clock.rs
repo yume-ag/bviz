@@ -1,5 +1,7 @@
 use bviz_invocation::EpochMicros;
-use gpui::{App, AppContext, Context, Entity, Window};
+use gpui::{App, AppContext, Context, Entity, Subscription, Window};
+use std::cell::Cell;
+use std::rc::Rc;
 use std::time::Instant;
 
 /// The playback speeds, as multiples of real time, in the order stepping
@@ -348,9 +350,41 @@ impl Timeline {
 /// a gesture makes.
 #[derive(Default)]
 pub struct Clock {
-    sources: Vec<(SourceId, Source)>,
-    next_source: u64,
+    sources: Sources,
     timeline: Option<Timeline>,
+}
+
+/// The sources registered with a clock, in the order they were added.
+#[derive(Default)]
+struct Sources {
+    held: Vec<(SourceId, Source)>,
+    next: u64,
+}
+
+impl Sources {
+    fn add(&mut self, source: Source) -> SourceId {
+        let id = SourceId(self.next);
+        self.next += 1;
+        self.held.push((id, source));
+        id
+    }
+
+    /// Says whether `id` names a source held, which `source` then replaces.
+    fn replace(&mut self, id: SourceId, source: Source) -> bool {
+        let held = self.held.iter_mut().find(|(held, _)| *held == id);
+        held.map(|(_, held)| *held = source).is_some()
+    }
+
+    /// Says whether `id` named a source held.
+    fn remove(&mut self, id: SourceId) -> bool {
+        let before = self.held.len();
+        self.held.retain(|(held, _)| *held != id);
+        self.held.len() != before
+    }
+
+    fn shape(&self) -> Option<Shape> {
+        Shape::of(self.held.iter().map(|(_, source)| source))
+    }
 }
 
 impl Clock {
@@ -374,23 +408,21 @@ impl Clock {
     }
 
     pub fn add_source(&mut self, source: Source, cx: &mut Context<Self>) -> SourceId {
-        let id = SourceId(self.next_source);
-        self.next_source += 1;
-        self.sources.push((id, source));
+        let id = self.sources.add(source);
         self.reshape(cx);
         id
     }
 
     pub fn replace_source(&mut self, id: SourceId, source: Source, cx: &mut Context<Self>) {
-        if let Some((_, held)) = self.sources.iter_mut().find(|(held, _)| *held == id) {
-            *held = source;
+        if self.sources.replace(id, source) {
             self.reshape(cx);
         }
     }
 
     pub fn remove_source(&mut self, id: SourceId, cx: &mut Context<Self>) {
-        self.sources.retain(|(held, _)| *held != id);
-        self.reshape(cx);
+        if self.sources.remove(id) {
+            self.reshape(cx);
+        }
     }
 
     pub fn play_pause(&mut self, cx: &mut Context<Self>) {
@@ -440,16 +472,25 @@ impl Clock {
     }
 
     fn reshape(&mut self, cx: &mut Context<Self>) {
-        let shape = Shape::of(self.sources.iter().map(|(_, source)| source));
-        self.timeline = match (self.timeline.take(), shape) {
-            (_, None) => None,
-            (None, Some(shape)) => Some(Timeline::parked(shape, Speed::default())),
-            (Some(mut timeline), Some(shape)) => {
-                timeline.reshape(shape, Instant::now());
-                Some(timeline)
-            }
-        };
+        self.timeline = reshaped(self.timeline.take(), self.sources.shape(), Instant::now());
         cx.notify();
+    }
+}
+
+/// What `timeline` becomes once its sources give `shape`: none without a
+/// shape, and a timeline parked at the end where there was none.
+fn reshaped(
+    timeline: Option<Timeline>,
+    shape: Option<Shape>,
+    instant: Instant,
+) -> Option<Timeline> {
+    match (timeline, shape) {
+        (_, None) => None,
+        (None, Some(shape)) => Some(Timeline::parked(shape, Speed::default())),
+        (Some(mut timeline), Some(shape)) => {
+            timeline.reshape(shape, instant);
+            Some(timeline)
+        }
     }
 }
 
@@ -482,18 +523,31 @@ impl DocumentClock {
 }
 
 /// A file's place on its document's clock, through which the file registers,
-/// replaces or withdraws what it plays there as that changes.
+/// replaces or withdraws what it plays there as that changes, and which
+/// withdraws it when the model holding it is released.
 pub struct OnClock {
     clock: DocumentClock,
-    /// `None` while the file gives the clock no time to play.
-    source: Option<SourceId>,
+    /// `None` while the file gives the clock no time to play. Shared with the
+    /// withdrawal, which runs once the holder is gone.
+    source: Rc<Cell<Option<SourceId>>>,
+    _withdrawal: Subscription,
 }
 
 impl OnClock {
-    pub fn new(clock: DocumentClock) -> Self {
+    /// A place on `clock` for as long as the model `cx` builds is held.
+    pub fn new<M: 'static>(clock: DocumentClock, cx: &mut Context<M>) -> Self {
+        let source = Rc::new(Cell::new(None));
+        let withdrawn = (clock.clock().clone(), source.clone());
+        let withdrawal = cx.on_release(move |_, cx| {
+            let (clock, source) = withdrawn;
+            if let Some(id) = source.get() {
+                clock.update(cx, |clock, cx| clock.remove_source(id, cx));
+            }
+        });
         Self {
             clock,
-            source: None,
+            source,
+            _withdrawal: withdrawal,
         }
     }
 
@@ -508,15 +562,15 @@ impl OnClock {
     /// Registers `played` with the clock as what the file plays, or withdraws
     /// the file's source where it plays nothing.
     pub fn place(&mut self, played: Option<Source>, cx: &mut App) {
-        let source = &mut self.source;
+        let source = &self.source;
         self.clock
             .clock()
-            .update(cx, |clock, cx| match (*source, played) {
+            .update(cx, |clock, cx| match (source.get(), played) {
                 (Some(id), Some(played)) => clock.replace_source(id, played, cx),
-                (None, Some(played)) => *source = Some(clock.add_source(played, cx)),
+                (None, Some(played)) => source.set(Some(clock.add_source(played, cx))),
                 (Some(id), None) => {
                     clock.remove_source(id, cx);
-                    *source = None;
+                    source.set(None);
                 }
                 (None, None) => {}
             });
@@ -663,6 +717,50 @@ mod tests {
         timeline.seek(at(1), start);
         timeline.step(false, start);
         assert_eq!(timeline.at(start), at(0));
+    }
+
+    #[test]
+    fn removing_a_source_reshapes_the_timeline_to_the_rest() {
+        let start = Instant::now();
+        let mut sources = Sources::default();
+        let early = sources.add(Source::new(span(0, 4)).with_marks([at(1)]));
+        let late = sources.add(Source::new(span(2, 10)).approximate());
+        let timeline = reshaped(None, sources.shape(), start).expect("sources give a timeline");
+        assert_eq!(timeline.range(), span(0, 10));
+
+        assert!(sources.remove(late));
+        let timeline = reshaped(Some(timeline), sources.shape(), start).expect("one source left");
+        assert_eq!(timeline.range(), span(0, 4));
+        assert!(!timeline.approximate());
+        assert_eq!(
+            timeline.at(start),
+            at(4),
+            "parked at the end, it follows it"
+        );
+
+        assert!(sources.remove(early));
+        assert!(reshaped(Some(timeline), sources.shape(), start).is_none());
+    }
+
+    #[test]
+    fn a_source_removed_or_replaced_by_an_id_not_held_changes_nothing() {
+        let mut sources = Sources::default();
+        let held = sources.add(Source::new(span(0, 4)));
+        assert!(sources.remove(held));
+        assert!(!sources.remove(held));
+        assert!(!sources.replace(held, Source::new(span(0, 8))));
+        assert_eq!(sources.shape(), None);
+        let other = sources.add(Source::new(span(1, 2)));
+        assert_ne!(other, held, "ids are never reused");
+    }
+
+    #[test]
+    fn a_replaced_source_gives_the_shape_its_new_span() {
+        let mut sources = Sources::default();
+        let first = sources.add(Source::new(span(0, 4)));
+        sources.add(Source::new(span(2, 6)));
+        assert!(sources.replace(first, Source::new(span(1, 3))));
+        assert_eq!(sources.shape().map(|shape| shape.range), Some(span(1, 6)));
     }
 
     #[test]

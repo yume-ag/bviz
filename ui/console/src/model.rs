@@ -91,13 +91,14 @@ impl ConsoleModel {
                 model.place_on_clock(cx);
             },
         );
-        Self::new(load, clock, reports)
+        let on_clock = clock.map(|clock| OnClock::new(clock, cx));
+        Self::new(load, on_clock, reports)
     }
 
-    fn new(load: Task<()>, clock: Option<DocumentClock>, reports: Option<Reports>) -> Self {
+    fn new(load: Task<()>, on_clock: Option<OnClock>, reports: Option<Reports>) -> Self {
         Self {
             source: Source::Loading,
-            on_clock: clock.map(OnClock::new),
+            on_clock,
             reports,
             _load: load,
         }

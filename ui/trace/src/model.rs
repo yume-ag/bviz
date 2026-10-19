@@ -584,7 +584,7 @@ impl TraceModel {
         );
         Self {
             _session_changed: session_changed,
-            ..Self::new(reports, clock, load)
+            ..Self::new(reports, clock.map(|clock| OnClock::new(clock, cx)), load)
         }
     }
 
@@ -602,7 +602,7 @@ impl TraceModel {
         loaded.critical_path.retrace(tracing);
     }
 
-    fn new(reports: Option<Reports>, clock: Option<DocumentClock>, load: Task<()>) -> Self {
+    fn new(reports: Option<Reports>, on_clock: Option<OnClock>, load: Task<()>) -> Self {
         let chosen = match &reports {
             Some(reports) => HeldChoice::InSession(reports.session().clone()),
             None => HeldChoice::Alone(None),
@@ -610,7 +610,7 @@ impl TraceModel {
         Self {
             source: Source::Loading,
             reports,
-            on_clock: clock.map(OnClock::new),
+            on_clock,
             lanes: RefCell::new(None),
             visible_tracks: Vec::new(),
             shared_track_names: Vec::new(),
