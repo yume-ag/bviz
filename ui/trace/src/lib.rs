@@ -1792,6 +1792,9 @@ impl From<TraceSource> for Load {
     }
 }
 
+/// The view a profile opens with, by which a document is told to hold one.
+pub type LeadPanel = TracePanel;
+
 /// The views rendering the profile `load` reads: the timeline, the flame graph
 /// and stats that aggregate whatever tracks it has selected, and the critical
 /// path. It names what the profile holds an id of by what its document's
@@ -1808,7 +1811,7 @@ pub fn open(
     let model = cx.new(|cx| TraceModel::reading(load.profile, session, clock, cx));
     let timeline = ViewSpec::new({
         let model = model.clone();
-        move |cx| cx.new(|cx| TracePanel::new(model.clone(), cx))
+        move |cx| cx.new(|cx| LeadPanel::new(model.clone(), cx))
     });
     let flame = ViewSpec::new({
         let model = model.clone();

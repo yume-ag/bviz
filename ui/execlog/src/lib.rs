@@ -85,6 +85,9 @@ fn read_log(input: Input) -> Result<Read, String> {
     })
 }
 
+/// The view an execution log opens with, by which a document is told to hold one.
+pub type LeadPanel = SpawnTimePanel;
+
 /// The view of the spawn time the log `load` reads, which reports the log's
 /// spawns to its document's `session` as `sharing` and `clock` ask.
 pub fn open(
@@ -97,7 +100,7 @@ pub fn open(
 ) -> Member {
     let load = load.into();
     let model = cx.new(|cx| ExecLogModel::reading(load.log, session, clock, sharing, cx));
-    let view = ViewSpec::new(move |cx| cx.new(|cx| SpawnTimePanel::new(model.clone(), cx)));
+    let view = ViewSpec::new(move |cx| cx.new(|cx| LeadPanel::new(model.clone(), cx)));
     Member::new(load.title, view, Vec::new())
 }
 

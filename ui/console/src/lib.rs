@@ -59,6 +59,9 @@ impl From<ConsoleSource> for Load {
     }
 }
 
+/// The view a build event stream opens with, by which a document is told to hold one.
+pub type LeadPanel = ConsolePanel;
+
 /// The views replaying the build `load` reads, which tells `session` what its
 /// stream knows of its document's invocation, and plays on `clock`.
 pub fn open(
@@ -71,7 +74,7 @@ pub fn open(
     let load = load.into();
     let label = load.title;
     let model = cx.new(|cx| ConsoleModel::reading(load.stream, session, clock, cx));
-    let console = ViewSpec::new(move |cx| cx.new(|cx| ConsolePanel::new(model.clone(), cx)));
+    let console = ViewSpec::new(move |cx| cx.new(|cx| LeadPanel::new(model.clone(), cx)));
     Member::new(label, console, Vec::new()).playing_alone()
 }
 

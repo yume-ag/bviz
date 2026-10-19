@@ -9,11 +9,13 @@ use bviz_input::Input;
 use bviz_invocation::InvocationId;
 use bviz_ui_graph_args::GraphSource;
 use bviz_ui_session::Sharing;
-use bviz_ui_workspace::{Document, Member, PathOpener, Shared, Workspace};
+use bviz_ui_workspace::{
+    Document, Documents, Joinable, Member, Panel, PathOpener, Shared, ViewKind, Workspace,
+};
 use clap::Parser;
 use classify::Classified;
 use gpui::{App, Context, WeakEntity, Window};
-use group::{File, Given, Kind, Opening};
+use group::{File, Given, Kind, Open, Opening, Placing};
 use std::iter;
 use std::path::PathBuf;
 
@@ -137,16 +139,29 @@ fn open(opening: Opening<Load>, window: &mut Window, cx: &mut App) -> Document {
             second,
             rest,
         } => {
-            let mut open = |load: Load| load.open(&shared, Sharing::Invocation, window, cx);
-            let first = open(first);
-            let second = open(second);
-            let mut others = Vec::with_capacity(rest.len());
-            for load in rest {
-                others.push(open(load));
-            }
-            Document::join(id, first, second, others, shared)
+            let others = iter::once(second).chain(rest);
+            let (first, others) = open_invocation_files(first, others, &shared, window, cx);
+            of_invocation(id, first, others, shared)
         }
     }
+}
+
+/// The views of `first` and `rest`, files of one invocation sharing `shared`.
+fn open_invocation_files(
+    first: Load,
+    rest: impl IntoIterator<Item = Load>,
+    shared: &Shared,
+    window: &mut Window,
+    cx: &mut App,
+) -> (Member, Vec<Member>) {
+    let mut open = |load: Load| load.open(shared, Sharing::Invocation, window, cx);
+    let first = open(first);
+    let rest = rest.into_iter();
+    let mut others = Vec::with_capacity(rest.size_hint().0);
+    for load in rest {
+        others.push(open(load));
+    }
+    (first, others)
 }
 
 /// Opens `paths`, named to the window `into` frames, once a background task
@@ -205,16 +220,72 @@ fn place(
     let Some(given) = given(graph.source(), files) else {
         return;
     };
-    let (first, rest) = group::by_invocation(given);
-    let further = further_graphs.into_iter().map(|graph| Opening::Alone {
-        file: Load::Graph(graph.into()),
-        invocation: None,
+    let (first, rest) = {
+        let registry = Documents::global(cx).read(cx);
+        group::with_open(given, &|id| registry.by_invocation(id).map(standing))
+    };
+    let further = further_graphs.into_iter().map(|graph| {
+        Placing::New(Opening::Alone {
+            file: Load::Graph(graph.into()),
+            invocation: None,
+        })
     });
     let mut documents = Vec::with_capacity(1 + rest.len() + further.len());
-    for opening in iter::once(first).chain(rest).chain(further) {
-        documents.push(open(opening, window, cx));
+    for placing in iter::once(first).chain(rest).chain(further) {
+        match placing {
+            Placing::New(opening) => documents.push(open(opening, window, cx)),
+            Placing::Join {
+                document,
+                first,
+                rest,
+            } => {
+                let joining = move |shared: &Shared, window: &mut Window, cx: &mut App| {
+                    open_invocation_files(first, rest, shared, window, cx)
+                };
+                if let Err(joining) = workspace.join_document(&document, joining, window, cx) {
+                    let shared = Shared::new(cx);
+                    let (first, rest) = joining(&shared, window, cx);
+                    let id = document.invocation().clone();
+                    documents.push(of_invocation(id, first, rest, shared));
+                }
+            }
+        }
     }
     workspace.open_documents(documents, window, cx);
+}
+
+/// `joinable` as files given later find it.
+fn standing(joinable: Joinable) -> Open<Joinable> {
+    let mut held = Vec::with_capacity(Kind::ALL.len());
+    for kind in Kind::ALL {
+        if joinable.shows(lead_view(kind)) {
+            held.push(kind);
+        }
+    }
+    Open {
+        shows_graph: joinable.shows(bviz_ui_graph::LeadPanel::kind().view),
+        held,
+        document: joinable,
+    }
+}
+
+/// The view a file of `kind` shows first, by which an open document tells it
+/// holds one.
+fn lead_view(kind: Kind) -> ViewKind {
+    match kind {
+        Kind::Profile => bviz_ui_trace::LeadPanel::kind().view,
+        Kind::Bep => bviz_ui_console::LeadPanel::kind().view,
+        Kind::ExecLog => bviz_ui_execlog::LeadPanel::kind().view,
+    }
+}
+
+/// The document `first` and `rest` make, files of the invocation `id`.
+fn of_invocation(id: InvocationId, first: Member, rest: Vec<Member>, shared: Shared) -> Document {
+    let mut rest = rest.into_iter();
+    match rest.next() {
+        Some(second) => Document::join(id, first, second, rest.collect(), shared),
+        None => Document::alone(first, Some(id), shared),
+    }
 }
 
 /// What `graph` and `files` name, `None` where they name nothing.
@@ -297,7 +368,6 @@ fn open_window(openings: Vec<Opening<Load>>) {
 mod tests {
     use super::*;
     use bviz_ui_components::LABEL_MAX_CHARS;
-    use bviz_ui_workspace::{Panel, ViewKind};
     use std::collections::HashMap;
 
     /// What the namespace of every action bviz declares begins with.

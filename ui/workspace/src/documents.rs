@@ -198,6 +198,10 @@ impl Joinable {
         self.document
     }
 
+    pub fn invocation(&self) -> &InvocationId {
+        &self.invocation
+    }
+
     /// Whether a file of the document shows a view of `kind`.
     pub fn shows(&self, kind: ViewKind) -> bool {
         self.views.contains(&kind)

@@ -1573,6 +1573,9 @@ fn title(source: &GraphSource) -> SharedString {
     }
 }
 
+/// The view a graph opens with, by which a document is told to hold one.
+pub type LeadPanel = GraphPanel;
+
 /// The views drawing the graph `load` reads, which tells `session` what the
 /// graph knows of its document's invocation, and follow `clock`. The graph
 /// derives the action graph only where `sharing` lets another file read it.
@@ -1589,7 +1592,7 @@ pub fn open(
     let model = cx.new(|cx| GraphModel::reading(load.built, session, clock, sharing, cx));
     let graph = ViewSpec::new({
         let model = model.clone();
-        move |cx| cx.new(|cx| GraphPanel::new(model.clone(), cx))
+        move |cx| cx.new(|cx| LeadPanel::new(model.clone(), cx))
     });
     let scatter = ViewSpec::new({
         let model = model.clone();
