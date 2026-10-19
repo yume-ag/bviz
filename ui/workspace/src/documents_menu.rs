@@ -1,10 +1,13 @@
-use crate::workspace::{ResetArrangement, ToggleDocuments};
-use crate::{DocumentId, Documents, OpenDocument, ViewId, ViewState, Workspace, documents};
+use crate::workspace::{CloseDocument, ResetArrangement, ToggleDocuments};
+use crate::{
+    DocumentId, Documents, OpenDocument, PathOpener, ViewId, ViewState, Workspace, documents,
+};
 use bviz_ui_components::{Button, KeyScope, Nesting, action_label, key_text_in, menu_chrome};
 use bviz_ui_theme::{ThemeColors, over};
 use gpui::{
-    Action, AnyElement, Context, ElementId, Entity, FocusHandle, Hsla, IntoElement, Pixels, Render,
-    SharedString, Subscription, WeakEntity, Window, deferred, div, prelude::*, px, relative,
+    Action, AnyElement, Context, Div, ElementId, Entity, FocusHandle, Hsla, IntoElement, Pixels,
+    Render, SharedString, Stateful, Subscription, WeakEntity, Window, deferred, div, prelude::*,
+    px, relative,
 };
 
 gpui::actions!(
@@ -97,6 +100,7 @@ struct ViewRow {
 enum Listing {
     Alone(ViewRow),
     Under {
+        document: DocumentId,
         label: SharedString,
         views: Vec<ViewRow>,
     },
@@ -123,6 +127,7 @@ fn listings(documents: Vec<OpenDocument>) -> Vec<Listing> {
                 ..only
             }),
             Err(views) => Listing::Under {
+                document: id,
                 label: document.label,
                 views,
             },
@@ -231,6 +236,48 @@ impl DocumentsMenu {
         documents::show(document, view, &workspace, window, cx);
     }
 
+    /// Closes `document` in every window, closing the menu over it and handing
+    /// focus to what this menu's window shows next.
+    fn close_document(
+        &mut self,
+        document: DocumentId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close(cx);
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        workspace.update(cx, |workspace, cx| {
+            workspace.close_document(document, window, cx);
+        });
+        let focus = workspace.read(cx).content_focus(cx);
+        window.focus(&focus, cx);
+    }
+
+    /// The control closing `document`, on the row that names it, where the
+    /// app opens files: where none open, a closed document is gone for good.
+    /// It names no keys: [`CloseDocument`] acts on the document of the panel
+    /// with focus, not on the one a row names.
+    fn close_control(&self, document: DocumentId, cx: &mut Context<Self>) -> Option<Button> {
+        if !cx.has_global::<PathOpener>() {
+            return None;
+        }
+        let label = action_label(&CloseDocument, cx).unwrap_or(CloseDocument.name());
+        let close = Button::new(
+            document.element_id("documents-menu-close"),
+            cx.listener(move |this, _, window, cx| {
+                cx.stop_propagation();
+                this.close_document(document, window, cx);
+            }),
+        )
+        .ghost()
+        .compact()
+        .icon("x")
+        .tooltip(label);
+        Some(close)
+    }
+
     fn trigger(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         Button::new(
             "documents-menu",
@@ -295,11 +342,17 @@ impl DocumentsMenu {
         for listing in listed {
             match listing {
                 Listing::Alone(view) => {
+                    let close = self.close_control(view.document, cx);
                     let row = self.view_row(rows.len(), view, px(0.), colors, cx);
-                    rows.push(row.into_any_element());
+                    rows.push(row.children(close).into_any_element());
                 }
-                Listing::Under { label, views } => {
-                    rows.push(heading(label, colors).into_any_element());
+                Listing::Under {
+                    document,
+                    label,
+                    views,
+                } => {
+                    let close = self.close_control(document, cx);
+                    rows.push(heading(label, colors).children(close).into_any_element());
                     for view in views {
                         let row = self.view_row(rows.len(), view, VIEW_INDENT, colors, cx);
                         rows.push(row.into_any_element());
@@ -356,7 +409,7 @@ impl DocumentsMenu {
         by: Pixels,
         colors: &ThemeColors,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    ) -> Stateful<Div> {
         let style = row_style(view.state, colors);
         let hovered = hovered(style.fill, colors);
         let (document, shown) = (view.document, view.view);
@@ -384,19 +437,22 @@ impl DocumentsMenu {
                     .flex_none()
                     .text_color(style.mark_ink),
             )
-            .child(div().whitespace_nowrap().child(view.label))
+            .child(div().flex_1().whitespace_nowrap().child(view.label))
     }
 }
 
 /// The name of a document standing over the rows of the views it can show.
-fn heading(label: SharedString, colors: &ThemeColors) -> impl IntoElement + use<> {
+fn heading(label: SharedString, colors: &ThemeColors) -> Div {
     div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
         .px(ROW_PAD)
         .pt_1()
         .pb_0p5()
         .text_color(colors.text_muted)
-        .whitespace_nowrap()
-        .child(label)
+        .child(div().flex_1().whitespace_nowrap().child(label))
 }
 
 impl Render for DocumentsMenu {
@@ -469,7 +525,7 @@ mod tests {
                 view(FLAME, "Flame Graph", ViewState::Closed),
             ],
         )]);
-        let [Listing::Under { label, views }] = &listed[..] else {
+        let [Listing::Under { label, views, .. }] = &listed[..] else {
             panic!("a document of two views is listed under a heading");
         };
         assert_eq!(label, "build.profile.gz");
@@ -505,7 +561,7 @@ mod tests {
             (),
         );
         let listed = opening_listings(joined, Vec::new());
-        let [Listing::Under { label, views }] = &listed[..] else {
+        let [Listing::Under { label, views, .. }] = &listed[..] else {
             panic!("a joined document is listed under a heading");
         };
         assert_eq!(label, "Invocation a5f7f3e6");

@@ -6,8 +6,8 @@ use crate::{
 use bviz_invocation::InvocationId;
 use bviz_ui_playback::Clock;
 use gpui::{
-    App, AppContext, Context, Entity, EntityId, EventEmitter, Global, SharedString, Subscription,
-    WeakEntity, Window,
+    App, AppContext, Context, ElementId, Entity, EntityId, EventEmitter, Global, SharedString,
+    Subscription, WeakEntity, Window,
 };
 use std::collections::HashMap;
 use std::iter;
@@ -20,6 +20,11 @@ use std::rc::Rc;
 pub struct DocumentId(u64);
 
 impl DocumentId {
+    /// The id of the element `name` names for this document.
+    pub(crate) fn element_id(self, name: &'static str) -> ElementId {
+        ElementId::NamedInteger(name.into(), self.0)
+    }
+
     /// An identity for a test that stands in for the registry minting them.
     #[cfg(test)]
     pub(crate) const fn for_test(id: u64) -> Self {

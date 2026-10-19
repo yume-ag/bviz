@@ -46,6 +46,8 @@ actions!(
         PreviousTab,
         /// Close panel
         ClosePanel,
+        /// Close document
+        CloseDocument,
         /// Move panel to new window
         DetachPanel,
         /// Maximise or restore pane
@@ -155,8 +157,9 @@ const DROP_HINT: &str = "or drop them on this window";
 /// What the control dismissing a note says it does.
 const DISMISS_NOTE: &str = "Dismiss";
 
-/// Registers the window's key scopes and bindings, binding [`OpenFiles`] only
-/// where `opens_files` says the app opens files at all.
+/// Registers the window's key scopes and bindings, binding [`OpenFiles`], and
+/// [`CloseDocument`] with it, only where `opens_files` says the app opens files
+/// at all: where none open, a closed document is gone for good.
 pub(crate) fn register_keys(cx: &mut App, opens_files: bool) {
     declare_scopes(
         cx,
@@ -213,6 +216,7 @@ fn bindings(opens_files: bool) -> Vec<KeyBinding> {
     ];
     if opens_files {
         bindings.push(KeyBinding::new("secondary-o", OpenFiles, workspace));
+        bindings.push(KeyBinding::new("secondary-alt-w", CloseDocument, workspace));
     }
     bindings
 }
@@ -2766,6 +2770,11 @@ impl Render for Workspace {
                     pane.update(cx, |pane, cx| pane.close_active(window, cx));
                 }
             }))
+            .on_action(cx.listener(|workspace, _: &CloseDocument, window, cx| {
+                if let Some(panel) = workspace.active_panel(cx) {
+                    workspace.close_document(panel.document(), window, cx);
+                }
+            }))
             .on_action(cx.listener(|workspace, _: &DetachPanel, window, cx| {
                 workspace.detach_active_panel(window, cx);
             }))
@@ -3458,6 +3467,15 @@ mod tests {
     }
 
     #[test]
+    fn a_window_closes_the_document_of_the_panel_with_focus_only_where_the_app_opens_files() {
+        assert!(is(
+            dispatched(bindings(true), "secondary-alt-w", &in_a_panel()),
+            CloseDocument
+        ));
+        assert!(dispatched(bindings(false), "secondary-alt-w", &in_a_panel()).is_none());
+    }
+
+    #[test]
     fn a_window_binds_its_open_files_key_only_where_the_app_opens_files() {
         assert!(is(
             dispatched(bindings(true), "secondary-o", &in_a_panel()),
@@ -3480,6 +3498,7 @@ mod tests {
         ));
         for keys in [
             "secondary-w",
+            "secondary-alt-w",
             "secondary-o",
             "ctrl-tab",
             "secondary-shift-n",
