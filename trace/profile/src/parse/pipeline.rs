@@ -211,7 +211,7 @@ fn parse_chunks_on_workers(
 ) -> Option<Vec<Builder>> {
     let next = std::sync::atomic::AtomicUsize::new(0);
     let spawned = workers.min(chunks.len());
-    let parsed: Vec<(usize, Option<Builder>)> = std::thread::scope(|scope| {
+    let parsed: Vec<(usize, Option<Builder>)> = bviz_parallel::scope(|scope| {
         let handles: Vec<_> = (0..spawned)
             .map(|shard| {
                 let next = &next;
@@ -698,7 +698,7 @@ fn decode_parse_fold(
     let (pool_tx, pool_rx) = std::sync::mpsc::channel::<Vec<u8>>();
     let prefault_bytes = intern_prefault_bytes(decoded_size);
     timed("  decode+parse+fold chunks", || {
-        std::thread::scope(|scope| {
+        bviz_parallel::scope(|scope| {
             let producer =
                 scope.spawn(move || stream_pieces(reader, chunk_bytes, workers, tx, pool_rx));
             for shard in 0..workers {

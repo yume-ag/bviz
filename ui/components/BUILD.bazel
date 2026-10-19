@@ -33,6 +33,7 @@ rust_library(
         "//label",
         "//ui/assets",
         "//ui/theme",
+        "//util/parallel",
         "@crates//:gpui",
     ],
 )

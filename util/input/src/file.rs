@@ -138,7 +138,7 @@ mod tests {
         assert!(input.seekable().is_none());
 
         let content = bytes(HEAD_BYTES + 3);
-        let written = std::thread::spawn({
+        let written = bviz_parallel::spawn({
             let content = content.clone();
             move || std::fs::write(&path, content)
         });

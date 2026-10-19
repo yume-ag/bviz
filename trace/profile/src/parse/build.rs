@@ -428,7 +428,7 @@ fn finish_merge(
 
     // The folded runs' teardown (per-chunk payload and index buffers) is pure
     // page-return work; detached so the load doesn't wait on it.
-    std::thread::spawn(move || drop(runs));
+    bviz_parallel::spawn(move || drop(runs));
     parts
 }
 
@@ -566,7 +566,7 @@ fn merge_lanes(tasks: &mut [TidTask]) {
             return;
         }
         let stealer = std::sync::Mutex::new(tasks.iter_mut());
-        std::thread::scope(|scope| {
+        bviz_parallel::scope(|scope| {
             for _ in 0..workers {
                 scope.spawn(|| {
                     loop {

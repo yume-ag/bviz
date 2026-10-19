@@ -24,6 +24,7 @@ rust_test(
     env = {"QUERY_ORACLE": "$(rlocationpath :query_oracle)"},
     deps = [
         "//graph/layout",
+        "//util/parallel",
         "@bazel_query_proto//:bazel_query_rust_proto",
         "@crates//:fastrand",
         "@crates//:prost",

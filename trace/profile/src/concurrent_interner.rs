@@ -554,7 +554,7 @@ mod tests {
             }
         };
         let interner = ConcurrentInterner::new(DISTINCT * 64, DISTINCT).expect("a small pool");
-        let produced: Vec<Vec<(String, Str)>> = std::thread::scope(|scope| {
+        let produced: Vec<Vec<(String, Str)>> = bviz_parallel::scope(|scope| {
             let handles: Vec<_> = (0..threads)
                 .map(|t| {
                     let interner = &interner;

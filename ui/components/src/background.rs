@@ -30,7 +30,7 @@ pub struct Pending<T>(std::thread::JoinHandle<Result<T, String>>);
 
 impl<T: Send + 'static> Pending<T> {
     pub fn start(work: impl FnOnce() -> Result<T, String> + Send + 'static) -> Self {
-        Self(std::thread::spawn(work))
+        Self(bviz_parallel::spawn(work))
     }
 
     /// Blocks until the work finishes, reporting a panic in it the way the work

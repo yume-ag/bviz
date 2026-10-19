@@ -179,7 +179,7 @@ pub(crate) fn for_each_message_pipelined(
     let (empty_tx, empty_rx) = mpsc::sync_channel::<Vec<u8>>(CHUNKS_IN_FLIGHT);
     // Owning the ring's ends, the visiting side drops them on returning, which
     // stops the reader even when a visit fails part way.
-    std::thread::scope(move |scope| {
+    bviz_parallel::scope(move |scope| {
         scope.spawn(move || {
             let mut unallocated = CHUNKS_IN_FLIGHT;
             loop {

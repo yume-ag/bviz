@@ -640,8 +640,8 @@ adapt, and the rules for gating parallel work and keeping the pools apart; the e
   closure of `load_in_background`, or `cx.background_executor().spawn(..)`), never on the UI
   thread. Gate the parallel path by input size, and run it inside
   `bviz_parallel::workers().install(..)`, the process's one pool. For a few coarse chunks,
-  `cx.background_executor().scoped(..)` (or the existing `std::thread::scope` pattern)
-  avoids pulling in rayon at all.
+  `cx.background_executor().scoped(..)` (or `bviz_parallel::scope`) avoids pulling in rayon
+  at all.
 
 ## Building and running in this repo
 

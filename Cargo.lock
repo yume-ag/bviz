@@ -779,6 +779,7 @@ dependencies = [
 name = "bviz_input"
 version = "0.1.0"
 dependencies = [
+ "bviz_parallel",
  "prost",
 ]
 
@@ -895,6 +896,7 @@ version = "0.1.0"
 dependencies = [
  "bviz_invocation",
  "bviz_label",
+ "bviz_parallel",
  "bviz_ui_assets",
  "bviz_ui_theme",
  "gpui",

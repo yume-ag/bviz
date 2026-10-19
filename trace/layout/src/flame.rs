@@ -252,7 +252,7 @@ pub(crate) fn run_sharded<S: Default + Send>(
     if workers == 1 {
         return vec![run_one()];
     }
-    std::thread::scope(|scope| {
+    bviz_parallel::scope(|scope| {
         let handles: Vec<_> = (0..workers).map(|_| scope.spawn(run_one)).collect();
         handles.into_iter().map(|h| h.join().unwrap()).collect()
     })
@@ -3896,7 +3896,7 @@ mod tests {
         let scan = TrackFlamer::new(&p);
         let wide = window(&[(0, 90)]);
         let narrow = window(&[(0, 40)]);
-        let raced = std::thread::scope(|s| {
+        let raced = bviz_parallel::scope(|s| {
             let a = s.spawn(|| scan.build(FlameLabels::Name, &wide, |_| true));
             let b = s.spawn(|| scan.build(FlameLabels::Name, &narrow, |_| true));
             [a.join().unwrap(), b.join().unwrap()]

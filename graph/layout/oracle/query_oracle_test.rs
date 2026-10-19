@@ -168,7 +168,7 @@ fn ask_bazel<'a>(graph: Option<&Path>, expressions: impl Iterator<Item = &'a str
     }
     let mut stdin = child.stdin.take().unwrap();
     // Written from its own thread so neither pipe fills while the other waits.
-    let writer = std::thread::spawn(move || stdin.write_all(input.as_bytes()));
+    let writer = bviz_parallel::spawn(move || stdin.write_all(input.as_bytes()));
     let mut output = Vec::new();
     child
         .stdout
