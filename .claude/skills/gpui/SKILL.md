@@ -36,9 +36,10 @@ gpui for one of these, use the wrapper, so every view stays visually coherent an
 behaves consistently:
 
 - `bviz_ui_shell::{application, setup, open_window, Chrome}` — window bootstrap + client-side decorations.
-- `bviz_ui_workspace::{run_panels, Workspace, Panel, AnyPanel}` — the app entry point
-  that boots the shell and opens the first window, the window root view, and the trait
-  a view implements to be the thing it frames.
+- `bviz_ui_workspace::{run_viewer, run_panels, Workspace, Panel, AnyPanel}` — the app
+  entry points that boot the shell and open the first window (a standalone viewer's, and
+  bviz's, whose documents open into the window once it stands), the window root view,
+  and the trait a view implements to be the thing it frames.
 - `bviz_ui_components::{Button, TextInput}` — a button and a focusable text field.
 - `bviz_ui_components::{QueryField, QueryFieldEvent}` — a text field with a button that
   empties it, which emits one event per edit and another once typing settles.

@@ -8,7 +8,7 @@ use bviz_bazel_flags_args::BazelrcArgs;
 use bviz_cli::{Cli, Request, Source, Sources};
 use bviz_input::Input;
 use bviz_invocation::InvocationId;
-use bviz_ui_components::{ChoiceDialog, ChoiceDialogEvent, ChoiceItem};
+use bviz_ui_components::{ChoiceDialog, ChoiceDialogEvent, ChoiceItem, Pending};
 use bviz_ui_graph_args::{GraphArgs, GraphSource};
 use bviz_ui_session::Sharing;
 use bviz_ui_workspace::{
@@ -173,20 +173,56 @@ fn open_paths(paths: Vec<PathBuf>, into: WeakEntity<Workspace>, window: &mut Win
     open_classified(move || classify::classify(paths), into, window, cx);
 }
 
-/// Opens what `classifying` tells of files named to the window `into` frames,
-/// running it on a background task.
+/// Opens what `classifying` tells of files named to the window `into` frames.
 fn open_classified(
     classifying: impl FnOnce() -> Classified + Send + 'static,
     into: WeakEntity<Workspace>,
     window: &mut Window,
     cx: &mut App,
 ) {
-    let classifying = cx.background_executor().spawn(async move { classifying() });
+    off_thread(classifying, place, into, window, cx);
+}
+
+/// Opens the files named on the command line, once `pending` has told what
+/// each holds, into the window `into` frames.
+fn open_named(
+    pending: Pending<Given<Load>>,
+    into: WeakEntity<Workspace>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    off_thread(move || pending.join(), place_named, into, window, cx);
+}
+
+/// Opens what `named` tells of the files named on the command line into
+/// `workspace`, telling the user where it tells nothing.
+fn place_named(
+    named: Result<Given<Load>, String>,
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    match named {
+        Ok(given) => open_given(given, Vec::new(), workspace, window, cx),
+        Err(why) => workspace.tell(format!("Cannot open the files named: {why}"), cx),
+    }
+}
+
+/// Runs `work` on a background task, as reading the file system must be, and
+/// then `then` with its result on the workspace `into`, while it stands.
+fn off_thread<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+    then: impl FnOnce(T, &mut Workspace, &mut Window, &mut Context<Workspace>) + 'static,
+    into: WeakEntity<Workspace>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let working = cx.background_executor().spawn(async move { work() });
     window
         .spawn(cx, async move |cx| {
-            let classified = classifying.await;
+            let worked = working.await;
             into.update_in(cx, |workspace, window, cx| {
-                place(classified, workspace, window, cx);
+                then(worked, workspace, window, cx);
             })
             .ok();
         })
@@ -276,9 +312,21 @@ fn open_batch(
             invocation: file.invocation,
         })
         .collect();
-    let Some(given) = given(graph.source(), files) else {
-        return;
-    };
+    if let Some(given) = given(graph.source(), files) {
+        open_given(given, further_graphs, workspace, window, cx);
+    }
+}
+
+/// Opens `given`, and `further_graphs` named with it, into `workspace`, as
+/// documents grouped by invocation, joining those of their invocations open
+/// already.
+fn open_given(
+    given: Given<Load>,
+    further_graphs: Vec<GraphSource>,
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
     let (first, rest) = {
         let registry = Documents::global(cx).read(cx);
         group::with_open(given, &|id| registry.by_invocation(id).map(standing))
@@ -384,22 +432,18 @@ fn main() {
     match Cli::parse().request() {
         Request::Bazelrc(args) => args.print(),
         Request::Open(sources) => {
-            let (first, rest) = group::by_invocation(Load::start_all(sources));
-            let mut openings = Vec::with_capacity(1 + rest.len());
-            openings.push(first);
-            openings.extend(rest);
-            open_window(openings);
+            let named = Pending::start(move || Ok(Load::start_all(sources)));
+            open_window(move |into, window, cx| open_named(named, into, window, cx));
         }
-        Request::Empty => open_window(Vec::new()),
+        Request::Empty => open_window(|_, _, _| {}),
     }
 }
 
-fn open_window(openings: Vec<Opening<Load>>) {
+fn open_window(arriving: impl FnOnce(WeakEntity<Workspace>, &mut Window, &mut App) + 'static) {
     bviz_ui_workspace::run_panels(
         "bviz",
         bviz_ui_workspace::WINDOW_SIZE,
-        openings,
-        open,
+        arriving,
         Some(PathOpener::new(open_paths)),
         vec![AppAction::new(CopyBazelrc, copy_bazelrc)],
         &[

@@ -2,7 +2,6 @@
 //! outputs of one Bazel invocation, told by the invocation id each carries.
 
 use bviz_invocation::InvocationId;
-use std::convert::Infallible;
 use std::iter;
 
 /// The kinds of file that carry an invocation id. An invocation's document
@@ -185,25 +184,14 @@ fn only_invocation<T>(files: &[File<T>]) -> Option<&InvocationId> {
     named.all(|id| id == first).then_some(first)
 }
 
-/// What `given` names as the documents a window opens, in the order their first
-/// files were given, where no document is open yet.
+/// Where the files `given` go, in the order their first files were given,
+/// while `open` finds the document of each invocation already open.
 ///
 /// Files carrying one invocation id form one document, which takes one file of
 /// each [`Kind`]; a further file of a kind the document holds opens alone, as
 /// does a file carrying no id. A graph carries none either: nothing tells which
 /// build it describes, so it is taken for the one invocation the files with it
 /// name, and opens alone where they name several or none.
-pub(crate) fn by_invocation<T>(given: Given<T>) -> (Opening<T>, Vec<Opening<T>>) {
-    let opened = |placing| match placing {
-        Placing::New(opening) => opening,
-        Placing::Join { document, .. } => match document {},
-    };
-    let (leading, others) = with_open(given, &|_| None::<Open<Infallible>>);
-    (opened(leading), others.into_iter().map(opened).collect())
-}
-
-/// Where the files `given` go, as [`by_invocation`] groups them, while `open`
-/// finds the document of each invocation already open.
 ///
 /// A file joins the open document of its invocation where that holds no file
 /// of its kind, and opens alone where it does. A graph joins one only where
@@ -277,6 +265,18 @@ pub(crate) fn with_open<T, D>(
 mod tests {
     use super::*;
     use bviz_ui_workspace::invocation_label;
+    use std::convert::Infallible;
+
+    /// What `given` names as the documents a window opens where no document is
+    /// open yet.
+    fn by_invocation<T>(given: Given<T>) -> (Opening<T>, Vec<Opening<T>>) {
+        let opened = |placing| match placing {
+            Placing::New(opening) => opening,
+            Placing::Join { document, .. } => match document {},
+        };
+        let (leading, others) = with_open(given, &|_| None::<Open<Infallible>>);
+        (opened(leading), others.into_iter().map(opened).collect())
+    }
 
     const A: &str = "a5f7f3e6-4fda-4675-bc16-8ede5420b210";
     const B: &str = "0c3d9a77-14be-4f0e-9d0a-55817e2200e2";
