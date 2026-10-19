@@ -88,12 +88,12 @@ impl Within {
     fn views(&self) -> Views<'_> {
         let views = match &self.0 {
             Graphs::Targets => Some(Views::Targets),
-            Graphs::Copies(configured) => configured.get().configured_targets().map(Views::Copies),
+            Graphs::Copies(configured) => configured.wait().configured_targets().map(Views::Copies),
             Graphs::Actions {
                 configured,
                 actions,
-            } => (configured.get().configured_targets())
-                .zip(actions.get().actions())
+            } => (configured.wait().configured_targets())
+                .zip(actions.wait().actions())
                 .map(|(configured, actions)| Views::Actions {
                     configured,
                     actions,
@@ -120,7 +120,7 @@ pub(super) fn find(
     within: &Within,
 ) -> Result<Found, PatternError> {
     let set = TargetSet::parse(text)?;
-    let index = targets.get();
+    let index = targets.wait();
     let Resolved {
         targets: named,
         left_out,

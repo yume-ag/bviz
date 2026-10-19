@@ -34,6 +34,7 @@ use gpui::{App, Context, Entity, EntityId, EventEmitter, SharedString, Subscript
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::marker::PhantomData;
+use std::ops::Deref;
 use std::sync::{Arc, LazyLock, OnceLock};
 
 /// The graph a document holds, as it was read: whole, unfiltered, and shared by
@@ -172,7 +173,7 @@ impl Loaded {
         let completions = Prepared::new(&shared, move |_| Completions::of(offered));
         let indexed = targets.clone();
         let universe = Prepared::new(&shared, move |shared| {
-            let targets = Arc::clone(indexed.get());
+            let targets = Arc::clone(indexed.wait());
             Universe::with_targets(&shared.base, targets, &shared.facets, &shared.capabilities)
         });
         let writers = Prepared::new(&shared, |shared| Arc::new(Writers::of(&shared.base)));
@@ -408,10 +409,17 @@ impl<T> Prepared<T> {
     }
 
     /// What was prepared, prepared here where no reader has prepared it yet,
-    /// and waited for where another is preparing it; so read it off the UI
-    /// thread, or on it only once a read off it has returned.
-    pub(crate) fn get(&self) -> &T {
+    /// and waited for where another is preparing it; so read only off the UI
+    /// thread.
+    pub(crate) fn wait(&self) -> &T {
         &self.0.prepared
+    }
+
+    /// Waits as [`Self::wait`] does, then yields a handle that reads the value
+    /// without waiting; call it only off the UI thread.
+    pub(crate) fn ready(self) -> Ready<T> {
+        self.wait();
+        Ready(self.0)
     }
 
     /// The graph it was taken from.
@@ -421,6 +429,30 @@ impl<T> Prepared<T> {
 }
 
 impl<T> Clone for Prepared<T> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
+/// What a [`Prepared`] holds, once prepared, which reading never waits on.
+pub(crate) struct Ready<T>(Arc<Preparing<T>>);
+
+impl<T> Ready<T> {
+    /// The graph it was taken from.
+    pub(crate) fn shared(&self) -> &Shared {
+        &self.0.shared
+    }
+}
+
+impl<T> Deref for Ready<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.0.prepared
+    }
+}
+
+impl<T> Clone for Ready<T> {
     fn clone(&self) -> Self {
         Self(Arc::clone(&self.0))
     }
@@ -1084,7 +1116,7 @@ impl GraphModel {
         let counted = stack.clone();
         let task = load_in_background(
             cx,
-            move || stack.evaluate(universe.get(), &prefixes),
+            move || stack.evaluate(universe.wait(), &prefixes),
             move |model, evaluation, cx| {
                 model.counting = None;
                 model.counted = Some((counted, Arc::new(evaluation)));
@@ -1117,7 +1149,7 @@ impl GraphModel {
         };
         let (prefixes, named) = (self.prefixes(), stack.clone());
         let work = cx.spawn(async move |model, cx| {
-            let naming = async move { named.excluded_by(universe.get(), &prefixes, node) };
+            let naming = async move { named.excluded_by(universe.wait(), &prefixes, node) };
             let exclusion = cx.background_executor().spawn(naming).await;
             let _ = model.update(cx, |model, cx| {
                 let named = model.exclusions.iter_mut().find(|held| held.node == node);
@@ -1149,12 +1181,12 @@ impl GraphModel {
 
     /// A matching with no query, on the graph's matcher pool where no list
     /// holds it.
-    pub(crate) fn take_matcher(&mut self) -> Matching {
+    pub(crate) fn take_matcher<S>(&mut self) -> Matching<S> {
         self.matchers.take()
     }
 
     /// Hands the pool of `matching` back for another list to take up.
-    pub(crate) fn park_matcher(&mut self, matching: Matching) {
+    pub(crate) fn park_matcher<S>(&mut self, matching: Matching<S>) {
         self.matchers.park(matching);
     }
 
@@ -1180,7 +1212,7 @@ impl GraphModel {
         self._applying = load_in_background(
             cx,
             move || {
-                let scope = scope_of(&stack, universe.get(), &prefixes);
+                let scope = scope_of(&stack, universe.wait(), &prefixes);
                 (stack, scope)
             },
             move |model, (stack, scope), cx| model.scope_landed(stack, scope, by, cx),
@@ -1231,7 +1263,7 @@ impl GraphModel {
             let (prepared, roots) = (loaded.scope_graph(key.scope), key.roots.clone());
             move || {
                 let shared = prepared.shared();
-                (prepared.get()).dominators(&shared.names, &shared.facets, &roots)
+                (prepared.wait()).dominators(&shared.names, &shared.facets, &roots)
             }
         };
         self.want(wanted, |loaded| &mut loaded.dominators, pass, cx);

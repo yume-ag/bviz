@@ -9,7 +9,7 @@ use crate::Palette;
 use crate::fuzzy::{self, Feeder, Matching, Row, Standing, TEXT_SIZE};
 use crate::holder::Holder;
 use crate::jump::{Candidates, bring_into_view, labelled, package_of};
-use crate::model::Prepared;
+use crate::model::{Prepared, Ready};
 use bviz_graph_layout::query_lang::{
     ArgType, Command, Function, Params, Place, Readable, Vocabulary, word_at, written_word,
 };
@@ -219,7 +219,7 @@ struct Pattern {
 /// the palette's candidates that are targets, read through it, then the
 /// packages and repositories they sit in.
 pub(crate) struct Completions {
-    candidates: Prepared<Candidates>,
+    candidates: Ready<Candidates>,
     /// The targets, as their indices among `candidates`.
     targets: Vec<u32>,
     patterns: Vec<Pattern>,
@@ -227,7 +227,8 @@ pub(crate) struct Completions {
 
 impl Completions {
     pub(crate) fn of(candidates: Prepared<Candidates>) -> Self {
-        let (held, shared) = (candidates.get(), candidates.shared());
+        let candidates = candidates.ready();
+        let (held, shared) = (&*candidates, candidates.shared());
         let targets: Vec<u32> = (0..held.len())
             .filter(|&index| {
                 let candidate = held.get(index);
@@ -255,7 +256,7 @@ impl Completions {
         let index = index as usize;
         match self.targets.get(index) {
             Some(&target) => {
-                let candidate = self.candidates.get().get(target);
+                let candidate = self.candidates.get(target);
                 Completion {
                     text: &candidate.text,
                     path: candidate.path.clone(),
@@ -351,9 +352,8 @@ pub(super) struct Completer {
 /// What the field offers, listed [`Few`] rows first, then the graph's
 /// patterns.
 struct Offered {
-    completions: Prepared<Completions>,
     /// Matches the word against the graph's patterns.
-    matching: Matching,
+    matching: Matching<Ready<Completions>>,
     few: Few,
     /// Where the word the rows complete stood in the field as it was matched.
     word: Option<Range<usize>>,
@@ -365,28 +365,23 @@ struct Offered {
 }
 
 impl Offered {
-    /// The patterns' rows, where the word is offered patterns.
-    fn pattern_rows(&self) -> &[Row] {
-        match self.offers.patterns {
-            true => self.matching.rows(),
-            false => &[],
-        }
+    /// The matching of the patterns, where the word is offered them.
+    fn patterns(&self) -> Option<&Matching<Ready<Completions>>> {
+        self.offers.patterns.then_some(&self.matching)
     }
 
     fn rows(&self) -> usize {
-        self.few.rows().len() + self.pattern_rows().len()
+        self.few.rows().len() + self.patterns().map_or(0, |patterns| patterns.rows().len())
     }
 
-    /// The row at `at`, with what it completes the word as. A pattern's row
-    /// is listed only once the patterns are prepared, so reading one never
-    /// waits on their preparation; a [`Few`] row needs none.
+    /// The row at `at`, with what it completes the word as.
     fn row(&self, at: usize) -> Option<(Completion<'_>, &Row)> {
         let few = self.few.rows();
         match few.get(at) {
             Some(row) => Some((self.few.completion(row), row)),
             None => {
-                let row = self.pattern_rows().get(at - few.len())?;
-                Some((self.completions.get().get(row.candidate), row))
+                let (completions, row) = self.patterns()?.row(at - few.len())?;
+                Some((completions.get(row.candidate), row))
             }
         }
     }
@@ -398,7 +393,7 @@ impl Offered {
 }
 
 /// The matching of what the field offers.
-fn matching(view: &mut ChipBar) -> Option<&mut Matching> {
+fn matching(view: &mut ChipBar) -> Option<&mut Matching<Ready<Completions>>> {
     Some(&mut view.completer.offered.as_mut()?.matching)
 }
 
@@ -418,22 +413,21 @@ pub(super) fn follow(view: &mut ChipBar, cx: &mut Context<ChipBar>) {
             return;
         };
         view.completer.offered = Some(Offered {
-            completions: completions.clone(),
             matching: view.model.update(cx, |model, _| model.take_matcher()),
             few: Few::Functions(Vec::new()),
             word: None,
             offers: Offers::at(Place::Pattern),
             aimed: None,
         });
-        let feed = move |feeder: &Feeder| {
-            let completions = completions.get();
+        let prepare = move || completions.ready();
+        let feed = |completions: &Ready<Completions>, feeder: &Feeder| {
             for index in 0..completions.len() {
                 if !feeder.push(index, completions.get(index).text) {
                     return;
                 }
             }
         };
-        fuzzy::inject(view, matching, take_up, feed, cx);
+        fuzzy::inject(view, matching, take_up, prepare, feed, cx);
     }
     let field = view.field.read(cx);
     let text = field.text(cx);
@@ -477,12 +471,8 @@ fn take_up(view: &mut ChipBar, cx: &mut Context<ChipBar>) {
     let Some(offered) = view.completer.offered.as_mut() else {
         return;
     };
-    let completions = &offered.completions;
-    offered.matching.rerank(|index| {
-        // Only a candidate handed to the matcher is read here, and one is
-        // handed only once the completions are prepared, so this never waits
-        // on their preparation.
-        let completion = completions.get().get(index);
+    offered.matching.rerank(|completions, index| {
+        let completion = completions.get(index);
         Standing {
             path: completion.path.clone(),
             drawn: matches!(completion.named, Named::Target(id) if drawn.contains(&id)),
@@ -685,7 +675,7 @@ pub(super) fn list(
                 let row = Listed {
                     completion: &completion,
                     row,
-                    names: offered.completions.shared().labels.repos().names(),
+                    names: loaded.shared.labels.repos().names(),
                     matching: &offered.matching,
                     index,
                     kind,
@@ -733,7 +723,7 @@ struct Listed<'a> {
     /// The names the graph shows repositories by.
     names: &'a RepoNames,
     /// What matched the word against the row.
-    matching: &'a Matching,
+    matching: &'a Matching<Ready<Completions>>,
     index: usize,
     kind: &'static str,
     /// The row's tooltip.
@@ -836,7 +826,7 @@ fn pattern_line(
     completion: &Completion,
     row: &Row,
     names: &RepoNames,
-    matching: &Matching,
+    matching: &Matching<Ready<Completions>>,
     palette: &Palette,
 ) -> LabelLine {
     let shown = names.show(completion.text);

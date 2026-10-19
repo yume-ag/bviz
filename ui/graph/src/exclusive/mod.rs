@@ -975,7 +975,7 @@ impl ExclusivePanel {
         self.drawing = Some(load_in_background(
             cx,
             move || {
-                let writers = Arc::clone(writers.get());
+                let writers = Arc::clone(writers.wait());
                 let unit = tree.scope().unit();
                 let points = || (0..tree.total()).map(|node| (tree.id(node), tree.kind(node)));
                 let colouring = Colouring::of(unit, points().map(|(id, _)| id), &shared.facets);

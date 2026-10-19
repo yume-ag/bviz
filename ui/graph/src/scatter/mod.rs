@@ -731,7 +731,7 @@ impl ScatterPanel {
                 let verdict = |id| verdicts.get(id);
                 let time = |id| clocks.time(id);
                 let plotted = Plotted::of(&metrics, &reference, axes, time, plots, verdict, hue);
-                let writers = Arc::clone(writers.get());
+                let writers = Arc::clone(writers.wait());
                 let index = PointIndex::of(&metrics, &plotted, plots, &shared.base, writers);
                 let points = metrics
                     .points

@@ -39,28 +39,29 @@ fn config() -> Config {
 }
 
 /// Reaches the matching `view` holds, while it holds one.
-pub(crate) type Locate<V> = fn(&mut V) -> Option<&mut Matching>;
+pub(crate) type Locate<V, S> = fn(&mut V) -> Option<&mut Matching<S>>;
 
 /// Takes up a result of a matching that changed since the last poll.
 pub(crate) type TakeUp<V> = fn(&mut V, &mut Context<V>);
 
-/// A matcher over candidates handed to it by index, with the rows its latest
-/// result ranks.
-pub(crate) struct Matching {
+/// A matcher over candidates handed to it by index into a source of type `S`,
+/// with the rows its latest result ranks.
+pub(crate) struct Matching<S> {
     nucleo: Nucleo<u32>,
     /// Finds the characters each row's query matched, for ranking the rows
     /// and highlighting them, on a row's text as written and as shown.
     matcher: RefCell<Matcher>,
-    /// The pattern `rows` were ranked by.
+    /// The pattern the rows were ranked by.
     pattern: Pattern,
     /// The query last handed to the matcher, which an edit extending it
     /// narrows rather than matches afresh.
     query: SharedString,
-    /// The query `rows` were ranked for, which trails `query` until the
+    /// The query the rows were ranked for, which trails `query` until the
     /// matcher is next polled.
     ranked: SharedString,
-    rows: Vec<Row>,
-    /// How many candidates the query matches, of which `rows` lists the
+    /// Absent until the source being handed to the matcher has landed.
+    landed: Option<Landed<S>>,
+    /// How many candidates the query matches, of which the rows list the
     /// first.
     matched: u32,
     /// Whether the last pass the matcher was polled on is still running.
@@ -71,6 +72,13 @@ pub(crate) struct Matching {
     _polling: Task<()>,
 }
 
+/// The source a matcher's candidates index into, and the rows ranked of
+/// them.
+struct Landed<S> {
+    source: S,
+    rows: Vec<Row>,
+}
+
 /// The matcher worker pool a panel keeps while no list of its holds it, so
 /// that a list opened takes it up rather than starting a pool of its own.
 #[derive(Default)]
@@ -78,18 +86,18 @@ pub(crate) struct Pool(Option<Nucleo<u32>>);
 
 impl Pool {
     /// A matching with no query, on the parked pool where one is parked.
-    pub(crate) fn take(&mut self) -> Matching {
+    pub(crate) fn take<S>(&mut self) -> Matching<S> {
         Matching::new(self.0.take())
     }
 
     /// Parks the pool of `matching`, which stops matching; a pool parked
     /// already stays, and the other is dropped.
-    pub(crate) fn park(&mut self, matching: Matching) {
+    pub(crate) fn park<S>(&mut self, matching: Matching<S>) {
         self.0.get_or_insert(matching.nucleo);
     }
 }
 
-impl Matching {
+impl<S> Matching<S> {
     fn new(pool: Option<Nucleo<u32>>) -> Self {
         let mut nucleo = pool.unwrap_or_else(|| {
             let workers = Some(bviz_parallel::worker_count());
@@ -104,7 +112,7 @@ impl Matching {
             pattern: Pattern::default(),
             query: SharedString::default(),
             ranked: SharedString::default(),
-            rows: Vec::new(),
+            landed: None,
             matched: 0,
             running: false,
             streaming: false,
@@ -118,7 +126,13 @@ impl Matching {
     }
 
     pub(crate) fn rows(&self) -> &[Row] {
-        &self.rows
+        self.landed.as_ref().map_or(&[], |landed| &landed.rows)
+    }
+
+    /// The row at `at`, with the source its candidate indexes into.
+    pub(crate) fn row(&self, at: usize) -> Option<(&S, &Row)> {
+        let landed = self.landed.as_ref()?;
+        Some((&landed.source, landed.rows.get(at)?))
     }
 
     pub(crate) fn matched(&self) -> u32 {
@@ -129,7 +143,7 @@ impl Matching {
         self.streaming
     }
 
-    /// Whether `rows` were ranked for the query last handed to the matcher.
+    /// Whether the rows were ranked for the query last handed to the matcher.
     pub(crate) fn current(&self) -> bool {
         self.ranked == self.query
     }
@@ -165,26 +179,29 @@ impl Matching {
     }
 
     /// Lists the rows the matcher's latest result ranks first, as `standing`
-    /// tells of each candidate's index; it is asked only of an index handed
-    /// to the matcher.
-    pub(crate) fn rerank(&mut self, standing: impl Fn(u32) -> Standing) {
+    /// tells of each candidate's index into the source; it is asked only of an
+    /// index handed to the matcher.
+    pub(crate) fn rerank(&mut self, standing: impl Fn(&S, u32) -> Standing) {
         self.ranked = self.query.clone();
         let snapshot = self.nucleo.snapshot();
         self.matched = snapshot.matched_item_count();
+        let Some(Landed { source, rows }) = &mut self.landed else {
+            return;
+        };
         if self.query.is_empty() || snapshot.item_count() == 0 {
-            self.rows.clear();
+            rows.clear();
             return;
         }
         let found = snapshot
             .matched_items(..)
             .map(|item| (*item.data, item.matcher_columns[0].slice(..)));
         self.pattern = snapshot.pattern().column_pattern(0).clone();
-        self.rows = rank::rank(
+        *rows = rank::rank(
             found,
             &self.query,
             &self.pattern,
             self.matcher.get_mut(),
-            standing,
+            |index| standing(source, index),
         );
     }
 }
@@ -231,20 +248,23 @@ impl Drop for Injecting {
     }
 }
 
-/// Hands the matching `locate` reaches the candidates `feed` pushes, in place
-/// of any it held, off the UI thread, polling it through `take_up`.
-pub(crate) fn inject<V: 'static>(
+/// Hands the matching `locate` reaches the source `prepare` yields and the
+/// candidates `feed` pushes from it, in place of any it held, off the UI
+/// thread, polling it through `take_up`. The source lands before the first
+/// candidate is pushed, so every row ranked can be read from it.
+pub(crate) fn inject<V: 'static, S: Clone + Send + 'static>(
     view: &mut V,
-    locate: Locate<V>,
+    locate: Locate<V, S>,
     take_up: TakeUp<V>,
-    feed: impl FnOnce(&Feeder) + Send + 'static,
+    prepare: impl FnOnce() -> S + Send + 'static,
+    feed: impl FnOnce(&S, &Feeder) + Send + 'static,
     cx: &mut Context<V>,
 ) {
     let Some(matching) = locate(view) else {
         return;
     };
     matching.nucleo.restart(true);
-    matching.rows.clear();
+    matching.landed = None;
     matching.matched = 0;
     matching.streaming = true;
     let feeder = Feeder {
@@ -253,9 +273,24 @@ pub(crate) fn inject<V: 'static>(
     };
     let stopped = Arc::clone(&feeder.stopped);
     let task = cx.spawn(async move |view, cx| {
-        cx.background_executor()
-            .spawn(async move { feed(&feeder) })
+        let source = cx
+            .background_executor()
+            .spawn(async move { prepare() })
             .await;
+        let fed = source.clone();
+        let landed = view.update(cx, |view, _| {
+            let matching = locate(view)?;
+            matching.landed = Some(Landed {
+                source,
+                rows: Vec::new(),
+            });
+            Some(())
+        });
+        if let Ok(Some(())) = landed {
+            cx.background_executor()
+                .spawn(async move { feed(&fed, &feeder) })
+                .await;
+        }
         let _ = view.update(cx, |view, cx| {
             if let Some(matching) = locate(view) {
                 matching.streaming = false;
@@ -272,9 +307,9 @@ pub(crate) fn inject<V: 'static>(
 
 /// Polls the matching `locate` reaches every [`POLL`] through `take_up`, for
 /// as long as it runs or is handed candidates.
-pub(crate) fn poll<V: 'static>(
+pub(crate) fn poll<V: 'static, S: 'static>(
     view: &mut V,
-    locate: Locate<V>,
+    locate: Locate<V, S>,
     take_up: TakeUp<V>,
     cx: &mut Context<V>,
 ) {
@@ -323,7 +358,7 @@ pub(crate) fn rank_few<'a>(
     rank::rank(found, query, &pattern, &mut matcher, standing)
 }
 
-impl Matching {
+impl<S> Matching<S> {
     /// The chars of `shown`, a row's text as it is shown, that pick out what
     /// the query matched of `row`'s text as written, ascending: where each
     /// matched char stands in `shown` while every one of them shows there, and

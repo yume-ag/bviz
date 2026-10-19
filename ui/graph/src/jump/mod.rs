@@ -10,7 +10,7 @@ use crate::chips::{self, ChipBar, Drawn};
 use crate::fuzzy::{self, Matching, Row, Standing, TEXT_SIZE};
 use crate::hidden::HiddenBy;
 use crate::holder::{HOLDERS, Holder};
-use crate::model::{GraphModel, Prepared, Shared, SourceReplaced};
+use crate::model::{GraphModel, Prepared, Ready, Shared, SourceReplaced};
 use crate::point::kind_names;
 use bviz_graph_layout::Id;
 use bviz_graph_layout::select::labels::{carried_label, package_label};
@@ -29,6 +29,7 @@ use gpui::{
     SharedString, Stateful, Subscription, TextStyleRefinement, Window, actions, div, prelude::*,
     px, relative, rems, uniform_list,
 };
+use index::Candidate;
 #[cfg(test)]
 pub(crate) use index::tests::shared as fixture;
 pub(crate) use index::{Candidates, Scope, container, labelled, node_text, package_of, shown};
@@ -154,7 +155,7 @@ struct Jump {
     scope: Scope,
     /// Matches the field's query against the indices of the candidates
     /// `scope` offers.
-    matching: Matching,
+    matching: Matching<Ready<Candidates>>,
     candidates: Prepared<Candidates>,
     /// The row the keys are on, which is previewed once a key moved it.
     aimed: usize,
@@ -257,15 +258,15 @@ impl JumpPalette {
             return;
         };
         let (candidates, scope) = (jump.candidates.clone(), jump.scope);
-        let feed = move |feeder: &fuzzy::Feeder| {
-            let candidates = candidates.get();
+        let prepare = move || candidates.ready();
+        let feed = move |candidates: &Ready<Candidates>, feeder: &fuzzy::Feeder| {
             for index in candidates.in_scope(scope) {
                 if !feeder.push(index, &candidates.get(index).text) {
                     return;
                 }
             }
         };
-        fuzzy::inject(self, matching, take_up, feed, cx);
+        fuzzy::inject(self, matching, take_up, prepare, feed, cx);
     }
 
     /// Hands the matcher the query the field holds.
@@ -431,7 +432,7 @@ impl JumpPalette {
 }
 
 /// The open palette's matching.
-fn matching(view: &mut JumpPalette) -> Option<&mut Matching> {
+fn matching(view: &mut JumpPalette) -> Option<&mut Matching<Ready<Candidates>>> {
     Some(&mut view.open.as_mut()?.matching)
 }
 
@@ -462,11 +463,8 @@ fn take_up(view: &mut JumpPalette, cx: &mut Context<JumpPalette>) {
 
 /// Lists the rows the matcher's latest result ranks first.
 fn rerank(jump: &mut Jump, drawn: &FxHashSet<Id>) {
-    let candidates = &jump.candidates;
-    jump.matching.rerank(|index| {
-        // An item is pushed only once the candidates are prepared, so reading
-        // them here never waits on their preparation.
-        let candidate = candidates.get().get(index);
+    jump.matching.rerank(|candidates, index| {
+        let candidate = candidates.get(index);
         Standing {
             path: candidate.path.clone(),
             drawn: drawn.contains(&candidate.id),
@@ -491,8 +489,8 @@ pub(crate) fn bring_into_view(scroll: &ListScroll, aimed: usize) {
 
 /// The node of the aimed row.
 fn aimed(jump: &Jump) -> Option<Id> {
-    let row = jump.matching.rows().get(jump.aimed)?;
-    Some(jump.candidates.get().get(row.candidate).id)
+    let (candidates, row) = jump.matching.row(jump.aimed)?;
+    Some(candidates.get(row.candidate).id)
 }
 
 /// A quoted target pattern naming `id`: the label of the target it belongs
@@ -630,11 +628,10 @@ fn rows(
         let (Some(jump), Some(loaded)) = (view.open.as_ref(), view.model.read(cx).loaded()) else {
             return Vec::new();
         };
-        let candidates = jump.candidates.get();
         let reveals = view.model.read(cx).reveals();
         range
             .filter_map(|index| {
-                let row = jump.matching.rows().get(index)?;
+                let (candidates, row) = jump.matching.row(index)?;
                 let candidate = candidates.get(row.candidate);
                 let shown = Shown {
                     aimed: jump.aimed == index,
@@ -644,7 +641,7 @@ fn rows(
                 Some(listed(
                     &loaded.shared,
                     jump,
-                    row,
+                    (candidate, row),
                     index,
                     shown,
                     &listing,
@@ -711,20 +708,19 @@ struct Shown {
     shows_in_graph: bool,
 }
 
-/// One row of the open palette `jump`, at `index`: the node's text with the
-/// characters the query matched picked out, what holds it where the text
-/// leaves that out, and its badges.
+/// One row of the open palette `jump`, at `index`, offering `candidate`: the
+/// node's text with the characters the query matched picked out, what holds
+/// it where the text leaves that out, and its badges.
 fn listed(
     shared: &Shared,
     jump: &Jump,
-    row: &Row,
+    (candidate, row): (&Candidate, &Row),
     index: usize,
     shown: Shown,
     palette: &Palette,
     entity: &Entity<JumpPalette>,
 ) -> Stateful<Div> {
     let colors = &palette.colors;
-    let candidate = jump.candidates.get().get(row.candidate);
     let tip = colors.tooltip();
     let id = candidate.id;
     let entity = entity.clone();

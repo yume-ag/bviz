@@ -519,7 +519,7 @@ fn evaluate(view: &mut ChipBar, cx: &mut Context<ChipBar>) {
         move || Landed {
             generation,
             draft,
-            evaluation: stack.evaluate(universe.get(), &prefixes),
+            evaluation: stack.evaluate(universe.wait(), &prefixes),
         },
         landed,
     );
