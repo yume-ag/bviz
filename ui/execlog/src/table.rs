@@ -12,7 +12,7 @@ use bviz_label::shown::Parts;
 use bviz_ui_components::amount::{self, bytes};
 use bviz_ui_components::gesture::{Gestures, Pointer};
 use bviz_ui_components::{
-    Dropdown, HintedLabelLine, LabelLine, ListScroll, MenuItem, OverflowRows, Presentation,
+    ByRoom, Dropdown, HintedLabelLine, LabelLine, ListScroll, MenuItem, OverflowRows, Presentation,
     Priority, SCROLLBAR_THICKNESS, Sort, TextTooltip, ToggleGroup, ToggleSegment, ToolbarGroup,
     TruncatingLabel, list_scrollbar, sort_gesture, sort_header, sort_hint,
 };
@@ -28,6 +28,9 @@ const TWO_LINE_ROW_HEIGHT: Pixels = px(44.);
 const CELL_PAD: Pixels = px(6.);
 const CARET: Pixels = px(12.);
 const NAME_WIDTH: Pixels = px(220.);
+/// The width of a spawn's mnemonic and runner in a list of spawns: narrower
+/// than a table of sums gives its names, so its target and output keep room.
+const SPAWN_NAME_WIDTH: Pixels = px(170.);
 const NUMBER_WIDTH: Pixels = px(110.);
 const BYTES_WIDTH: Pixels = px(90.);
 const NOTE_WIDTH: Pixels = px(110.);
@@ -356,29 +359,72 @@ pub(crate) fn runner_table(
 /// mnemonic, and its runner.
 const NAME_COLUMNS: [Column; 3] = [
     text(Width::Rest),
-    text(Width::Fixed(NAME_WIDTH)),
-    text(Width::Fixed(NAME_WIDTH)),
+    text(Width::Fixed(SPAWN_NAME_WIDTH)),
+    text(Width::Fixed(SPAWN_NAME_WIDTH)),
 ];
 
 const NAME_TITLES: [&str; NAME_COLUMNS.len()] = ["Target and output", "Mnemonic", "Runner"];
 
-pub(crate) fn name_header_cells() -> impl Iterator<Item = AnyElement> {
-    NAME_COLUMNS
-        .into_iter()
-        .zip(NAME_TITLES)
+/// The least width a list of spawns leaves the target and output of each
+/// before it gives up its runner column for them.
+const MADE_MIN_WIDTH: Pixels = px(320.);
+
+/// Whether a list of spawns has the room for its last column, the runner's.
+#[derive(Clone, Copy)]
+pub(crate) enum RunnerColumn {
+    Shown,
+    Left,
+}
+
+impl RunnerColumn {
+    /// How many of [`NAME_COLUMNS`] a list shows.
+    fn names(self) -> usize {
+        match self {
+            RunnerColumn::Shown => NAME_COLUMNS.len(),
+            RunnerColumn::Left => NAME_COLUMNS.len() - 1,
+        }
+    }
+}
+
+/// The list of spawns `list` builds, with the runner column where the room
+/// it is given fits that column beside `figures`, the columns of the
+/// figures each spawn is listed with, and without it elsewhere.
+pub(crate) fn by_room(
+    figures: &[Column],
+    mut list: impl FnMut(RunnerColumn) -> AnyElement,
+) -> ByRoom {
+    let fixed = |column: &Column| match column.width {
+        Width::Fixed(width) => width,
+        Width::Rest => MADE_MIN_WIDTH,
+    };
+    let roomy = (figures.iter().chain(&NAME_COLUMNS))
+        .map(fixed)
+        .fold(px(SCROLLBAR_THICKNESS), |sum, width| sum + width);
+    let mut room = |runner| div().size_full().flex().flex_col().child(list(runner));
+    ByRoom::width(
+        roomy,
+        room(RunnerColumn::Shown).into_any_element(),
+        room(RunnerColumn::Left).into_any_element(),
+    )
+}
+
+pub(crate) fn name_header_cells(runner: RunnerColumn) -> impl Iterator<Item = AnyElement> {
+    (NAME_COLUMNS.into_iter().zip(NAME_TITLES))
+        .take(runner.names())
         .map(|(column, title)| cell(column, title).into_any_element())
 }
 
 /// What names a spawn that names neither its target nor its output.
 const NO_TARGET_OR_OUTPUT: &str = "no target or output";
 
-/// The cells of [`NAME_COLUMNS`] naming `spawn`.
+/// The cells of [`NAME_COLUMNS`] naming `spawn`, as many as `runner` leaves.
 pub(crate) fn name_cells(
     spawn: &SpawnName,
     repos: &RepoNames,
     palette: &Palette,
-) -> [Div; NAME_COLUMNS.len()] {
-    let [made, mnemonic, runner] = NAME_COLUMNS;
+    runner: RunnerColumn,
+) -> impl Iterator<Item = Div> {
+    let [made, mnemonic, runner_column] = NAME_COLUMNS;
     let muted = palette.colors.text_muted;
     let label = |label: &str| {
         let written = repos.written_label(label);
@@ -411,8 +457,13 @@ pub(crate) fn name_cells(
             mnemonic,
             TruncatingLabel::new("mnemonic", spawn.mnemonic.clone()),
         ),
-        cell(runner, TruncatingLabel::new("runner", spawn.runner.clone())),
+        cell(
+            runner_column,
+            TruncatingLabel::new("runner", spawn.runner.clone()),
+        ),
     ]
+    .into_iter()
+    .take(runner.names())
 }
 
 /// A row of a list of spawns.

@@ -6,10 +6,10 @@ use crate::palette::Palette;
 use crate::panel::{SpawnPanel, Tables};
 use crate::summary::{GroupRow, LISTED_SPAWNS, Summary};
 use crate::table::{
-    BYTES_COLUMN, GroupColumn, List, SortBy, SpawnsToggle, TIME_COLUMN, apply, cell, group_row,
-    header_row, list_group, list_rows, longest, measure_title, name_cells, name_header_cells,
-    none_note, picker_group, runner_table, scrolling_table, sort_tables, sorting_cell,
-    sorting_header, spawn_row, totals,
+    BYTES_COLUMN, Column, GroupColumn, List, RunnerColumn, SortBy, SpawnsToggle, TIME_COLUMN,
+    apply, by_room, cell, group_row, header_row, list_group, list_rows, longest, measure_title,
+    name_cells, name_header_cells, none_note, picker_group, runner_table, scrolling_table,
+    sort_tables, sorting_cell, sorting_header, spawn_row, totals,
 };
 use bviz_execlog::ByteMeasure;
 use bviz_ui_components::amount::{self, bytes, moved};
@@ -34,6 +34,11 @@ const COLUMNS: [GroupColumn; 6] = [
     GroupColumn::Bytes(ByteMeasure::Tools),
     GroupColumn::Time,
 ];
+
+/// The columns of the figures each spawn of the list of the largest is listed
+/// with: its bytes in each measure, then its spawn time.
+const FIGURES: [Column; ByteMeasure::ALL.len() + 1] =
+    [BYTES_COLUMN, BYTES_COLUMN, BYTES_COLUMN, TIME_COLUMN];
 
 /// The order the mnemonic table opens in.
 const DEFAULT_SORT: Sort<SortBy> = Sort {
@@ -143,7 +148,7 @@ impl BytesTables {
     /// The spawns largest in the measure the list is sorted by, in its order,
     /// each named by its target and output. A click on a measure's title
     /// shows the spawns largest in it.
-    fn largest(&self, palette: &Palette, cx: &mut Context<Self>) -> Div {
+    fn largest(&self, runner: RunnerColumn, palette: &Palette, cx: &mut Context<Self>) -> Div {
         let sort = self.largest_sort;
         let measure_cell = |measure: ByteMeasure, cx: &mut Context<Self>| {
             sorting_cell(
@@ -166,7 +171,7 @@ impl BytesTables {
         let header = header_row(
             (measures.into_iter())
                 .chain([cell(TIME_COLUMN, "Spawn time").into_any_element()])
-                .chain(name_header_cells()),
+                .chain(name_header_cells(runner)),
             palette,
         );
         let spawns = &self.summary.biggest[sort.by.index()];
@@ -187,7 +192,7 @@ impl BytesTables {
                     let amounts = ByteMeasure::ALL
                         .map(|measure| cell(BYTES_COLUMN, bytes(spawn.bytes.measure(measure))));
                     let time = cell(TIME_COLUMN, duration(spawn.time));
-                    let names = name_cells(&spawn.name, &tables.summary.repos, &palette);
+                    let names = name_cells(&spawn.name, &tables.summary.repos, &palette, runner);
                     spawn_row(
                         ("largest", index),
                         amounts.into_iter().chain([time]).chain(names),
@@ -279,7 +284,9 @@ impl Render for BytesTables {
         }
         match self.list {
             List::ByMnemonic => body.child(self.by_mnemonic(&palette, cx)),
-            List::Spawns => body.child(self.largest(&palette, cx)),
+            List::Spawns => body.child(by_room(&FIGURES, |runner| {
+                self.largest(runner, &palette, cx).into_any_element()
+            })),
         }
     }
 }

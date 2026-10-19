@@ -7,9 +7,10 @@ use crate::panel::{SpawnPanel, Tables};
 use crate::phase_bar::spent_in;
 use crate::summary::{Runner, Summary};
 use crate::table::{
-    GroupColumn, List, SortBy, SpawnsToggle, TIME_COLUMN, apply, cell, group_row, header_row,
-    list_group, list_rows, longest, name_cells, name_header_cells, none_note, picker_group,
-    runner_table, scrolling_table, sort_tables, sorting_header, spawn_row, totals,
+    GroupColumn, List, RunnerColumn, SortBy, SpawnsToggle, TIME_COLUMN, apply, by_room, cell,
+    group_row, header_row, list_group, list_rows, longest, name_cells, name_header_cells,
+    none_note, picker_group, runner_table, scrolling_table, sort_tables, sorting_header, spawn_row,
+    totals,
 };
 use bviz_execlog::Phase;
 use bviz_ui_components::gesture::GestureRow;
@@ -133,12 +134,12 @@ impl TimeTables {
 
     /// The spawns longest in the phase picked, longest first, each named by
     /// its target and output.
-    fn longest(&self, palette: &Palette, cx: &mut Context<Self>) -> Div {
+    fn longest(&self, runner: RunnerColumn, palette: &Palette, cx: &mut Context<Self>) -> Div {
         let phase = self.phase(cx);
         let spawns = &self.summary.top[phase.index()];
         let header = header_row(
             std::iter::once(cell(TIME_COLUMN, "Time in phase").into_any_element())
-                .chain(name_header_cells()),
+                .chain(name_header_cells(runner)),
             palette,
         );
         if spawns.is_empty() {
@@ -153,7 +154,7 @@ impl TimeTables {
                 (shown.map(|index| {
                     let spawn = &spawns[index];
                     let time = cell(TIME_COLUMN, duration(spawn.time));
-                    let names = name_cells(&spawn.name, &tables.summary.repos, &palette);
+                    let names = name_cells(&spawn.name, &tables.summary.repos, &palette, runner);
                     spawn_row(("longest", index), std::iter::once(time).chain(names))
                 }))
                 .collect()
@@ -276,7 +277,9 @@ impl Render for TimeTables {
         }
         match self.list {
             List::ByMnemonic => body.child(self.by_mnemonic(&palette, cx)),
-            List::Spawns => body.child(self.longest(&palette, cx)),
+            List::Spawns => body.child(by_room(&[TIME_COLUMN], |runner| {
+                self.longest(runner, &palette, cx).into_any_element()
+            })),
         }
     }
 }
