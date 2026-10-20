@@ -181,6 +181,8 @@ crate.annotation(
     git_archive_sha256 = "4dc9b3324038ed7f761f8b32811c27eb8e5234a940fa741a6d5214eb88a7abb6",
     git_archive_strip_prefix = "wasm_thread-{commit}",
     git_archive_url = "https://github.com/zed-industries/wasm_thread/archive/{commit}.tar.gz",
+    patch_args = ["-p1"],
+    patches = ["//patches/wasm_thread:wasm_thread-assert-unwind-safe-handler.patch"],
 )
 crate.annotation(
     crate = "zed-font-kit",
