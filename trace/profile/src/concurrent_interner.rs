@@ -555,25 +555,16 @@ mod tests {
             }
         };
         let interner = ConcurrentInterner::new(DISTINCT * 64, DISTINCT).expect("a small pool");
-        let produced: Vec<Vec<(String, Str)>> = bviz_parallel::scope(|scope| {
-            let handles: Vec<_> = (0..threads)
-                .map(|t| {
-                    let interner = &interner;
-                    let key = &key;
-                    scope.spawn(move || {
-                        let mut w = interner.writer();
-                        let mut out = Vec::new();
-                        // Overlapping strides so every thread sees a shared set.
-                        for i in (t..DISTINCT).chain(0..DISTINCT).step_by(1) {
-                            let s = key(i % DISTINCT);
-                            let h = w.intern(&s);
-                            out.push((s, h));
-                        }
-                        out
-                    })
-                })
-                .collect();
-            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        let produced: Vec<Vec<(String, Str)>> = bviz_parallel::fan_out(threads, |t| {
+            let mut w = interner.writer();
+            let mut out = Vec::new();
+            // Overlapping strides so every thread sees a shared set.
+            for i in (t..DISTINCT).chain(0..DISTINCT).step_by(1) {
+                let s = key(i % DISTINCT);
+                let h = w.intern(&s);
+                out.push((s, h));
+            }
+            out
         });
         let text = interner.into_text().expect("the pool holds its text");
 
