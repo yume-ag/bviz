@@ -599,6 +599,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(unix, windows))]
     fn probe_reads_an_opened_file() {
         let path = std::env::temp_dir().join("bviz_execlog_probe.binpb.zst");
         std::fs::write(&path, encode(&[invocation("abc")])).unwrap();
