@@ -8,6 +8,7 @@ bazel_dep(name = "llvm", version = "0.8.24")
 bazel_dep(name = "package_metadata", version = "0.0.13")
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "protobuf", version = "35.0", repo_name = "com_google_protobuf")
+bazel_dep(name = "rules_cc", version = "0.2.25")
 bazel_dep(name = "rules_proto", version = "7.1.0")
 bazel_dep(name = "rules_rs", version = "0.0.112")
 bazel_dep(name = "tar.bzl", version = "0.10.4")
@@ -30,7 +31,10 @@ single_version_override(
 single_version_override(
     module_name = "zstd",
     patch_strip = 1,
-    patches = ["//patches/zstd:zstd-export-license.patch"],
+    patches = [
+        "//patches/zstd:zstd-export-license.patch",
+        "//patches/zstd:zstd-export-headers.patch",
+    ],
 )
 
 single_version_override(
@@ -335,7 +339,31 @@ crate.annotation(
     ],
 )
 crate.annotation(
+    additive_build_file_content = """load("@package_metadata//licenses/rules:license.bzl", "license")
+load("@package_metadata//rules:package_metadata.bzl", "package_metadata")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
+cc_library(
+    name = "wasm_shim",
+    hdrs = glob(["wasm-shim/*.h"]),
+    includes = ["wasm-shim"],
+    package_metadata = [":wasm_shim_package_metadata"],
+    visibility = ["//visibility:public"],
+)
+
+package_metadata(
+    name = "wasm_shim_package_metadata",
+    attributes = [":wasm_shim_license"],
+    purl = "pkg:cargo/zstd-sys@2.1.0+zstd.1.5.7",
+)
+
+license(
+    name = "wasm_shim_license",
+    kind = "@package_metadata//licenses/spdx:BSD-3-Clause",
+    text = "LICENSE",
+)""",
     crate = "zstd-sys",
+    extra_aliased_targets = {"zstd-sys_wasm_shim": "wasm_shim"},
     gen_build_script = "off",  # otherwise it compiles the zstd it bundles
     deps = ["//third_party:zstd"],
 )

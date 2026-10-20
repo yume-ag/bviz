@@ -1,6 +1,7 @@
 load("@package_metadata//licenses/rules:license.bzl", "license")
 load("@package_metadata//licenses/rules:license_kind.bzl", "license_kind")
 load("@package_metadata//rules:package_metadata.bzl", "package_metadata")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
 
 # rules_rs's generated crate repositories can't resolve the root module's bazel_dep
 # apparent names, and canonical repo names must not be hardcoded. Alias the BCR
@@ -27,8 +28,31 @@ alias(
 
 alias(
     name = "zstd",
-    actual = "@zstd//:zstd",
+    actual = select({
+        "@platforms//cpu:wasm32": ":zstd_wasm",
+        "//conditions:default": "@zstd//:zstd",
+    }),
     visibility = ["//visibility:public"],
+)
+
+# The browser has no C library, so zstd builds against the headers zstd-sys
+# ships for it, whose functions zstd-sys implements in Rust; and has no
+# threads or assembly for zstd to use.
+cc_library(
+    name = "zstd_wasm",
+    srcs = [
+        "@zstd//:common_sources",
+        "@zstd//:compress_sources",
+        "@zstd//:decompress_sources",
+        "@zstd//:lib/zstd.h",
+        "@zstd//:lib/zstd_errors.h",
+    ],
+    local_defines = [
+        "XXH_NAMESPACE=ZSTD_",
+        "ZSTD_DISABLE_ASM",
+    ],
+    target_compatible_with = ["@platforms//cpu:wasm32"],
+    deps = ["@crates//:zstd-sys_wasm_shim"],
 )
 
 package_metadata(

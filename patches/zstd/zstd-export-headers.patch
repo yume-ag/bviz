@@ -1,0 +1,22 @@
+Export the public headers
+
+The library's sources include its public headers by relative path, so a
+library built from the module's source filegroups needs those headers among
+its inputs, and the module's BUILD file keeps them private.
+
+The patch adds two lines to the module's BUILD file and carries the six
+around them, too little of the file to attribute.
+
+License: Apache-2.0 (Bazel Central Registry overlay of zstd 1.5.7.bcr.1)
+
+--- a/BUILD.bazel
++++ b/BUILD.bazel
+@@ -5,6 +5,8 @@
+ 
+ exports_files(["LICENSE"])
+ 
++exports_files(["lib/zstd.h", "lib/zstd_errors.h"])
++
+ filegroup(
+     name = "common_sources",
+     srcs = glob([
