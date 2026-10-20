@@ -27,6 +27,7 @@ package_metadata(
         "//patches/gpui:__pkg__",
         "//patches/gpui_apple:__pkg__",
         "//patches/gpui_linux:__pkg__",
+        "//patches/gpui_web:__pkg__",
         "//patches/gpui_wgpu:__pkg__",
     ],
 )

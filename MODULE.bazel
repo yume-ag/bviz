@@ -244,6 +244,11 @@ crate.annotation(
     ],
 )
 crate.annotation(
+    crate = "gpui_web",
+    patch_args = ["-p1"],
+    patches = ["//patches/gpui_web:gpui_web-assert-unwind-safe-callbacks.patch"],
+)
+crate.annotation(
     crate = "gpui_wgpu",
     patch_args = ["-p1"],
     patches = ["//patches/gpui_wgpu:gpui_wgpu-reserve-path-vertices.patch"],
