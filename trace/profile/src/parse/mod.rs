@@ -1,5 +1,5 @@
 use std::fmt;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, Read};
 use std::path::Path;
 
 use bviz_input::Input;
@@ -13,21 +13,20 @@ use crate::model::Profile;
 
 mod build;
 mod decode;
+mod gz_stream;
 mod pipeline;
 mod scanner;
 mod serde_events;
 
 use build::{Builder, Merge, seal};
-use decode::{decode, gzip_size_hint_at, latin1_cow};
-use pipeline::{
-    TraceEventsArray, find_trace_events_array, find_trace_events_key, parse_gz_pipelined,
-    parse_gz_pipelined_reader, parse_parallel,
-};
+use decode::{decode, latin1_cow};
+use gz_stream::{parse_gz_pipelined, parse_gz_pipelined_input};
+use pipeline::{TraceEventsArray, find_trace_events_array, find_trace_events_key, parse_parallel};
 use scanner::object_end;
 use serde_events::{ArgEntry, ProfileVisitor, RawEventSeed};
 
 pub use decode::gzip_size_hint;
-pub use pipeline::pipeline_chunk_bytes;
+pub use gz_stream::pipeline_chunk_bytes;
 
 /// Estimated distinct-string density of a Bazel profile — about one interned
 /// string per this many decoded bytes — used to pre-size the shared interner's
@@ -67,10 +66,6 @@ fn intern_prefault_bytes(total_bytes: usize) -> usize {
 }
 
 const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
-
-/// Read-buffer capacity for the compressed input, sized to amortize read
-/// syscalls over the streamed inflate of a large profile.
-const GZIP_READ_BUFFER_BYTES: usize = 1 << 20;
 
 #[derive(Debug)]
 pub enum LoadError {
@@ -187,19 +182,6 @@ impl Profile {
         }
         from_whole_buffer(bytes)
     }
-}
-
-/// The pipelined decode streamed from a seekable gzipped `input`, sized from
-/// its trailer. `None` for an input the pipeline declines.
-fn parse_gz_pipelined_input(input: &Input) -> Option<Profile> {
-    if !input.head()?.starts_with(&GZIP_MAGIC) {
-        return None;
-    }
-    let decoded_size = gzip_size_hint_at(input.seekable()?, input.size()?)?;
-    let reader = BufReader::with_capacity(GZIP_READ_BUFFER_BYTES, input.reader()?);
-    timed("decode+parse (pipelined, streamed)", || {
-        parse_gz_pipelined_reader(reader, decoded_size)
-    })
 }
 
 /// Decodes a profile whole into memory and parses that text: the parser works
@@ -420,7 +402,8 @@ pub(crate) fn build_for_test(
 #[cfg(test)]
 mod tests {
     use super::decode::{MAX_PLAUSIBLE_GZIP_RATIO, latin1_to_utf8};
-    use super::pipeline::{parse_chunks, parse_gz_stream, parse_gz_stream_into};
+    use super::gz_stream::{parse_gz_stream, parse_gz_stream_into};
+    use super::pipeline::parse_chunks;
     use super::scanner::{find_special, scan_event};
     use super::serde_events::{arg_i64, arg_str};
     use super::*;
