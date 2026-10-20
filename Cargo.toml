@@ -86,4 +86,5 @@ prost-types = "0.13"
 protoc-gen-prost = "0.4"
 gpui = { git = "https://github.com/zed-industries/zed", tag = "v1.24.3" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", tag = "v1.24.3" }
+gpui_web = { git = "https://github.com/zed-industries/zed", tag = "v1.24.3" }
 

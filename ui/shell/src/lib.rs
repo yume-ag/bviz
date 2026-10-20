@@ -42,7 +42,22 @@ const MIN_WINDOW_SIZE: Size<Pixels> = Size {
 pub fn application() -> Application {
     #[cfg(target_os = "linux")]
     exit_without_wayland();
-    gpui_platform::application().with_assets(bviz_ui_assets::Assets)
+    #[cfg(not(target_family = "wasm"))]
+    let application = gpui_platform::application();
+    #[cfg(target_family = "wasm")]
+    let application = web_application();
+    application.with_assets(bviz_ui_assets::Assets)
+}
+
+/// gpui's web platform as `gpui_platform::application` builds it, logging and
+/// reporting panics to the browser console.
+#[cfg(target_family = "wasm")]
+fn web_application() -> Application {
+    gpui_web::init_logging();
+    let allow_multi_threading = true;
+    let platform = std::rc::Rc::new(gpui_web::WebPlatform::new(allow_multi_threading));
+    let http_client = std::sync::Arc::new(platform.fetch_http_client());
+    Application::with_platform(platform).with_http_client(http_client)
 }
 
 /// gpui's Linux platform is built for Wayland alone, and without a Wayland

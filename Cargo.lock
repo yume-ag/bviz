@@ -1021,6 +1021,7 @@ dependencies = [
  "bviz_ui_theme",
  "gpui",
  "gpui_platform",
+ "gpui_web",
 ]
 
 [[package]]

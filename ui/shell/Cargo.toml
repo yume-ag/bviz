@@ -21,3 +21,6 @@ gpui_platform = { workspace = true, features = ["wayland"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui_platform = { workspace = true, features = ["font-kit"] }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+gpui_web = { workspace = true }

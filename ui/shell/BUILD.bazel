@@ -24,8 +24,10 @@ rust_library(
         "//ui/components",
         "//ui/theme",
         "@crates//:gpui",
-        "@crates//:gpui_platform",
-    ],
+    ] + select({
+        "@platforms//cpu:wasm32": ["@crates//:gpui_web"],
+        "//conditions:default": ["@crates//:gpui_platform"],
+    }),
 )
 
 rust_test(
