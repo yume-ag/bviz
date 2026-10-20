@@ -1,0 +1,142 @@
+Let a toolchain build the standard library from source for chosen triples
+
+A target's prebuilt standard library is compiled with its default panic
+strategy and target features, so rustc flags such as -Cpanic=unwind or
+-Ctarget-feature=+atomics on wasm32-unknown-unknown never reach it. A
+source_stdlib_triples toolchain attribute puts the named triples on the path
+tier 3 triples take, which builds std from the rustc source archive with the
+toolchain's flags.
+
+Written to be offered upstream: it is generic, leaves every triple not named
+unchanged, and adds no dependency.
+
+License: Apache-2.0 (rules_rs 0.0.112)
+
+diff --git a/rs/private/toolchains_repository.bzl b/rs/private/toolchains_repository.bzl
+--- a/rs/private/toolchains_repository.bzl
++++ b/rs/private/toolchains_repository.bzl
+@@ -10,6 +10,7 @@
+     edition = {edition},
+     extra_rustc_flags = {extra_rustc_flags},
+     extra_exec_rustc_flags = {extra_exec_rustc_flags},
++    source_stdlib_triples = {source_stdlib_triples},
+     target_triples = {target_triples},
+ )
+ """.format(
+@@ -17,6 +18,7 @@
+             edition = repr(rctx.attr.edition),
+             extra_rustc_flags = repr(rctx.attr.extra_rustc_flags),
+             extra_exec_rustc_flags = repr(rctx.attr.extra_exec_rustc_flags),
++            source_stdlib_triples = repr(rctx.attr.source_stdlib_triples),
+             target_triples = repr(rctx.attr.target_triples),
+         ),
+     )
+@@ -64,6 +66,7 @@
+         "edition": attr.string(mandatory = True),
+         "extra_rustc_flags": attr.string_list_dict(),
+         "extra_exec_rustc_flags": attr.string_list_dict(),
++        "source_stdlib_triples": attr.string_list(),
+         "target_triples": attr.string_list(mandatory = True),
+     },
+ )
+diff --git a/rs/toolchains/declare_rustc_toolchains.bzl b/rs/toolchains/declare_rustc_toolchains.bzl
+--- a/rs/toolchains/declare_rustc_toolchains.bzl
++++ b/rs/toolchains/declare_rustc_toolchains.bzl
+@@ -34,6 +34,7 @@
+         target_triples = ALL_TARGET_TRIPLES,
+         extra_rustc_flags = {},
+         extra_exec_rustc_flags = {},
++        source_stdlib_triples = [],
+         rust_doc = None,
+         rustc_lib = None,
+         cargo = None,
+@@ -59,6 +60,8 @@
+         supported triples. Generated toolchains only match these target triples.
+       extra_rustc_flags: Additional compiler flags keyed by target triple.
+       extra_exec_rustc_flags: Additional compiler flags keyed by execution triple.
++      source_stdlib_triples: Target triples whose standard library is built
++        from source with the toolchain's flags, as it is for tier 3 triples.
+       rust_doc: Optional rustdoc label or labels keyed by execution triple.
+       rustc_lib: Optional compiler-library label or labels keyed by execution triple.
+       cargo: Optional Cargo label or labels keyed by execution triple.
+@@ -71,6 +74,9 @@
+     """
+     if not target_triples:
+         fail("target_triples must not be empty")
++    for triple in source_stdlib_triples:
++        if triple not in target_triples:
++            fail("source_stdlib_triples names %s, which is not among target_triples" % triple)
+ 
+     if type(rustc) == "dict":
+         for exec_triple in rustc:
+@@ -88,10 +94,11 @@
+     for target_triple in target_triples:
+         target_key = sanitize_triple(target_triple)
+         config_label = "@rules_rs//rs/platforms/config:" + target_triple
+-        if target_triple in SUPPORTED_TIER_3_TRIPLES:
++        std_from_source = target_triple in SUPPORTED_TIER_3_TRIPLES or target_triple in source_stdlib_triples
++        if std_from_source:
+             source_stdlib_select[config_label] = "@rules_rs//rs/private:empty_stdlib"
+         stdlib_repo = "rust_stdlib_%s_%s" % (target_key, version_key)
+-        if target_triple in SUPPORTED_TIER_3_TRIPLES:
++        if std_from_source:
+             default_rust_std = "@rustc_src_" + version_key + "//src:rust_std"
+         else:
+             default_rust_std = "@%s//:rust_std-%s" % (stdlib_repo, target_triple)
+diff --git a/rs/toolchains/module_extension.bzl b/rs/toolchains/module_extension.bzl
+--- a/rs/toolchains/module_extension.bzl
++++ b/rs/toolchains/module_extension.bzl
+@@ -94,6 +94,9 @@
+         "extra_exec_rustc_flags": attr.string_list_dict(
+             doc = "Additional rustc flags by exec triple.",
+         ),
++        "source_stdlib_triples": attr.string_list(
++            doc = "Target triples whose standard library is built from source, as it is for tier 3 triples, so that the toolchain's rustc flags reach it too.",
++        ),
+     },
+ )
+ 
+@@ -174,6 +177,7 @@
+             edition = _DEFAULT_EDITION,
+             extra_rustc_flags = {},
+             extra_exec_rustc_flags = {},
++            source_stdlib_triples = [],
+         )
+     version_tags = repo_configs.values()
+ 
+@@ -540,6 +544,7 @@
+             edition = tag.edition,
+             extra_rustc_flags = tag.extra_rustc_flags,
+             extra_exec_rustc_flags = tag.extra_exec_rustc_flags,
++            source_stdlib_triples = tag.source_stdlib_triples,
+             target_triples = stdlib_targets_by_version[tag.version] + SUPPORTED_TIER_3_TRIPLES,
+         )
+ 
+diff --git a/rs/toolchains/toolchain_config.bzl b/rs/toolchains/toolchain_config.bzl
+--- a/rs/toolchains/toolchain_config.bzl
++++ b/rs/toolchains/toolchain_config.bzl
+@@ -9,6 +9,7 @@
+         edition = tag.edition,
+         extra_rustc_flags = tag.extra_rustc_flags,
+         extra_exec_rustc_flags = tag.extra_exec_rustc_flags,
++        source_stdlib_triples = tag.source_stdlib_triples,
+         use_rust_redist = tag.use_rust_redist,
+     )
+ 
+@@ -27,7 +28,7 @@
+     return tuple([int(part) for part in version.split(".")])
+ 
+ def _merge_configs(a, b):
+-    for attribute in ("extra_rustc_flags", "extra_exec_rustc_flags"):
++    for attribute in ("extra_rustc_flags", "extra_exec_rustc_flags", "source_stdlib_triples"):
+         if getattr(a, attribute) != getattr(b, attribute):
+             fail("Toolchain repo %s has conflicting %s; configure it in the root module or use different toolchain repo names" % (a.name, attribute))
+     return struct(
+@@ -38,6 +39,7 @@
+         edition = max(a.edition, b.edition),
+         extra_rustc_flags = a.extra_rustc_flags,
+         extra_exec_rustc_flags = a.extra_exec_rustc_flags,
++        source_stdlib_triples = a.source_stdlib_triples,
+         use_rust_redist = a.use_rust_redist and b.use_rust_redist,
+     )
+ 

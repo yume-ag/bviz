@@ -45,12 +45,15 @@ single_version_override(
     patches = [
         "//patches/rules_rs:rules_rs-git-crate-archive.patch",
         "//patches/rules_rs:rules_rs-inherit-default-features.patch",
+        "//patches/rules_rs:rules_rs-source-stdlib-triples.patch",
     ],
 )
 
 rs_toolchains = use_extension("@rules_rs//rs/toolchains:module_extension.bzl", "toolchains")
 rs_toolchains.toolchain(
     edition = "2024",
+    # The web build's panic strategy and target features must reach std.
+    source_stdlib_triples = ["wasm32-unknown-unknown"],
     version = "1.95.0",
 )
 use_repo(rs_toolchains, "default_rust_toolchains")
