@@ -1,0 +1,48 @@
+Assert unwind safety of the WebGPU backend's JavaScript callbacks
+
+When panics unwind, wasm-bindgen catches a panic in a closure handed to
+JavaScript and turns it into a JavaScript exception, but only for a closure
+whose captures are unwind safe. The promise, device lost and uncaptured
+error callbacks capture an Rc<RefCell> or a boxed callback, which are not,
+so the backend fails to compile. Asserting it gives them the handling every
+other closure handed to the browser has.
+
+License: Apache-2.0 (wgpu 29.0.4)
+
+--- a/src/backend/webgpu.rs
++++ b/src/backend/webgpu.rs
+@@ -1059,14 +1059,14 @@
+ 
+     let rc_callback_clone1 = rc_callback.clone();
+     let rc_callback_clone2 = rc_callback.clone();
+-    let closure_success = wasm_bindgen::closure::Closure::once(move |_| {
++    let closure_success = wasm_bindgen::closure::Closure::once_assert_unwind_safe(move |_| {
+         let (success_closure, rejection_closure, callback) =
+             rc_callback_clone1.borrow_mut().take().unwrap();
+         callback(success_value);
+         // drop the closures, including ourselves, which will free any captured memory.
+         drop((success_closure, rejection_closure));
+     });
+-    let closure_rejected = wasm_bindgen::closure::Closure::once(move |_| {
++    let closure_rejected = wasm_bindgen::closure::Closure::once_assert_unwind_safe(move |_| {
+         let (success_closure, rejection_closure, callback) =
+             rc_callback_clone2.borrow_mut().take().unwrap();
+         callback(failure_value);
+@@ -2481,7 +2481,7 @@
+     }
+ 
+     fn set_device_lost_callback(&self, device_lost_callback: dispatch::BoxDeviceLostCallback) {
+-        let closure = Closure::once(move |info: JsValue| {
++        let closure = Closure::once_assert_unwind_safe(move |info: JsValue| {
+             let info = info.dyn_into::<webgpu_sys::GpuDeviceLostInfo>().unwrap();
+             device_lost_callback(
+                 match info.reason() {
+@@ -2501,7 +2501,7 @@
+     }
+ 
+     fn on_uncaptured_error(&self, handler: Arc<dyn crate::UncapturedErrorHandler>) {
+-        let f = Closure::wrap(Box::new(move |event: webgpu_sys::GpuUncapturedErrorEvent| {
++        let f = Closure::wrap_assert_unwind_safe(Box::new(move |event: webgpu_sys::GpuUncapturedErrorEvent| {
+             let error = crate::Error::from_js(event.error().value_of());
+             handler(error);
+         }) as Box<dyn FnMut(_)>);

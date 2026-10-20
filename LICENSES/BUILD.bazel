@@ -88,3 +88,16 @@ license(
     kind = "@package_metadata//licenses/spdx:Apache-2.0",
     text = "@bazel_query_proto//:LICENSE",
 )
+
+package_metadata(
+    name = "wgpu_patches",
+    attributes = [":wgpu_license"],
+    purl = "pkg:cargo/wgpu@29.0.4",
+    visibility = ["//patches/wgpu:__pkg__"],
+)
+
+license(
+    name = "wgpu_license",
+    kind = "@package_metadata//licenses/spdx:Apache-2.0",
+    text = "@crates//:wgpu_licence",
+)
