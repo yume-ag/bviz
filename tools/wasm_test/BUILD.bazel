@@ -1,0 +1,24 @@
+load("@multitool//:tools.bzl", MULTITOOL_TOOLS = "TOOLS")
+load("@rules_rs//rs:rust_binary.bzl", "rust_binary")
+
+rust_binary(
+    name = "run_wasm_test",
+    srcs = ["run_wasm_test.rs"],
+    crate_name = "bviz_run_wasm_test",
+    deps = ["@rules_rs_rules_rust//rust/runfiles"],
+)
+
+alias(
+    name = "wasmtime",
+    actual = MULTITOOL_TOOLS["wasmtime"],
+)
+
+# A test needs an execution platform that matches its target platform, and none
+# is wasm32, so without this a build of //... for the web fails to configure its
+# rust_test targets. wasm_test runs them on the host under wasmtime.
+toolchain(
+    name = "wasm32_test_toolchain",
+    target_compatible_with = ["@platforms//cpu:wasm32"],
+    toolchain = "@bazel_tools//tools/test:empty_toolchain",
+    toolchain_type = "@bazel_tools//tools/test:default_test_toolchain_type",
+)

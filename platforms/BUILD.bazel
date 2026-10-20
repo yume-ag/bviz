@@ -95,3 +95,13 @@ platform(
     ],
     parents = [":wasm32_web"],
 )
+
+# The web build as wasmtime runs its tests. wasmtime runs only the exnref form
+# of exception handling, so the tests encode unwinding in that form, where the
+# shipped web build keeps the legacy one.
+platform(
+    name = "wasm32_web_test",
+    flags = ["--@rules_rs_rules_rust//rust/settings:extra_rustc_flag=-Cllvm-args=-wasm-use-legacy-eh=false"],
+    parents = [":wasm32_web"],
+    visibility = ["//tools/wasm_test:__pkg__"],
+)

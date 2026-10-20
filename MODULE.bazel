@@ -420,6 +420,8 @@ register_toolchains(
     "@//proto_toolchain:proto_toolchain",
 )
 
+register_toolchains("//tools/wasm_test:wasm32_test_toolchain")
+
 http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 # Application fonts: Inter for UI text, JetBrains Mono for monospace.
