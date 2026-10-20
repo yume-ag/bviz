@@ -4,18 +4,26 @@ common:linux --host_platform=//platforms:local_gnu
 # Provide a libgcc_s stub for Rust's `-lgcc_s` link arg (hermetic-llvm "Usage with Rust").
 build --@llvm//config:experimental_stub_libgcc_s=True
 
+# Builds for a platform other than the host. Naming the output directory after
+# the platform keeps them from overwriting the host build's artifacts, which are
+# otherwise reached by the same paths.
+build:cross --experimental_platform_in_output_dir
+
 # Cross-compile to macOS. --enable_platform_specific_config above claims the
 # bare `macos` config name for builds whose host is a Mac, so these are named
-# for the target. Naming the output directory after the platform keeps them
-# from overwriting the host build's artifacts, which are otherwise reached by
-# the same paths.
-build:macos_cross --experimental_platform_in_output_dir
-
-build:macos_arm64 --config=macos_cross
+# for the target.
+build:macos_arm64 --config=cross
 build:macos_arm64 --platforms=//platforms:macos_arm64
 
-build:macos_x86_64 --config=macos_cross
+build:macos_x86_64 --config=cross
 build:macos_x86_64 --platforms=//platforms:macos_x86_64
+
+# Builds for the browser.
+build:wasm32_web --config=cross
+build:wasm32_web --platforms=//platforms:wasm32_web
+
+build:wasm32_web_threads --config=cross
+build:wasm32_web_threads --platforms=//platforms:wasm32_web_threads
 
 # Resolve protoc via the registered proto toolchain rather than the legacy hardcoded path.
 common --incompatible_enable_proto_toolchain_resolution
