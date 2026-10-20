@@ -1,0 +1,272 @@
+Let crate.annotation_select set rustc environment variables for chosen triples
+
+A crate can need an environment variable for some triples only, such as
+RUSTC_BOOTSTRAP where it enables unstable features on one target and not on
+the others. Taking rustc_env among the selectable attributes lets such a
+variable be set for the triples that need it without setting it for every
+other triple, where it would change the crate's compile actions too.
+
+Written to be offered upstream on top of the patch that selects deps.
+
+License: Apache-2.0 (rules_rs 0.0.112)
+
+diff --git a/rs/extensions.bzl b/rs/extensions.bzl
+index 82a13b3..e684406 100644
+--- a/rs/extensions.bzl
++++ b/rs/extensions.bzl
+@@ -360,6 +360,7 @@ crate.annotation(
+             build_script_tools_select = annotation.build_script_tools_select,
+             build_script_env_select = annotation.build_script_env_select,
+             rustc_env = annotation.rustc_env,
++            rustc_env_select = annotation.rustc_env_select,
+             rustc_flags = annotation.rustc_flags,
+             rustc_flags_select = annotation.rustc_flags_select,
+             data = annotation.data,
+@@ -1018,6 +1019,9 @@ _ANNOTATION_SELECTABLE_ATTRS = {
+     "deps": attr.label_list(
+         doc = "A list of labels to add to a crate's `rust_library::deps` attribute.",
+     ),
++    "rustc_env": attr.string_dict(
++        doc = "Additional variables to set on a crate's `rust_library::rustc_env` attribute.",
++    ),
+     "rustc_flags": attr.string_list(
+         doc = "Flags to add to a crate's `rust_library::rustc_flags` attribute.",
+     ),
+@@ -1132,9 +1136,6 @@ _annotation = tag_class(
+         "patches": attr.label_list(
+             doc = "The `patches` attribute of a Bazel repository rule. See [http_archive.patches](https://docs.bazel.build/versions/main/repo/http.html#http_archive-patches)",
+         ),
+-        "rustc_env": attr.string_dict(
+-            doc = "Additional variables to set on a crate's `rust_library::rustc_env` attribute.",
+-        ),
+         # "rustc_env_files": attr.label_list(
+         #     doc = "A list of labels to set on a crate's `rust_library::rustc_env_files` attribute.",
+         # ),
+diff --git a/rs/private/annotations.bzl b/rs/private/annotations.bzl
+index ba70d12..e7ea968 100644
+--- a/rs/private/annotations.bzl
++++ b/rs/private/annotations.bzl
+@@ -27,6 +27,7 @@ def _crate_annotation(
+         git_archive_strip_prefix = "",
+         git_archive_url = "",
+         rustc_env = {},
++        rustc_env_select = {},
+         rustc_flags = [],
+         rustc_flags_select = {},
+         patch_args = [],
+@@ -61,6 +62,7 @@ def _crate_annotation(
+         git_archive_strip_prefix = git_archive_strip_prefix,
+         git_archive_url = git_archive_url,
+         rustc_env = rustc_env,
++        rustc_env_select = rustc_env_select,
+         rustc_flags = rustc_flags,
+         rustc_flags_select = rustc_flags_select,
+         patch_args = patch_args,
+@@ -135,13 +137,18 @@ _SELECTABLE_ANNOTATION_FIELDS = {
+     "build_script_tools": "build_script_tools_select",
+     "crate_features": "crate_features_select",
+     "deps": "deps_select",
++    "rustc_env": "rustc_env_select",
+     "rustc_flags": "rustc_flags_select",
+ }
+ 
++_ENV_FIELDS = ["build_script_env", "rustc_env"]
++
++_ENV_SELECT_FIELDS = [_SELECTABLE_ANNOTATION_FIELDS[field] for field in _ENV_FIELDS]
++
+ _LIST_SELECT_FIELDS = [
+     select_field
+     for field, select_field in _SELECTABLE_ANNOTATION_FIELDS.items()
+-    if field != "build_script_env"
++    if field not in _ENV_FIELDS
+ ]
+ 
+ _SELECT_MAP_FIELDS = _SELECTABLE_ANNOTATION_FIELDS.values()
+@@ -162,7 +169,7 @@ def _merge_annotation_select(selects, annotation, crate, version, cfg_name):
+         # Stringify labels only after tag resolution has anchored them to the
+         # module that declared the annotation. Keep environment values as
+         # dictionaries so wildcard and exact selections can compose by key.
+-        selected_value = dict(value) if field == "build_script_env" else [str(item) for item in value]
++        selected_value = dict(value) if field in _ENV_FIELDS else [str(item) for item in value]
+         platform_values = dict(selects.get(select_field, {}))
+         for triple in annotation.triples:
+             if triple in platform_values:
+@@ -190,7 +197,7 @@ def _merge_select_maps(base, override):
+         for triple, value in override[field].items():
+             if triple not in selected:
+                 selected[triple] = value
+-            elif field == "build_script_env_select":
++            elif field in _ENV_SELECT_FIELDS:
+                 merged = dict(selected[triple])
+                 merged.update(value)
+                 selected[triple] = merged
+@@ -204,16 +211,18 @@ def _normalize_select_maps(values):
+             triple: [str(item) for item in items]
+             for triple, items in values.get(field, {}).items()
+         }
+-    values["build_script_env_select"] = {
+-        triple: json.decode(env) if type(env) == "string" else dict(env)
+-        for triple, env in values.get("build_script_env_select", {}).items()
+-    }
++    for field in _ENV_SELECT_FIELDS:
++        values[field] = {
++            triple: json.decode(env) if type(env) == "string" else dict(env)
++            for triple, env in values.get(field, {}).items()
++        }
+ 
+ def _encode_env_select(values):
+-    values["build_script_env_select"] = {
+-        triple: json.encode(env)
+-        for triple, env in values.get("build_script_env_select", {}).items()
+-    }
++    for field in _ENV_SELECT_FIELDS:
++        values[field] = {
++            triple: json.encode(env)
++            for triple, env in values.get(field, {}).items()
++        }
+ 
+ def _annotation_entry():
+     return {
+diff --git a/rs/private/annotations_test.bzl b/rs/private/annotations_test.bzl
+index 539f398..e414af4 100644
+--- a/rs/private/annotations_test.bzl
++++ b/rs/private/annotations_test.bzl
+@@ -47,6 +47,7 @@ _ANNOTATION_SELECT_DEFAULTS = {
+     "build_script_tools": [],
+     "crate_features": [],
+     "deps": [],
++    "rustc_env": {},
+     "rustc_flags": [],
+ }
+ 
+@@ -233,11 +234,45 @@ def _select_adds_deps_impl(ctx):
+ 
+     return unittest.end(env)
+ 
++def _select_adds_rustc_env_impl(ctx):
++    env = unittest.begin(ctx)
++    annotations = build_annotation_map(
++        _mod(
++            annotations = [
++                _annotation(
++                    "example",
++                    rustc_env = {"COMMON": "1"},
++                ),
++            ],
++            annotation_selects = [
++                _annotation_select(
++                    "example",
++                    ["x86_64-unknown-linux-gnu"],
++                    rustc_env = {"SELECTED": "1"},
++                ),
++            ],
++        ),
++        "repo",
++        _TRIPLES,
++    )
++
++    annotation = annotation_for(annotations, "example", "1.0.0", "repo")
++    asserts.equals(env, {"COMMON": "1"}, annotation.rustc_env)
++    asserts.equals(env, {
++        "x86_64-unknown-linux-gnu": {"SELECTED": "1"},
++    }, {
++        triple: json.decode(selected)
++        for triple, selected in annotation.rustc_env_select.items()
++    })
++
++    return unittest.end(env)
++
+ exact_annotation_replaces_wildcard_and_composes_with_select_test = unittest.make(_exact_annotation_replaces_wildcard_and_composes_with_select_impl)
+ wildcard_and_exact_select_payloads_compose_test = unittest.make(_wildcard_and_exact_select_payloads_compose_impl)
+ wildcard_select_composes_with_exact_annotation_test = unittest.make(_wildcard_select_composes_with_exact_annotation_impl)
+ selected_windows_gnullvm_annotation_keeps_implicit_values_test = unittest.make(_selected_windows_gnullvm_annotation_keeps_implicit_values_impl)
+ select_adds_deps_test = unittest.make(_select_adds_deps_impl)
++select_adds_rustc_env_test = unittest.make(_select_adds_rustc_env_impl)
+ 
+ def annotations_tests():
+     return unittest.suite(
+@@ -247,4 +282,5 @@ def annotations_tests():
+         wildcard_select_composes_with_exact_annotation_test,
+         selected_windows_gnullvm_annotation_keeps_implicit_values_test,
+         select_adds_deps_test,
++        select_adds_rustc_env_test,
+     )
+diff --git a/rs/private/repository_utils.bzl b/rs/private/repository_utils.bzl
+index a905000..cd92987 100644
+--- a/rs/private/repository_utils.bzl
++++ b/rs/private/repository_utils.bzl
+@@ -34,7 +34,7 @@ def render_select(non_platform_items, platform_items, use_legacy_rules_rust_plat
+ 
+     return common_items, _format_branches(branches)
+ 
+-def render_select_build_script_env(platform_items, use_legacy_rules_rust_platforms):
++def render_select_env(platform_items, use_legacy_rules_rust_platforms):
+     branches = [
+         (_platform(triple, use_legacy_rules_rust_platforms), items)
+         for triple, items in platform_items.items()
+@@ -225,7 +225,8 @@ def render_rust_crate_call(attr, values, bazel_metadata = {}, extra_deps = "", i
+     build_script_env_files = getattr(attr, "build_script_env_files", []) + ["cargo_toml_env_vars.env"]
+     link_deps = getattr(attr, "link_deps", [])
+ 
+-    conditional_build_script_env = render_select_build_script_env(attr.build_script_env_select, use_legacy_rules_rust_platforms)
++    conditional_build_script_env = render_select_env(attr.build_script_env_select, use_legacy_rules_rust_platforms)
++    conditional_rustc_env = render_select_env(getattr(attr, "rustc_env_select", {}), use_legacy_rules_rust_platforms)
+ 
+     list_indent = ",\n%s        " % indent
+     extra_deps = " + " + extra_deps if extra_deps else ""
+@@ -242,6 +243,8 @@ def render_rust_crate_call(attr, values, bazel_metadata = {}, extra_deps = "", i
+     cargo_manifest_env = {"CARGO_MANIFEST_PATH": "$(execpath :Cargo.toml)"}
+     rustc_env = cargo_manifest_env | getattr(attr, "rustc_env", {})
+     rustc_env_attr = "%s    rustc_env = %s,\n" % (indent, repr(rustc_env)) if rustc_env else ""
++    if conditional_rustc_env:
++        rustc_env_attr += "%s    conditional_rustc_env = %s,\n" % (indent, conditional_rustc_env)
+     skip_deps_verification_attr = "%s    skip_deps_verification = True,\n" % indent if skip_deps_verification else ""
+ 
+     return _RUST_CRATE_MACRO_CALL.format(
+@@ -322,6 +325,7 @@ rust_crate_attrs = {
+     "build_script_tools_select": _label_list_dict(),
+     "build_script_tags": attr.string_list(),
+     "rustc_env": attr.string_dict(),
++    "rustc_env_select": attr.string_dict(),
+     "rustc_flags": attr.string_list(),
+     "rustc_flags_select": attr.string_list_dict(),
+     "crate_tags": attr.string_list(),
+diff --git a/rs/private/rust_crate.bzl b/rs/private/rust_crate.bzl
+index c6b9034..539e0fd 100644
+--- a/rs/private/rust_crate.bzl
++++ b/rs/private/rust_crate.bzl
+@@ -47,6 +47,7 @@ def rust_crate(
+         use_legacy_rules_rust_platforms,
+         extra_compile_data = [],
+         rustc_env = {},
++        conditional_rustc_env = {},
+         skip_deps_verification = False):
+     package_metadata(
+         name = name + "_package_metadata",
+@@ -102,6 +103,8 @@ def rust_crate(
+             tools = build_script_tools,
+             edition = edition,
+             pkg_name = crate_name,
++            # conditional_rustc_env selects on the target triple, which does
++            # not describe a build script built for the execution platform.
+             rustc_env = rustc_env,
+             rustc_env_files = ["cargo_toml_env_vars.env"],
+             rustc_flags = ["--cap-lints=allow"],
+@@ -195,7 +198,7 @@ def rust_crate(
+             ),
+             crate_root = crate_root,
+             edition = edition,
+-            rustc_env = rustc_env,
++            rustc_env = rustc_env | conditional_rustc_env,
+             rustc_env_files = ["cargo_toml_env_vars.env"],
+             rustc_flags = rustc_flags + ["--cap-lints=allow"],
+             tags = crate_tags,
+@@ -226,7 +229,7 @@ def rust_crate(
+             crate_features = crate_features,
+             crate_root = crate_root,
+             edition = edition,
+-            rustc_env = rustc_env,
++            rustc_env = rustc_env | conditional_rustc_env,
+             rustc_env_files = ["cargo_toml_env_vars.env"],
+             rustc_flags = rustc_flags + ["--cap-lints=allow"],
+             srcs = srcs,

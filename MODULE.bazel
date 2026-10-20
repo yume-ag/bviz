@@ -52,6 +52,7 @@ single_version_override(
         "//patches/rules_rs:rules_rs-source-stdlib-triples.patch",
         "//patches/rules_rs:rules_rs-source-stdlib-libtest.patch",
         "//patches/rules_rs:rules_rs-select-annotation-deps.patch",
+        "//patches/rules_rs:rules_rs-select-annotation-rustc-env.patch",
     ],
 )
 
@@ -178,14 +179,6 @@ crate.annotation(
     git_archive_url = "https://github.com/openedges/elk-rs/archive/{commit}.tar.gz",
 )
 crate.annotation(
-    crate = "wasm_thread",
-    git_archive_sha256 = "4dc9b3324038ed7f761f8b32811c27eb8e5234a940fa741a6d5214eb88a7abb6",
-    git_archive_strip_prefix = "wasm_thread-{commit}",
-    git_archive_url = "https://github.com/zed-industries/wasm_thread/archive/{commit}.tar.gz",
-    patch_args = ["-p1"],
-    patches = ["//patches/wasm_thread:wasm_thread-assert-unwind-safe-handler.patch"],
-)
-crate.annotation(
     crate = "zed-font-kit",
     git_archive_sha256 = "902a9466b39fdcaa4a428b487474c4107028cbc92a8d2eee281193879f25f7a0",
     git_archive_strip_prefix = "font-kit-{commit}",
@@ -292,6 +285,39 @@ crate.annotation(
     crate = "alacritty_terminal",
     patch_args = ["-p1"],
     patches = ["//patches/alacritty_terminal:alacritty_terminal-cfg-tty.patch"],
+)
+
+# These crates enable unstable features where they are built for WebAssembly:
+# atomic waits and thread locals on shared memory, and for wasm_thread on any
+# WebAssembly. A stable compiler grants unstable features only to a
+# bootstrapping build.
+crate.annotation_select(
+    crate = "js-sys",
+    rustc_env = {"RUSTC_BOOTSTRAP": "1"},
+    triples = WEB_TRIPLES,
+)
+crate.annotation_select(
+    crate = "parking_lot_core",
+    rustc_env = {"RUSTC_BOOTSTRAP": "1"},
+    triples = WEB_TRIPLES,
+)
+crate.annotation_select(
+    crate = "wasm-bindgen",
+    rustc_env = {"RUSTC_BOOTSTRAP": "1"},
+    triples = WEB_TRIPLES,
+)
+crate.annotation_select(
+    crate = "wasm_thread",
+    rustc_env = {"RUSTC_BOOTSTRAP": "1"},
+    triples = WEB_TRIPLES,
+)
+crate.annotation(
+    crate = "wasm_thread",
+    git_archive_sha256 = "4dc9b3324038ed7f761f8b32811c27eb8e5234a940fa741a6d5214eb88a7abb6",
+    git_archive_strip_prefix = "wasm_thread-{commit}",
+    git_archive_url = "https://github.com/zed-industries/wasm_thread/archive/{commit}.tar.gz",
+    patch_args = ["-p1"],
+    patches = ["//patches/wasm_thread:wasm_thread-assert-unwind-safe-handler.patch"],
 )
 
 # These crates bind JavaScript through js-sys only where WebAssembly has
