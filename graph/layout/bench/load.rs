@@ -4,7 +4,7 @@
 use bviz_graph_layout::streamed_proto;
 
 #[global_allocator]
-static GLOBAL: bviz_alloc::MiMalloc = bviz_alloc::MiMalloc;
+static GLOBAL: bviz_alloc::Allocator = bviz_alloc::Allocator;
 
 fn main() {
     // SAFETY: the first statement of main, before any other thread starts.

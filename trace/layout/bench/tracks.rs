@@ -15,7 +15,7 @@ use bviz_trace_layout::{
 use bviz_trace_profile::{LaneClass, Profile, TimeSpan};
 
 #[global_allocator]
-static GLOBAL: bviz_alloc::MiMalloc = bviz_alloc::MiMalloc;
+static GLOBAL: bviz_alloc::Allocator = bviz_alloc::Allocator;
 
 fn min_secs(iters: usize, mut f: impl FnMut()) -> f64 {
     (0..iters)

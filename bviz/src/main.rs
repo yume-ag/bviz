@@ -23,7 +23,7 @@ use std::iter;
 use std::path::PathBuf;
 
 #[global_allocator]
-static GLOBAL: bviz_alloc::MiMalloc = bviz_alloc::MiMalloc;
+static GLOBAL: bviz_alloc::Allocator = bviz_alloc::Allocator;
 
 /// A document being read, whichever viewer shows it.
 enum Load {
