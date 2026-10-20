@@ -1,0 +1,109 @@
+Add a tick that never waits for the worker thread
+
+tick blocks until the worker has stopped whenever the pattern changed or
+the matcher was restarted, whatever the timeout, and otherwise waits on a
+timed lock that reads the clock. try_tick takes the worker's lock only if
+it is free: while the worker is busy it leaves a pattern change or restart
+pending, with the worker asked to cancel, so the next call picks it up;
+once it has the lock it does what tick does. A caller polling from a
+thread that must never block, such as a UI thread, gets the same results
+a call later.
+
+License: MPL-2.0 (nucleo 0.5.0)
+
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -120,6 +120,13 @@
+     pub running: bool,
+ }
+ 
++impl Status {
++    const BUSY: Status = Status {
++        changed: false,
++        running: true,
++    };
++}
++
+ /// A snapshot represent the results of a [`Nucleo`] worker after
+ /// finishing a [`tick`](Nucleo::tick).
+ pub struct Snapshot<T: Sync + Send + 'static> {
+@@ -357,32 +364,60 @@
+     /// excessive redraws this method will wait `timeout` milliseconds for the
+     /// worker therad to finish. It is recommend to set the timeout to 10ms.
+     pub fn tick(&mut self, timeout: u64) -> Status {
++        self.tick_with(Some(timeout))
++    }
++
++    /// Like [`tick`](Nucleo::tick), but never waits for the worker thread.
++    /// While the worker is busy this returns at once with `running` set, and
++    /// a pattern change or restart it has yet to pick up is retried by the
++    /// next call.
++    pub fn try_tick(&mut self) -> Status {
++        self.tick_with(None)
++    }
++
++    fn tick_with(&mut self, timeout: Option<u64>) -> Status {
+         self.should_notify.store(false, atomic::Ordering::Relaxed);
+         let status = self.pattern.status();
+         let canceled = status != pattern::Status::Unchanged || self.state.canceled();
+-        let mut res = self.tick_inner(timeout, canceled, status);
++        let Some(mut res) = self.tick_inner(timeout, canceled, status) else {
++            return Status::BUSY;
++        };
+         if !canceled {
+             return res;
+         }
+         self.state = State::Fresh;
+-        let status2 = self.tick_inner(timeout, false, pattern::Status::Unchanged);
++        let status2 = self
++            .tick_inner(timeout, false, pattern::Status::Unchanged)
++            .unwrap_or(Status::BUSY);
+         res.changed |= status2.changed;
+         res.running = status2.running;
+         res
+     }
+ 
+-    fn tick_inner(&mut self, timeout: u64, canceled: bool, status: pattern::Status) -> Status {
++    /// Returns `None` if the worker stays busy for as long as `timeout` lets
++    /// this wait, which is not at all if it is `None`.
++    fn tick_inner(
++        &mut self,
++        timeout: Option<u64>,
++        canceled: bool,
++        status: pattern::Status,
++    ) -> Option<Status> {
+         let mut inner = if canceled {
+-            self.pattern.reset_status();
+             self.canceled.store(true, atomic::Ordering::Relaxed);
+-            self.worker.lock_arc()
++            let worker = match timeout {
++                Some(_) => self.worker.lock_arc(),
++                None => self.worker.try_lock_arc()?,
++            };
++            self.pattern.reset_status();
++            worker
+         } else {
+-            let Some(worker) = self.worker.try_lock_arc_for(Duration::from_millis(timeout)) else {
++            let worker = match timeout {
++                Some(timeout) => self.worker.try_lock_arc_for(Duration::from_millis(timeout)),
++                None => self.worker.try_lock_arc(),
++            };
++            let Some(worker) = worker else {
+                 self.should_notify.store(true, Ordering::Release);
+-                return Status {
+-                    changed: false,
+-                    running: true,
+-                };
++                return None;
+             };
+             worker
+         };
+@@ -409,7 +444,7 @@
+             self.pool
+                 .spawn(move || unsafe { inner.run(status, cleared) })
+         }
+-        Status { changed, running }
++        Some(Status { changed, running })
+     }
+ }
+ 

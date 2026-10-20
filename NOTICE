@@ -108,9 +108,11 @@ Each of those patches carries blocks of Eclipse Public License 2.0 source and
 rewrites them, so the patches are themselves available under that licence.
 
 The patches against the Zed crates carry Apache-2.0 lines from the Zed tree
-they patch (tag v1.24.3), under //LICENSES:gpui_patches. Every other
-patch reshapes too little of what it applies to for attribution, and carries no
-declaration.
+they patch (tag v1.24.3), under //LICENSES:gpui_patches. The patch against
+nucleo, patches/nucleo/nucleo-try-tick.patch, carries and modifies Mozilla
+Public License 2.0 lines of nucleo 0.5.0, under //LICENSES:nucleo_patches, and
+is itself available under that licence. Every other patch reshapes too little
+of what it applies to for attribution, and carries no declaration.
 
 ## Colour values
 
@@ -144,7 +146,8 @@ release archive, with that version in place.
 ## Linked under the MPL
 
 The graph viewer's fuzzy finder links nucleo and the nucleo-matcher crate it
-builds on, both Mozilla Public License 2.0 and used unmodified.
+builds on, both Mozilla Public License 2.0. nucleo-matcher is used unmodified;
+nucleo is modified by patches/nucleo/nucleo-try-tick.patch.
 
 nucleo 0.5.0 — Mozilla Public License 2.0
     https://crates.io/crates/nucleo/0.5.0
@@ -152,7 +155,10 @@ nucleo-matcher 0.3.1 — Mozilla Public License 2.0
     https://crates.io/crates/nucleo-matcher/0.3.1
 
 Whoever redistributes a binary owes what MPL-2.0 section 3.2 asks of the
-executable form: the Source Code Form of those files is the releases above.
+executable form: the Source Code Form of those files is the releases above
+with that patch applied, the patch as it stands in bviz's source at
+https://github.com/yume-ag/bviz, at the commit named in the SOURCE file of the
+release archive.
 
 ## Dependencies
 

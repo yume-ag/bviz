@@ -52,5 +52,6 @@ rust_binary(
         ":terminal",
         "//alloc",
         "//util/input",
+        "//util/time",
     ],
 )

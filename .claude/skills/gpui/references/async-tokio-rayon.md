@@ -160,7 +160,7 @@ For a handful of coarse chunks you do not need rayon at all.
 N futures on gpui's background pool and joins them — no extra dependency, no
 second thread pool. Reach for rayon specifically when you want work-stealing
 over a parallel *iterator* or `par_sort` across many small items; use `scoped`
-(or the repo's existing `std::thread::scope` pattern) for a few large chunks.
+(or `bviz_parallel::scope`) for a few large chunks.
 
 ## Keeping the pools apart
 

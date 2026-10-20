@@ -24,6 +24,7 @@ rust_library(
         "//ui/workspace",
         "//util/input",
         "//util/parallel",
+        "//util/time",
         "@crates//:clap",
         "@crates//:fixedbitset",
         "@crates//:gpui",

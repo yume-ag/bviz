@@ -38,6 +38,8 @@ build:remote --@rules_rs_rules_rust//rust/settings:pipelined_compilation
 # flight rather than by the runner's cores that the default derives it from.
 common:ci --loading_phase_threads=32
 
+build --@rules_rs_rules_rust//rust/settings:clippy.toml=//:clippy.toml
+
 # Style and lint checks; both report a finding rather than rewriting the source.
 build:rustfmt --aspects=@rules_rs_rules_rust//rust:defs.bzl%rustfmt_aspect
 build:rustfmt --output_groups=rustfmt_checks

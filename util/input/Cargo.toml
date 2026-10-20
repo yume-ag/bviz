@@ -12,3 +12,6 @@ path = "src/lib.rs"
 
 [dependencies]
 prost = { workspace = true }
+
+[dev-dependencies]
+bviz_parallel = { workspace = true }

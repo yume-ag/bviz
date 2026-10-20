@@ -15,6 +15,7 @@ rust_library(
         "//invocation",
         "//util/input",
         "//util/parallel",
+        "//util/time",
         "@crates//:crossbeam-channel",
         "@crates//:crossbeam-utils",
         "@crates//:flate2",
@@ -38,6 +39,7 @@ rust_binary(
     deps = [
         ":profile",
         "//alloc",
+        "//util/time",
         "@crates//:flate2",
     ],
 )
@@ -49,5 +51,6 @@ rust_binary(
     deps = [
         ":profile",
         "//alloc",
+        "//util/time",
     ],
 )

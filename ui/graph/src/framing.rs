@@ -7,7 +7,6 @@ use crate::pan_bench::{self, Phase};
 use crate::{GraphPanel, MAX_ZOOM, SETTLE_DURATION, SETTLE_MIN_PAN_STEP, SETTLE_MIN_ZOOM_STEP};
 use bviz_graph_layout::Id;
 use gpui::{App, Bounds, Entity, Pixels, Window, px};
-use std::time::Instant;
 
 /// What a frame request moves the view onto.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -192,7 +191,7 @@ impl Framing {
                 from_pan,
                 to_zoom,
                 to_pan,
-                start: Instant::now(),
+                start: bviz_time::now(),
             });
         }
     }
@@ -408,6 +407,7 @@ pub(crate) fn build_prepaint(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bviz_time::Instant;
     use gpui::{Size, point, px, size};
 
     // The whole graph, large enough that fit_zoom's floor stays well below 1.0 and
@@ -564,7 +564,7 @@ mod tests {
         // A hand-panned view, redrawn at the same bounds: no refit, no reframe.
         let bounds = canvas_bounds(800., 600.);
         let mut f = framed(0.4, (-123.0, 45.0), bounds);
-        f.anim = Some(settle_to(0.5, (10.0, 20.0), Instant::now()));
+        f.anim = Some(settle_to(0.5, (10.0, 20.0), bviz_time::now()));
         f.fit_or_rescale(bounds, CONTENT);
         assert_eq!((f.camera.zoom, f.camera.pan), (0.4, (-123.0, 45.0)));
         assert!(f.anim.is_some(), "an unrelated repaint dropped the settle");
@@ -576,7 +576,7 @@ mod tests {
         // on both axes, so the fit — and with it the zoom — doubles too, and the
         // content stays centered.
         let mut f = framed(0.4, (-400.0, -300.0), canvas_bounds(800., 600.));
-        f.anim = Some(settle_to(0.5, (10.0, 20.0), Instant::now()));
+        f.anim = Some(settle_to(0.5, (10.0, 20.0), bviz_time::now()));
         f.fit_or_rescale(canvas_bounds(1600., 1200.), CONTENT);
         assert!((f.camera.zoom - 0.8).abs() < 1e-6, "zoom {}", f.camera.zoom);
         assert!(
@@ -776,7 +776,7 @@ mod tests {
         f.anim = Some(settle_to(
             2.0,
             (100.0, -50.0),
-            Instant::now() - SETTLE_DURATION,
+            bviz_time::now() - SETTLE_DURATION,
         ));
         assert!(
             f.step_settle(),
@@ -792,7 +792,7 @@ mod tests {
     fn a_settle_landing_where_the_camera_already_stands_asks_for_no_frame() {
         let (zoom, pan) = (EASE_FROM_ZOOM, EASE_FROM_PAN);
         let mut f = framed(zoom, pan, canvas_bounds(800., 600.));
-        f.anim = Some(settle_to(zoom, pan, Instant::now() - SETTLE_DURATION));
+        f.anim = Some(settle_to(zoom, pan, bviz_time::now() - SETTLE_DURATION));
         assert!(
             !f.step_settle(),
             "a landing that moved nothing asked for a frame"
@@ -807,7 +807,7 @@ mod tests {
         f.anim = Some(settle_to(
             to_zoom,
             to_pan,
-            Instant::now() - SETTLE_DURATION / 2,
+            bviz_time::now() - SETTLE_DURATION / 2,
         ));
         assert!(f.step_settle());
         assert!(f.anim.is_some());
@@ -856,7 +856,7 @@ mod tests {
         };
         let mut f = framed(0.6, (-100.0, -200.0), canvas_bounds(400., 300.));
         f.recenter = true;
-        f.anim = Some(settle_to(4.0, (1.0, 2.0), Instant::now()));
+        f.anim = Some(settle_to(4.0, (1.0, 2.0), bviz_time::now()));
 
         f.fit_or_rescale(bounds, CONTENT);
         f.arm_settle(CONTENT, Target::Resolved(Some(target)));

@@ -10,6 +10,8 @@ exports_files(
     visibility = ["//dist:__pkg__"],
 )
 
+exports_files(["clippy.toml"])
+
 package_metadata(
     name = "package_metadata",
     attributes = [":license"],

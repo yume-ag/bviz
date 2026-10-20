@@ -1,0 +1,7 @@
+disallowed-methods = [
+    { path = "std::thread::spawn", reason = "start threads through bviz_parallel::spawn, the one place bviz starts an OS thread" },
+    { path = "std::thread::Builder::spawn", reason = "start threads through bviz_parallel::spawn, the one place bviz starts an OS thread" },
+    { path = "std::thread::scope", reason = "scope threads through bviz_parallel::scope, the one place bviz starts an OS thread" },
+    { path = "std::time::Instant::now", reason = "read the clock through bviz_time::now" },
+    { path = "std::time::SystemTime::now", reason = "read the wall clock through bviz_time, adding a reader there" },
+]

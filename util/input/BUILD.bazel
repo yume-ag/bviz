@@ -23,4 +23,5 @@ rust_test(
     name = "input_test",
     size = "small",
     crate = ":input",
+    deps = ["//util/parallel"],
 )

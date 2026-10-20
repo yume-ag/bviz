@@ -1,10 +1,11 @@
 use crate::camera::{Rect, ease_out_cubic, smoothstep};
 use crate::{GraphPanel, SETTLE_DURATION};
 use bviz_graph_layout::{Box, Id, LaidOut};
+use bviz_time::Instant;
 use gpui::Context;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// How long the new drawing's connectors take to fade in. It runs well longer
 /// than the travel: a connector is a thin line against the background, so it
@@ -138,7 +139,7 @@ impl Transition {
             previous,
             starts,
             leaving,
-            start: Instant::now(),
+            start: bviz_time::now(),
         })
     }
 
@@ -305,7 +306,7 @@ impl Morph {
     /// quotes back to [`Morph::tick`]; `None` when there is nothing to animate,
     /// which leaves whatever is in flight to finish on its own.
     fn arm(&mut self, previous: Arc<LaidOut>, current: &LaidOut) -> Option<u64> {
-        let drawn = self.at(Instant::now());
+        let drawn = self.at(bviz_time::now());
         let transition = Transition::between(previous, current, drawn.as_ref())?;
         self.current = Some(Arc::new(transition));
         self.generation = self.generation.wrapping_add(1);
@@ -452,7 +453,7 @@ mod tests {
 
     /// Slack in layout units for a rect compared against a morph sampled at a
     /// slightly different instant, wide enough to cover the sliver of travel
-    /// between two `Instant::now()` calls and far narrower than the hundreds of
+    /// between two `bviz_time::now()` calls and far narrower than the hundreds of
     /// units the fixtures' boxes travel.
     const SAMPLING_SLACK: f64 = 10.0;
 
@@ -797,7 +798,7 @@ mod tests {
         let after = opened();
         let moved = &after.boxes[1];
         let drawn = morph
-            .at(Instant::now())
+            .at(bviz_time::now())
             .expect("the first morph had landed")
             .place(moved)
             .0;
@@ -891,7 +892,7 @@ mod tests {
             .clone()
             .expect("the morph in flight was dropped");
         let frame =
-            Transition::at(&standing, Instant::now()).expect("the transition was already over");
+            Transition::at(&standing, bviz_time::now()).expect("the transition was already over");
         for b in &redrawn.boxes {
             let (rect, alpha) = frame.place(b);
             assert_close(rect, Rect::of(b), "the box the standing morph places");

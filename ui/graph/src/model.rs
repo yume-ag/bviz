@@ -18,7 +18,9 @@ use bviz_graph_layout::dominators::{Dominators, Roots, ScopeGraph};
 use bviz_graph_layout::graph::Graph;
 use bviz_graph_layout::lod::{DEFAULT_MAX_EDGES, DEFAULT_MAX_NODES, Overflow};
 use bviz_graph_layout::metrics::{Measurement, Scope, measure};
-use bviz_graph_layout::query_lang::{Evaluation, Exclusion, Outcome, Prefixes, Stack, Universe};
+use bviz_graph_layout::query_lang::{
+    Evaluation, Exclusion, Outcome, Prefixes, Readable, Stack, Universe,
+};
 use bviz_graph_layout::select;
 use bviz_graph_layout::select::labels::LabelIndex;
 use bviz_graph_layout::target_pattern::TargetIndex;
@@ -32,6 +34,7 @@ use gpui::{App, Context, Entity, EntityId, EventEmitter, SharedString, Subscript
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::marker::PhantomData;
+use std::ops::Deref;
 use std::sync::{Arc, LazyLock, OnceLock};
 
 /// The graph a document holds, as it was read: whole, unfiltered, and shared by
@@ -114,6 +117,8 @@ pub(crate) struct Opening {
 pub(crate) struct Loaded {
     pub(crate) shared: Shared,
     pub(crate) opening: Opening,
+    /// What the graph's inputs state of the data some query functions read.
+    pub(crate) readable: Readable,
     measures: Passes<Scope, Measurement>,
     /// What the build of the graph's invocation reports of its nodes.
     statuses: Statuses,
@@ -168,7 +173,7 @@ impl Loaded {
         let completions = Prepared::new(&shared, move |_| Completions::of(offered));
         let indexed = targets.clone();
         let universe = Prepared::new(&shared, move |shared| {
-            let targets = Arc::clone(indexed.get());
+            let targets = Arc::clone(indexed.wait());
             Universe::with_targets(&shared.base, targets, &shared.facets, &shared.capabilities)
         });
         let writers = Prepared::new(&shared, |shared| Arc::new(Writers::of(&shared.base)));
@@ -178,6 +183,7 @@ impl Loaded {
             completions,
             universe,
             writers,
+            readable: Readable::of(&shared.base, &shared.capabilities),
             shared,
             opening,
             measures: Passes::keeping_all(),
@@ -403,10 +409,17 @@ impl<T> Prepared<T> {
     }
 
     /// What was prepared, prepared here where no reader has prepared it yet,
-    /// and waited for where another is preparing it; so read it off the UI
-    /// thread, or on it only once a read off it has returned.
-    pub(crate) fn get(&self) -> &T {
+    /// and waited for where another is preparing it; so read only off the UI
+    /// thread.
+    pub(crate) fn wait(&self) -> &T {
         &self.0.prepared
+    }
+
+    /// Waits as [`Self::wait`] does, then yields a handle that reads the value
+    /// without waiting; call it only off the UI thread.
+    pub(crate) fn ready(self) -> Ready<T> {
+        self.wait();
+        Ready(self.0)
     }
 
     /// The graph it was taken from.
@@ -416,6 +429,30 @@ impl<T> Prepared<T> {
 }
 
 impl<T> Clone for Prepared<T> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
+/// What a [`Prepared`] holds, once prepared, which reading never waits on.
+pub(crate) struct Ready<T>(Arc<Preparing<T>>);
+
+impl<T> Ready<T> {
+    /// The graph it was taken from.
+    pub(crate) fn shared(&self) -> &Shared {
+        &self.0.shared
+    }
+}
+
+impl<T> Deref for Ready<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.0.prepared
+    }
+}
+
+impl<T> Clone for Ready<T> {
     fn clone(&self) -> Self {
         Self(Arc::clone(&self.0))
     }
@@ -896,7 +933,7 @@ impl GraphModel {
             move || placing.join(),
             |model, placed, cx| match land(&mut model.source, placed, landing) {
                 Some(map) => {
-                    derive_levels(map, cx);
+                    derive_levels(map, cx.background_executor());
                     cx.emit(MapPlaced);
                 }
                 None => model.replaced(cx),
@@ -1079,7 +1116,7 @@ impl GraphModel {
         let counted = stack.clone();
         let task = load_in_background(
             cx,
-            move || stack.evaluate(universe.get(), &prefixes),
+            move || stack.evaluate(universe.wait(), &prefixes),
             move |model, evaluation, cx| {
                 model.counting = None;
                 model.counted = Some((counted, Arc::new(evaluation)));
@@ -1112,7 +1149,7 @@ impl GraphModel {
         };
         let (prefixes, named) = (self.prefixes(), stack.clone());
         let work = cx.spawn(async move |model, cx| {
-            let naming = async move { named.excluded_by(universe.get(), &prefixes, node) };
+            let naming = async move { named.excluded_by(universe.wait(), &prefixes, node) };
             let exclusion = cx.background_executor().spawn(naming).await;
             let _ = model.update(cx, |model, cx| {
                 let named = model.exclusions.iter_mut().find(|held| held.node == node);
@@ -1144,12 +1181,12 @@ impl GraphModel {
 
     /// A matching with no query, on the graph's matcher pool where no list
     /// holds it.
-    pub(crate) fn take_matcher(&mut self) -> Matching {
-        self.matchers.take()
+    pub(crate) fn take_matcher<S>(&mut self, cx: &App) -> Matching<S> {
+        self.matchers.take(cx.background_executor())
     }
 
     /// Hands the pool of `matching` back for another list to take up.
-    pub(crate) fn park_matcher(&mut self, matching: Matching) {
+    pub(crate) fn park_matcher<S>(&mut self, matching: Matching<S>) {
         self.matchers.park(matching);
     }
 
@@ -1175,7 +1212,7 @@ impl GraphModel {
         self._applying = load_in_background(
             cx,
             move || {
-                let scope = scope_of(&stack, universe.get(), &prefixes);
+                let scope = scope_of(&stack, universe.wait(), &prefixes);
                 (stack, scope)
             },
             move |model, (stack, scope), cx| model.scope_landed(stack, scope, by, cx),
@@ -1226,7 +1263,7 @@ impl GraphModel {
             let (prepared, roots) = (loaded.scope_graph(key.scope), key.roots.clone());
             move || {
                 let shared = prepared.shared();
-                (prepared.get()).dominators(&shared.names, &shared.facets, &roots)
+                (prepared.wait()).dominators(&shared.names, &shared.facets, &roots)
             }
         };
         self.want(wanted, |loaded| &mut loaded.dominators, pass, cx);

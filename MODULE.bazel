@@ -233,6 +233,17 @@ crate.annotation(
     patch_args = ["-p1"],
     patches = ["//patches/gpui_wgpu:gpui_wgpu-reserve-path-vertices.patch"],
 )
+crate.annotation(
+    additive_build_file_content = """filegroup(
+    name = "licence",
+    srcs = ["LICENSE"],
+    visibility = ["//visibility:public"],
+)""",
+    crate = "nucleo",
+    extra_aliased_targets = {"nucleo_licence": "licence"},
+    patch_args = ["-p1"],
+    patches = ["//patches/nucleo:nucleo-try-tick.patch"],
+)
 
 # gpui_apple's build script generates the C header its Metal shaders share with
 # Rust by running cbindgen over gpui's sources. rules_rs does not surface a git

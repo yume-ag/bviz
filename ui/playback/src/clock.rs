@@ -1,8 +1,8 @@
 use bviz_invocation::EpochMicros;
+use bviz_time::Instant;
 use gpui::{App, Context, Entity, EventEmitter, Subscription, Window};
 use std::cell::Cell;
 use std::rc::Rc;
-use std::time::Instant;
 
 /// The playback speeds, as multiples of real time, in the order stepping
 /// through them takes.
@@ -220,12 +220,12 @@ impl Timeline {
     /// The time this timeline stands at, computed afresh from the wall clock
     /// on every read.
     pub fn now(&self) -> EpochMicros {
-        self.at(Instant::now())
+        self.at(bviz_time::now())
     }
 
     /// Whether the time is advancing: it plays and has not reached the end.
     pub fn is_playing(&self) -> bool {
-        self.playing_at(Instant::now())
+        self.playing_at(bviz_time::now())
     }
 
     fn at(&self, instant: Instant) -> EpochMicros {
@@ -499,13 +499,13 @@ impl Clock {
 
     fn drive(&mut self, cx: &mut Context<Self>, gesture: impl FnOnce(&mut Timeline, Instant)) {
         if let Some(timeline) = &mut self.timeline {
-            gesture(timeline, Instant::now());
+            gesture(timeline, bviz_time::now());
             cx.notify();
         }
     }
 
     fn reshape(&mut self, cx: &mut Context<Self>) {
-        self.timeline = reshaped(self.timeline.take(), self.sources.shape(), Instant::now());
+        self.timeline = reshaped(self.timeline.take(), self.sources.shape(), bviz_time::now());
         cx.notify();
     }
 }
@@ -658,7 +658,7 @@ mod tests {
 
     #[test]
     fn a_timeline_parked_at_the_end_follows_it_as_the_range_grows() {
-        let start = Instant::now();
+        let start = bviz_time::now();
         let mut timeline = timeline(&[Source::new(span(0, 10))]);
         timeline.reshape(shape(&[Source::new(span(0, 20))]), start);
         assert_eq!(timeline.at(start), at(20));
@@ -669,7 +669,7 @@ mod tests {
 
     #[test]
     fn playing_advances_at_the_speed_and_stops_at_the_end() {
-        let start = Instant::now();
+        let start = bviz_time::now();
         let mut timeline = timeline(&[Source::new(span(0, 10))]);
         timeline.seek(at(2), start);
         timeline.set_speed(Speed::from_index(1).unwrap(), start);
@@ -682,7 +682,7 @@ mod tests {
 
     #[test]
     fn playing_from_the_end_starts_over() {
-        let start = Instant::now();
+        let start = bviz_time::now();
         let mut timeline = timeline(&[Source::new(span(0, 10))]);
         timeline.play(start);
         assert_eq!(timeline.at(later(start, 1)), at(1));
@@ -692,7 +692,7 @@ mod tests {
 
     #[test]
     fn a_speed_change_keeps_the_time_where_it_stands() {
-        let start = Instant::now();
+        let start = bviz_time::now();
         let mut timeline = timeline(&[Source::new(span(0, 100))]);
         timeline.seek(at(0), start);
         timeline.play(start);
@@ -703,7 +703,7 @@ mod tests {
 
     #[test]
     fn a_step_stops_at_the_nearest_mark() {
-        let start = Instant::now();
+        let start = bviz_time::now();
         let source = Source::new(span(0, 10)).with_marks([at(2), at(6)]);
         let mut timeline = timeline(&[source]);
         timeline.seek(at(2), start);
@@ -720,7 +720,7 @@ mod tests {
 
     #[test]
     fn a_step_with_no_marks_moves_a_share_of_the_range() {
-        let start = Instant::now();
+        let start = bviz_time::now();
         let mut timeline = timeline(&[Source::new(span(0, 100))]);
         timeline.step(false, start);
         assert_eq!(timeline.at(start), at(98));
@@ -731,7 +731,7 @@ mod tests {
 
     #[test]
     fn removing_a_source_reshapes_the_timeline_to_the_rest() {
-        let start = Instant::now();
+        let start = bviz_time::now();
         let mut sources = Sources::default();
         let early = sources.add(Source::new(span(0, 4)).with_marks([at(1)]));
         let late = sources.add(Source::new(span(2, 10)).approximate());

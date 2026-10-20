@@ -47,7 +47,7 @@ use workspace::register_keys;
 
 use clap::Parser;
 use clap::error::ErrorKind;
-use gpui::{App, AppContext, Pixels, Size, Window, px};
+use gpui::{App, AppContext, Pixels, Size, WeakEntity, Window, px};
 
 /// Opening size of a window, roomy enough for a graph or a timeline to be
 /// worth looking at before it is resized.
@@ -63,9 +63,10 @@ pub const TEXT_WINDOW_SIZE: Size<Pixels> = Size {
     height: px(720.),
 };
 
-/// Runs a standalone viewer, as [`run_panels`] does, for the documents
-/// `documents` reads from its command line `C`. Where they come to none, it
-/// exits with the usage error naming what is `required`.
+/// Runs a standalone viewer whose one window frames the [`Document`]s `open`
+/// builds from the documents `documents` reads from its command line `C`, in
+/// order, their views laid out by [`Role`]. Where they come to none, it exits
+/// with the usage error naming what is `required`.
 pub fn run_viewer<C, I, T, F>(
     app_id: &str,
     window_size: Size<Pixels>,
@@ -88,39 +89,64 @@ pub fn run_viewer<C, I, T, F>(
             )
             .exit()
     }
-    run_panels(
-        app_id,
+    let opened = move |window: &mut Window, cx: &mut App| {
+        let mut opened = Vec::with_capacity(documents.len());
+        for document in documents {
+            opened.push(open(document, window, cx));
+        }
+        opened
+    };
+    run(
+        app_id.into(),
         window_size,
-        documents,
-        open,
+        opened,
+        |_, _, _| {},
         None,
         Vec::new(),
         panel_keys,
     );
 }
 
-/// Runs an app whose one window frames the [`Document`]s `open` builds from
-/// `documents` in order, their views laid out by [`Role`], and frames no panel
-/// where `documents` is empty. Files the user names to a window while the app
-/// runs go to `opener`, where the app opens any, and each window's Documents
-/// menu lists `actions` after opening files. Each of
-/// `panel_keys` registers the bindings of one panel kind the app can show, and
-/// runs before the first window opens. Each runs exactly once per process:
-/// `cx.bind_keys` refreshes every window, which drops what each has cached of
-/// its last frame.
-pub fn run_panels<T, F>(
+/// Runs an app whose one window opens framing no panel and is handed, once
+/// open, to `arriving`, which opens into it the documents the app was started
+/// with as they become known. `arriving` runs inside an update of the window's
+/// workspace, so it reaches the workspace only from work it defers, such as a
+/// task it spawns on the window. Files the user names to a window while the
+/// app runs go to `opener`, where the app opens any, and each window's
+/// Documents menu lists `actions` after opening files. Each of `panel_keys`
+/// registers the bindings of one panel kind the app can show, and runs before
+/// the first window opens. Each runs exactly once per process: `cx.bind_keys`
+/// refreshes every window, which drops what each has cached of its last frame.
+pub fn run_panels(
     app_id: impl Into<String>,
     window_size: Size<Pixels>,
-    documents: Vec<T>,
-    open: F,
+    arriving: impl FnOnce(WeakEntity<Workspace>, &mut Window, &mut App) + 'static,
     opener: Option<PathOpener>,
     actions: Vec<AppAction>,
     panel_keys: &'static [fn(&mut App)],
-) where
-    T: 'static,
-    F: 'static + Fn(T, &mut Window, &mut App) -> Document,
-{
-    let app_id = app_id.into();
+) {
+    run(
+        app_id.into(),
+        window_size,
+        |_, _| Vec::new(),
+        arriving,
+        opener,
+        actions,
+        panel_keys,
+    );
+}
+
+/// Runs an app whose one window opens framing the documents `opened` builds,
+/// as [`run_panels`] runs one, and frames no panel where they are none.
+fn run(
+    app_id: String,
+    window_size: Size<Pixels>,
+    opened: impl FnOnce(&mut Window, &mut App) -> Vec<Document> + 'static,
+    arriving: impl FnOnce(WeakEntity<Workspace>, &mut Window, &mut App) + 'static,
+    opener: Option<PathOpener>,
+    actions: Vec<AppAction>,
+    panel_keys: &'static [fn(&mut App)],
+) {
     bviz_ui_shell::application().run(move |cx: &mut App| {
         bviz_ui_shell::setup(cx);
         register_keys(cx, opener.is_some());
@@ -131,14 +157,14 @@ pub fn run_panels<T, F>(
         for register in panel_keys {
             register(cx);
         }
-        bviz_ui_shell::open_window(&app_id, window_size, cx, |window, cx| {
-            let mut opened = Vec::with_capacity(documents.len());
-            for document in documents {
-                opened.push(open(document, window, cx));
-            }
+        let window = bviz_ui_shell::open_window(&app_id, window_size, cx, |window, cx| {
+            let opened = opened(window, cx);
             cx.new(|cx| Workspace::with_documents(app_id.clone(), opened, window, cx))
         })
         .unwrap();
+        window
+            .update(cx, |_, window, cx| arriving(cx.weak_entity(), window, cx))
+            .unwrap();
         cx.activate(true);
     });
 }

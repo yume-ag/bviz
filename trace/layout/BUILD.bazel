@@ -32,5 +32,6 @@ rust_binary(
         ":layout",
         "//alloc",
         "//trace/profile",
+        "//util/time",
     ],
 )

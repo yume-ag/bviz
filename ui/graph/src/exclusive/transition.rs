@@ -3,8 +3,9 @@
 
 use super::icicle::{self, Cell, Holds, Tree, VISIBLE_WIDTH};
 use crate::camera::ease_out_cubic;
+use bviz_time::Instant;
 use gpui::{Bounds, Pixels, point, size};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// How long the icicle takes to move from one focus to the next.
 const DURATION: Duration = Duration::from_millis(200);
@@ -310,7 +311,7 @@ mod tests {
     #[test]
     fn a_move_down_ends_on_the_lower_icicle_as_drawn_at_rest() {
         let (tree, bounds) = (tree(), area(100., 4.));
-        let start = Instant::now();
+        let start = bviz_time::now();
         let down = Transition::between(&tree, Holds::Build, Holds::Node(0), start).unwrap();
         let ended = moving(&down, &tree, bounds, 1.);
         assert!(
@@ -353,7 +354,7 @@ mod tests {
             .iter()
             .filter(|placed| matches!(placed.cell.holds, Holds::Rest(_)));
         assert_eq!(rest.count(), 1, "{at_rest:#?}");
-        let start = Instant::now();
+        let start = bviz_time::now();
         let down = Transition::between(&tree, Holds::Build, Holds::Node(0), start).unwrap();
         let started = down.cells(&tree, bounds, bounds, ROW, MIN, 0.);
         assert!(same_cells(&started, &at_rest), "{started:#?}");
@@ -374,7 +375,7 @@ mod tests {
     #[test]
     fn a_move_up_runs_from_the_lower_icicle_to_the_higher() {
         let tree = tree();
-        let start = Instant::now();
+        let start = bviz_time::now();
         let up = Transition::between(&tree, Holds::Node(0), Holds::Build, start).unwrap();
         let down = Transition::between(&tree, Holds::Build, Holds::Node(0), start).unwrap();
         assert_eq!(up.lowered(start), 1.);
@@ -391,7 +392,7 @@ mod tests {
     #[test]
     fn a_move_eases_out_and_ends_after_its_length() {
         let tree = tree();
-        let start = Instant::now();
+        let start = bviz_time::now();
         let down = Transition::between(&tree, Holds::Build, Holds::Node(1), start).unwrap();
         let half = down.lowered(start + DURATION / 2);
         assert!(half > 0.5, "{half}");
@@ -406,7 +407,7 @@ mod tests {
     fn mid_way_the_cell_clicked_grows_towards_the_top_row() {
         let (tree, bounds) = (tree(), area(100., 4.));
         let down =
-            Transition::between(&tree, Holds::Build, Holds::Node(1), Instant::now()).unwrap();
+            Transition::between(&tree, Holds::Build, Holds::Node(1), bviz_time::now()).unwrap();
         let cells = moving(&down, &tree, bounds, 0.5);
         let clicked = cells
             .iter()
@@ -420,7 +421,7 @@ mod tests {
     #[test]
     fn a_move_between_cells_neither_over_the_other_is_none() {
         let tree = tree();
-        let now = Instant::now();
+        let now = bviz_time::now();
         assert!(Transition::between(&tree, Holds::Node(1), Holds::Node(2), now).is_none());
         assert!(Transition::between(&tree, Holds::Node(1), Holds::Node(1), now).is_none());
     }
@@ -439,7 +440,7 @@ mod tests {
             .cell
             .rect;
         let down =
-            Transition::between(&tree, Holds::Build, Holds::Node(2), Instant::now()).unwrap();
+            Transition::between(&tree, Holds::Build, Holds::Node(2), bviz_time::now()).unwrap();
         let started = down.cells(&tree, bounds, bounds, ROW, MIN, 0.);
         let lower_top = started
             .iter()
@@ -469,7 +470,7 @@ mod tests {
                 .any(|placed| placed.cell.holds == Holds::Node(2))
         );
         let down =
-            Transition::between(&tree, Holds::Build, Holds::Node(2), Instant::now()).unwrap();
+            Transition::between(&tree, Holds::Build, Holds::Node(2), bviz_time::now()).unwrap();
         let higher: Vec<Cell> = at_rest.iter().map(|placed| placed.cell).collect();
         let anchor = down.anchor(&tree, &higher, bounds, ROW, min).unwrap();
         let per_point = px(100.) / 1002.;
@@ -503,7 +504,7 @@ mod tests {
         let higher = icicle::lay_out(&tree, Holds::Build, bounds, ROW, min);
         assert!(!higher.iter().any(|cell| cell.holds == run
             || matches!(cell.holds, Holds::Rest(_)) && run.stands_under(cell.holds, &tree)));
-        let down = Transition::between(&tree, Holds::Build, run, Instant::now()).unwrap();
+        let down = Transition::between(&tree, Holds::Build, run, bviz_time::now()).unwrap();
         let anchor = down.anchor(&tree, &higher, bounds, ROW, min).unwrap();
         assert_eq!(anchor, Bounds::new(point(px(40.), ROW), size(px(60.), ROW)));
     }
@@ -514,7 +515,7 @@ mod tests {
     fn a_cell_rows_below_moves_from_its_own_place() {
         let (tree, bounds) = (tree(), area(100., 4.));
         let down =
-            Transition::between(&tree, Holds::Build, Holds::Node(3), Instant::now()).unwrap();
+            Transition::between(&tree, Holds::Build, Holds::Node(3), bviz_time::now()).unwrap();
         assert_eq!(down.path, [Holds::Node(3), Holds::Node(2), Holds::Node(0)]);
         let started = moving(&down, &tree, bounds, 0.);
         let lower_top = started

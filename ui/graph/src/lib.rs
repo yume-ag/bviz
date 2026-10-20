@@ -28,7 +28,7 @@ use gpui::{
     NavigationDirection, PinchEvent, Pixels, Point, Render, Rgba, ScrollWheelEvent, SharedString,
     StyleRefinement, Subscription, WeakEntity, Window, actions, canvas, div, prelude::*,
 };
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 mod actions;
 mod box_menu;
@@ -514,7 +514,7 @@ impl GraphPanel {
     /// paint and every gesture that names a box place through this one frame, so
     /// what the cursor lands on is what is drawn under it.
     fn morph_frame(&self) -> Option<Frame> {
-        self.morph.at(Instant::now())
+        self.morph.at(bviz_time::now())
     }
 
     fn new(model: Entity<GraphModel>, cx: &mut Context<Self>) -> Self {

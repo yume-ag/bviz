@@ -10,7 +10,7 @@ fn main() {
     let path = std::env::args()
         .nth(1)
         .expect("usage: bench_load <build event binary file>");
-    let start = std::time::Instant::now();
+    let start = bviz_time::now();
     let input =
         bviz_input::Input::open(std::path::Path::new(&path)).expect("open build event file");
     let size = input.size();

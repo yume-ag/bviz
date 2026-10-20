@@ -142,7 +142,7 @@ fn timed<T>(label: &str, f: impl FnOnce() -> T) -> T {
     if std::env::var_os("BVIZ_TRACE_TIMING").is_none() {
         return f();
     }
-    let start = std::time::Instant::now();
+    let start = bviz_time::now();
     let out = f();
     eprintln!("[timing] {label}: {:.3}s", start.elapsed().as_secs_f64());
     out

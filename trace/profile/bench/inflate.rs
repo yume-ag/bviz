@@ -14,7 +14,7 @@ use std::io::Read;
 
 const ROUNDS: usize = 4;
 
-fn report(label: &str, round: usize, start: std::time::Instant, out_bytes: usize) {
+fn report(label: &str, round: usize, start: bviz_time::Instant, out_bytes: usize) {
     let dt = start.elapsed().as_secs_f64();
     eprintln!(
         "[{round}] {label}: {dt:.3}s  {:.2} GB/s out ({out_bytes} bytes)",
@@ -33,7 +33,7 @@ fn main() {
     eprintln!("streaming buffer: {chunk_bytes} bytes");
     let mut buf = vec![0u8; chunk_bytes];
     for round in 0..ROUNDS {
-        let start = std::time::Instant::now();
+        let start = bviz_time::now();
         let mut out = Vec::with_capacity(decoded);
         flate2::read::MultiGzDecoder::new(&bytes[..])
             .read_to_end(&mut out)
@@ -41,7 +41,7 @@ fn main() {
         report("whole-buffer", round, start, out.len());
         drop(out);
 
-        let start = std::time::Instant::now();
+        let start = bviz_time::now();
         let mut dec = flate2::read::MultiGzDecoder::new(&bytes[..]);
         let mut n = 0usize;
         loop {

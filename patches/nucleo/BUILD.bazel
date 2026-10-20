@@ -1,0 +1,10 @@
+# The patch carries lines of nucleo it modifies, under nucleo's terms.
+package(default_package_metadata = [
+    "//:package_metadata",
+    "//LICENSES:nucleo_patches",
+])
+
+exports_files(
+    ["nucleo-try-tick.patch"],
+    visibility = ["//visibility:public"],
+)

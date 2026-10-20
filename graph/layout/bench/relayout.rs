@@ -37,7 +37,7 @@ const USAGE: &str = "usage: bench_relayout [--query FILE] [--cquery FILE] [--aqu
                      iterations from BVIZ_BENCH_ITERS";
 
 fn secs(mut f: impl FnMut()) -> f64 {
-    let t = std::time::Instant::now();
+    let t = bviz_time::now();
     f();
     t.elapsed().as_secs_f64()
 }

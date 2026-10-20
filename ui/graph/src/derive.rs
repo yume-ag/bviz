@@ -24,7 +24,7 @@ use bviz_graph_layout::select::{Filter, Hiding, Pin, Verdict, Verdicts};
 use bviz_graph_layout::transition::Transitions;
 use bviz_graph_layout::{Id, LaidOut, MapLayout, Names};
 use bviz_ui_components::load_in_background;
-use gpui::{Context, Task};
+use gpui::{BackgroundExecutor, Context, Task};
 use rustc_hash::FxHashSet;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,8 +34,8 @@ use std::sync::{Arc, OnceLock};
 /// finds the level it calls for ready rather than drawing a neighbour of it
 /// while it derives. A view already derived costs nothing to ask for again, so
 /// this races [`derive_view`] harmlessly.
-pub(crate) fn derive_levels<V: 'static>(map: Arc<MapLayout>, cx: &mut Context<V>) {
-    cx.background_executor()
+pub(crate) fn derive_levels(map: Arc<MapLayout>, executor: &BackgroundExecutor) {
+    executor
         .spawn(async move {
             for level in 0..map.level_count() {
                 map.level(level);
@@ -288,9 +288,9 @@ enum SliceMap {
     Restricted(RestrictedMap),
 }
 
-/// A slice's graph placed where the document places it, made once the
-/// document's placement lands. Every clone shares the one map, whose levels the
-/// panel derives once.
+/// A slice's graph placed where the document places it, placed off the UI
+/// thread once the document's placement lands. Every clone shares the one map,
+/// whose levels the panel derives once.
 #[derive(Clone)]
 struct RestrictedMap {
     placement: Placement,
@@ -303,8 +303,15 @@ struct RestrictedMap {
 }
 
 impl RestrictedMap {
-    /// The map, absent until the document's placement lands.
+    /// The map, absent until it is placed.
     fn placed(&self) -> Option<&Arc<MapLayout>> {
+        self.map.get()
+    }
+
+    /// The map once the document's placement has landed, placed first if no
+    /// thread has yet. Placing is linear in the graph and waits on any other
+    /// thread placing it, so call this only off the UI thread.
+    fn wait_placed(&self) -> Option<&Arc<MapLayout>> {
         let whole = self.placement.placed()?;
         Some(self.map.get_or_init(|| {
             Arc::new(whole.restricted(
@@ -315,14 +322,23 @@ impl RestrictedMap {
         }))
     }
 
-    /// Derives the map's levels off the UI thread, the first time it is asked
-    /// once the document's placement has landed.
-    fn derive_levels<V: 'static>(&self, cx: &mut Context<V>) {
-        if let Some(map) = self.placed()
-            && !self.levels_asked.swap(true, Ordering::Relaxed)
-        {
-            derive_levels(Arc::clone(map), cx);
+    /// Places the map and derives its levels off the UI thread, the first time
+    /// it is asked once the document's placement has landed, redrawing the
+    /// panel once the map is placed.
+    fn derive_levels(&self, cx: &mut Context<GraphPanel>) {
+        if self.placement.placed().is_none() || self.levels_asked.swap(true, Ordering::Relaxed) {
+            return;
         }
+        let restricted = self.clone();
+        cx.spawn(async move |view, cx| {
+            let placing = async move { restricted.wait_placed().map(Arc::clone) };
+            let Some(map) = cx.background_executor().spawn(placing).await else {
+                return;
+            };
+            derive_levels(map, cx.background_executor());
+            view.update(cx, |view, cx| view.invalidate_canvas(cx)).ok();
+        })
+        .detach();
     }
 }
 
@@ -346,11 +362,20 @@ impl Slice {
         }
     }
 
-    /// The map this draws, absent until the document's placement lands.
+    /// The map this draws, absent until it is placed.
     fn map(&self) -> Option<&Arc<MapLayout>> {
         match &self.map {
             SliceMap::Whole(placement) => placement.placed(),
             SliceMap::Restricted(restricted) => restricted.placed(),
+        }
+    }
+
+    /// The map this draws, waiting for a restriction's as
+    /// [`RestrictedMap::wait_placed`] does.
+    fn wait_placed_map(&self) -> Option<&Arc<MapLayout>> {
+        match &self.map {
+            SliceMap::Whole(placement) => placement.placed(),
+            SliceMap::Restricted(restricted) => restricted.wait_placed(),
         }
     }
 
@@ -1204,7 +1229,7 @@ fn request(view: &mut GraphPanel, cx: &mut Context<GraphPanel>) {
                         }
                         Lens::Paths(paths) => restrict_to_paths(&shared, paths),
                     };
-                    if let (Some(zoom), Some(map)) = (map_zoom, next.map()) {
+                    if let (Some(zoom), Some(map)) = (map_zoom, next.wait_placed_map()) {
                         map.level(map.level_for_scale(zoom));
                     }
                     // The drawing kept names the groups its layout minted.
@@ -1598,7 +1623,7 @@ mod tests {
                 .all(|node| node.kind != Kind::Action)
         );
         assert!(
-            finest(slice.map())
+            finest(slice.wait_placed_map())
                 .boxes
                 .iter()
                 .all(|b| kind_of(&loaded, b.id) != Kind::Action),
@@ -1621,7 +1646,7 @@ mod tests {
         let (slice, _) =
             restrict_through(&loaded.shared, &hiding(Kind::Target), &HashSet::new(), true);
 
-        let coarsest = slice.map().expect("a placed map").level(0);
+        let coarsest = slice.wait_placed_map().expect("a placed map").level(0);
         assert!(
             coarsest.boxes.iter().any(|b| b.id == id(&loaded, "//a")),
             "the container the fold collapses into",
@@ -1653,7 +1678,7 @@ mod tests {
             .iter()
             .find(|b| b.id == target)
             .expect("the document draws the target");
-        let shrunk = finest(slice.map())
+        let shrunk = finest(slice.wait_placed_map())
             .boxes
             .iter()
             .find(|b| b.id == target)
@@ -1670,7 +1695,7 @@ mod tests {
         let (loaded, slice) = actions_hidden();
 
         let whole = finest(loaded.shared.map.placed());
-        for b in &finest(slice.map()).boxes {
+        for b in &finest(slice.wait_placed_map()).boxes {
             let at = whole
                 .boxes
                 .iter()
@@ -1680,20 +1705,21 @@ mod tests {
         }
     }
 
-    /// A filter set before the map lands is drawn in the map once it does, placed
-    /// where the document places it and shared by every clone of the
+    /// A filter set before the map lands is drawn in the map once it is placed
+    /// in turn, where the document places it and shared by every clone of the
     /// restriction, so its levels are derived once.
     #[test]
     fn a_restriction_made_before_the_map_lands_is_placed_where_the_document_places_it() {
         let (loaded, land) = document_placing();
         let (slice, _) =
             restrict_through(&loaded.shared, &hiding(Kind::Action), &HashSet::new(), true);
-        assert!(slice.map().is_none());
+        assert!(slice.wait_placed_map().is_none());
 
         land();
+        assert!(slice.map().is_none(), "placed only when asked to place");
 
         let placed = slice
-            .map()
+            .wait_placed_map()
             .expect("the restriction placed once the map lands");
         assert!(!Arc::ptr_eq(
             placed,
@@ -1704,7 +1730,7 @@ mod tests {
             slice.clone().map().expect("a placed map")
         ));
         let whole = finest(loaded.shared.map.placed());
-        for b in &finest(slice.map()).boxes {
+        for b in &finest(slice.wait_placed_map()).boxes {
             let at = whole
                 .boxes
                 .iter()
@@ -1756,13 +1782,10 @@ mod tests {
         assert!(!derived.deriving_for(LayoutMode::Layered));
     }
 
-    /// A filter set while a derivation runs is owed a restriction that nothing
-    /// else records, so every request made before it lands — an expansion, a
-    /// change of edge set — restricts afresh rather than laying out the graph
-    /// the superseded filter left.
     /// A filter naming what to look at that lands before the map is placed
     /// still asks for the camera to frame what it leaves, and hands the panel
-    /// the restriction's map, which is placed once the document's lands.
+    /// the restriction's map, which is drawn once placed after the document's
+    /// lands.
     #[test]
     fn a_framed_filter_landing_before_the_map_frames_the_map_once_placed() {
         let (loaded, land) = document_placing();
@@ -1787,11 +1810,13 @@ mod tests {
         assert!(derived.drawn(LayoutMode::Map).is_none());
 
         land();
+        assert!(derived.drawn(LayoutMode::Map).is_none());
+        let placed = Arc::clone(map.wait_placed().expect("a placed map"));
 
         let Some(Drawn::Map { map: drawn, .. }) = derived.drawn(LayoutMode::Map) else {
-            panic!("no map drawn once the document's lands");
+            panic!("no map drawn once the restriction's is placed");
         };
-        assert!(Arc::ptr_eq(map.placed().expect("a placed map"), &drawn));
+        assert!(Arc::ptr_eq(&placed, &drawn));
     }
 
     /// The map landing derives the levels of the restriction a panel draws, and
@@ -1815,7 +1840,7 @@ mod tests {
         let drawn = derived
             .restricted_map_drawn()
             .expect("the restriction the panel draws");
-        assert!(drawn.placed().is_some());
+        assert!(drawn.wait_placed().is_some());
 
         derived.filter = hiding(Kind::Target);
         assert!(derived.restricted_map_drawn().is_none());

@@ -7,9 +7,12 @@ rust_library(
     visibility = [
         "//execlog:__pkg__",
         "//graph/layout:__pkg__",
+        "//graph/layout/oracle:__pkg__",
         "//trace/layout:__pkg__",
         "//trace/profile:__pkg__",
+        "//ui/components:__pkg__",
         "//ui/graph:__pkg__",
+        "//util/input:__pkg__",
     ],
     deps = [
         "@crates//:num_cpus",

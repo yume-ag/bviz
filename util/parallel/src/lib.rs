@@ -1,6 +1,21 @@
-//! How wide to fan work out across the machine.
+//! bviz's threads, and how wide to fan work out across the machine. Every OS
+//! thread bviz starts goes through [`spawn`] or [`scope`].
 
 use std::sync::OnceLock;
+use std::thread::{JoinHandle, Scope};
+
+/// Runs `work` on a new OS thread.
+pub fn spawn<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> JoinHandle<T> {
+    #[expect(clippy::disallowed_methods, reason = "the one start of an OS thread")]
+    std::thread::spawn(work)
+}
+
+/// Runs `work` with a scope whose threads may borrow from the caller, returning
+/// once every thread spawned in it has finished.
+pub fn scope<'env, T>(work: impl for<'scope> FnOnce(&'scope Scope<'scope, 'env>) -> T) -> T {
+    #[expect(clippy::disallowed_methods, reason = "the one start of a thread scope")]
+    std::thread::scope(work)
+}
 
 /// Worker count for a parallel pass over bulk data: the machine's physical core
 /// count rather than its logical (SMT) thread count, because such a pass is
