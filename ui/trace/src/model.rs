@@ -1103,12 +1103,13 @@ impl TraceState {
             aggregate_key,
             select_anchor,
             visible_lanes,
-            group_chrome: _,
+            group_chrome,
             aggregates,
             agg,
         } = self;
         lanes.get_mut().take();
         visible_lanes.get_mut().take();
+        group_chrome.get_mut().take();
         *aggregates = None;
         agg.invalidate();
         time_selection.clear();
@@ -1714,6 +1715,14 @@ mod tests {
         assert!(model.replace_source(Source::Loading, &mut session));
         assert_eq!(session.chosen(), None);
         assert_eq!(model.kept_in_sample, None);
+    }
+
+    #[test]
+    fn a_replaced_profile_leaves_no_group_headers() {
+        let mut model = traced();
+        assert!(model.group_chrome().is_some());
+        model.replace_source(Source::Loading, &mut Session::default());
+        assert!(model.group_chrome().is_none());
     }
 
     #[test]
