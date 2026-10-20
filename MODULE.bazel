@@ -144,7 +144,9 @@ LINUX_TRIPLES = [
     "x86_64-unknown-linux-gnu",
 ]
 
-PLATFORM_TRIPLES = DARWIN_TRIPLES + LINUX_TRIPLES
+WEB_TRIPLES = ["wasm32-unknown-unknown"]
+
+PLATFORM_TRIPLES = DARWIN_TRIPLES + LINUX_TRIPLES + WEB_TRIPLES
 
 crate = use_extension("@rules_rs//rs:extensions.bzl", "crate")
 crate.from_cargo(
