@@ -277,6 +277,21 @@ crate.annotation(
     patch_args = ["-p1"],
     patches = ["//patches/wgpu:wgpu-assert-unwind-safe-callbacks.patch"],
 )
+crate.annotation(
+    crate = "polling",
+    patch_args = ["-p1"],
+    patches = ["//patches/polling:polling-empty-on-wasm.patch"],
+)
+crate.annotation(
+    crate = "home",
+    patch_args = ["-p1"],
+    patches = ["//patches/home:home-empty-on-wasm.patch"],
+)
+crate.annotation(
+    crate = "alacritty_terminal",
+    patch_args = ["-p1"],
+    patches = ["//patches/alacritty_terminal:alacritty_terminal-cfg-tty.patch"],
+)
 
 # gpui_apple's build script generates the C header its Metal shaders share with
 # Rust by running cbindgen over gpui's sources. rules_rs does not surface a git

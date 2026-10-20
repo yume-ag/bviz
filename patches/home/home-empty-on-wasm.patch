@@ -1,0 +1,18 @@
+Compile to an empty crate on WebAssembly
+
+home looks the home directory up only on Unix and Windows, and fails to
+compile elsewhere. A crate that depends on it only for code it leaves out
+on WebAssembly can then still build for it.
+
+License: Apache-2.0 (home 0.5.12)
+
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -22,6 +22,7 @@
+ //!
+ //! [discussion]: https://github.com/rust-lang/rust/pull/46799#issuecomment-361156935
+ 
++#![cfg(not(target_family = "wasm"))]
+ #![allow(clippy::disallowed_methods)]
+ 
+ pub mod env;

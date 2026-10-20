@@ -1,0 +1,26 @@
+Leave out the pseudo-terminal where there is none
+
+The tty and event_loop modules spawn a shell on a pseudo-terminal and poll
+it, which only Unix and Windows provide; on WebAssembly they do not compile.
+The terminal model, the grid and the parser stay available everywhere.
+
+License: Apache-2.0 (alacritty_terminal 0.26.0)
+
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -5,6 +5,7 @@
+ #![cfg_attr(clippy, deny(warnings))]
+ 
+ pub mod event;
++#[cfg(any(unix, windows))]
+ pub mod event_loop;
+ pub mod grid;
+ pub mod index;
+@@ -12,6 +13,7 @@
+ pub mod sync;
+ pub mod term;
+ pub mod thread;
++#[cfg(any(unix, windows))]
+ pub mod tty;
+ pub mod vi_mode;
+ 
