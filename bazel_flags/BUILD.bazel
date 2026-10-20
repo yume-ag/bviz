@@ -1,6 +1,7 @@
 load("@rules_rs//rs:rust_binary.bzl", "rust_binary")
 load("@rules_rs//rs:rust_library.bzl", "rust_library")
 load("@rules_rs//rs:rust_test.bzl", "rust_test")
+load("//tools/wasm_test:wasm_test.bzl", "wasm_test")
 
 rust_library(
     name = "bazel_flags",
@@ -28,4 +29,9 @@ rust_binary(
         "//bazel_flags/args",
         "@crates//:clap",
     ],
+)
+
+wasm_test(
+    name = "bazel_flags_wasm_test",
+    test = ":bazel_flags_test",
 )
