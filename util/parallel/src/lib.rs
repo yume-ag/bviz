@@ -31,10 +31,24 @@ pub fn worker_count() -> usize {
 
 /// The physical cores, clamped to the parallelism the process is actually
 /// granted, so a CPU quota or affinity mask is honored.
-#[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+#[cfg(not(target_family = "wasm"))]
 fn physical_cores() -> usize {
     let granted = std::thread::available_parallelism().map_or(1, |n| n.get());
     num_cpus::get_physical().min(granted)
+}
+
+/// Half the logical processors the browser reports: a heuristic estimate of the
+/// physical cores, which no browser exposes, that takes every core to run two
+/// threads. On a machine without SMT it counts half the cores.
+#[cfg(all(target_family = "wasm", target_feature = "atomics"))]
+fn physical_cores() -> usize {
+    let global = js_sys::global();
+    let logical = js_sys::Reflect::get(&global, &"navigator".into())
+        .and_then(|navigator| js_sys::Reflect::get(&navigator, &"hardwareConcurrency".into()))
+        .ok()
+        .and_then(|count| count.as_f64())
+        .map_or(1, |count| count as usize);
+    logical / 2
 }
 
 /// The one thread a build without threads has.

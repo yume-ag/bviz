@@ -807,6 +807,7 @@ dependencies = [
 name = "bviz_parallel"
 version = "0.1.0"
 dependencies = [
+ "js-sys",
  "num_cpus",
  "rayon",
 ]

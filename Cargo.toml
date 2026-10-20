@@ -60,6 +60,7 @@ fixedbitset = "0.5"
 flate2 = { version = "1", features = ["zlib-rs"] }
 hashbrown = { version = "0.16", default-features = false }
 heck = "0.5"
+js-sys = "0.3"
 libmimalloc-sys = "0.1"
 lyon_tessellation = "1.0"
 mimalloc = "0.1"
