@@ -3891,14 +3891,11 @@ mod tests {
     fn a_build_racing_another_under_a_different_window_gets_its_own_lanes() {
         let p = clipping_profile();
         let scan = TrackFlamer::new(&p);
-        let wide = window(&[(0, 90)]);
-        let narrow = window(&[(0, 40)]);
-        let raced = bviz_parallel::scope(|s| {
-            let a = s.spawn(|| scan.build(FlameLabels::Name, &wide, |_| true));
-            let b = s.spawn(|| scan.build(FlameLabels::Name, &narrow, |_| true));
-            [a.join().unwrap(), b.join().unwrap()]
+        let windows = [window(&[(0, 90)]), window(&[(0, 40)])];
+        let raced = bviz_parallel::fan_out(windows.len(), |i| {
+            scan.build(FlameLabels::Name, &windows[i], |_| true)
         });
-        for (graph, win) in raced.iter().zip([&wide, &narrow]) {
+        for (graph, win) in raced.iter().zip(&windows) {
             let fresh = TrackFlamer::new(&p).build(FlameLabels::Name, win, |_| true);
             assert_eq!(resolved(graph), resolved(&fresh));
         }
