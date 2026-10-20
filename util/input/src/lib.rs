@@ -8,6 +8,8 @@ use std::sync::Arc;
 
 #[cfg(any(unix, windows))]
 mod file;
+#[cfg(not(any(unix, windows)))]
+mod no_file_system;
 
 pub mod delimited;
 
