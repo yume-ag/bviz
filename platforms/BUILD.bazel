@@ -62,6 +62,11 @@ platform(
     visibility = ["//dist:__pkg__"],
 )
 
+# The web build's main thread stack. Where no thread can start, the main thread
+# runs the graph layout engine, whose recursion on a large graph runs deeper
+# than the stack rustc gives WebAssembly.
+WEB_MAIN_THREAD_STACK = 8 << 20
+
 # The browser's WebAssembly target. Both web platforms assume a browser with the
 # 2023 baseline features: fixed-width SIMD and exception handling, the latter
 # for unwinding panics.
@@ -75,6 +80,7 @@ platform(
         "--copt=-msimd128",
         "--@rules_rs_rules_rust//rust/settings:extra_rustc_flag=-Ctarget-feature=+simd128,+exception-handling",
         "--@rules_rs_rules_rust//rust/settings:extra_rustc_flag=-Cpanic=unwind",
+        "--@rules_rs_rules_rust//rust/settings:extra_rustc_flag=-Clink-arg=-zstack-size=%d" % WEB_MAIN_THREAD_STACK,
     ],
 )
 
