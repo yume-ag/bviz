@@ -17,6 +17,16 @@ pub fn scope<'env, T>(work: impl for<'scope> FnOnce(&'scope Scope<'scope, 'env>)
     std::thread::scope(work)
 }
 
+/// Runs `work(0)` to `work(workers - 1)` on a thread each, returning their
+/// results in that order.
+pub fn fan_out<T: Send>(workers: usize, work: impl Fn(usize) -> T + Sync) -> Vec<T> {
+    scope(|scope| {
+        let work = &work;
+        let handles: Vec<_> = (0..workers).map(|i| scope.spawn(move || work(i))).collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    })
+}
+
 /// Worker count for a parallel pass over bulk data: the machine's physical core
 /// count rather than its logical (SMT) thread count, because such a pass is
 /// memory-bandwidth bound, so threads past the cores that own the memory

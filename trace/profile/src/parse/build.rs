@@ -566,16 +566,12 @@ fn merge_lanes(tasks: &mut [TidTask]) {
             return;
         }
         let stealer = std::sync::Mutex::new(tasks.iter_mut());
-        bviz_parallel::scope(|scope| {
-            for _ in 0..workers {
-                scope.spawn(|| {
-                    loop {
-                        let Some(task) = stealer.lock().unwrap().next() else {
-                            break;
-                        };
-                        merge_lane(task);
-                    }
-                });
+        bviz_parallel::fan_out(workers, |_| {
+            loop {
+                let Some(task) = stealer.lock().unwrap().next() else {
+                    break;
+                };
+                merge_lane(task);
             }
         });
     });

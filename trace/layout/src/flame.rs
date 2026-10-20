@@ -252,10 +252,7 @@ pub(crate) fn run_sharded<S: Default + Send>(
     if workers == 1 {
         return vec![run_one()];
     }
-    bviz_parallel::scope(|scope| {
-        let handles: Vec<_> = (0..workers).map(|_| scope.spawn(run_one)).collect();
-        handles.into_iter().map(|h| h.join().unwrap()).collect()
-    })
+    bviz_parallel::fan_out(workers, |_| run_one())
 }
 
 /// Sort `(text, handle)` pairs into byte-wise text order. The texts are
