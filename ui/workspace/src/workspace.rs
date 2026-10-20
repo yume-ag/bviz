@@ -422,16 +422,7 @@ impl Frame {
             pane,
             window,
             |workspace, pane, event, window, cx| match event {
-                PaneEvent::Changed => {
-                    if workspace.active_pane() == Some(pane) {
-                        set_window_title(
-                            &workspace.app_name,
-                            workspace.active_panel(cx).as_ref(),
-                            window,
-                        );
-                    }
-                    cx.notify();
-                }
+                PaneEvent::Changed => cx.notify(),
                 PaneEvent::Closed => workspace.close_pane(pane, window, cx),
                 PaneEvent::Maximize => workspace.toggle_maximize(pane, cx),
                 PaneEvent::Pressed { panel, at } => workspace.press_panel(*panel, *at, cx),
@@ -581,6 +572,9 @@ pub struct Workspace {
     /// The application, named ahead of the active panel in the window title
     /// so a task list tells a bviz window from any other.
     app_name: SharedString,
+    /// The title last handed to the window system, which a frame hands it
+    /// again only once it reads otherwise.
+    titled: String,
     /// Focus for the chrome, so the shell's window actions (quit, close, tab)
     /// dispatch here; the ancestor of every panel's own focus.
     window_focus: FocusHandle,
@@ -612,7 +606,7 @@ pub struct Workspace {
     /// changes where a panel of this one can be carried to.
     _windows_changed: Subscription,
     /// Draws the window afresh as the registry changes, which renames a
-    /// document whose playback bar it may show.
+    /// document whose name the window's title and playback bar may show.
     _documents_changed: Subscription,
 }
 
@@ -642,6 +636,7 @@ impl Workspace {
         let documents_changed = cx.observe(&documents, |_, _, cx| cx.notify());
         let workspace = Self {
             app_name: app_name.into(),
+            titled: String::new(),
             window_focus: cx.focus_handle(),
             window: window.window_handle(),
             body: Body::Empty,
@@ -1423,10 +1418,9 @@ impl Workspace {
         }
     }
 
-    /// Gives focus to what the window shows and titles the window after it.
+    /// Gives focus to what the window shows.
     fn show_active(&self, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.content_focus(cx), cx);
-        set_window_title(&self.app_name, self.active_panel(cx).as_ref(), window);
         cx.notify();
     }
 
@@ -1831,6 +1825,21 @@ impl Workspace {
     /// pane.
     pub fn active_panel(&self, cx: &App) -> Option<AnyPanel> {
         Some(self.frame()?.active_panel(cx))
+    }
+
+    /// What names the window: the application, then, where a panel is on
+    /// show, the name of its document where that is an invocation's, then the
+    /// panel's title.
+    fn window_title(&self, panel: Option<&AnyPanel>, cx: &mut App) -> String {
+        let Some(panel) = panel else {
+            return self.app_name.to_string();
+        };
+        let app_name = &self.app_name;
+        let title = panel.display_title();
+        match Documents::global(cx).read(cx).joined_name(panel.document()) {
+            Some(joined) => format!("{app_name} \u{2014} {joined} \u{2014} {title}"),
+            None => format!("{app_name} \u{2014} {title}"),
+        }
     }
 
     /// What the window shows, as another window's menu names it: the panel on
@@ -2769,8 +2778,13 @@ impl Render for Workspace {
         let playback = self.playback_bar(panel, cx);
         let notes = self.note_strips(&colors, cx);
         let key_context = self.key_context(cx);
+        let title = self.window_title(panel, cx);
+        if title != self.titled {
+            window.set_window_title(&title);
+            self.titled.clone_from(&title);
+        }
         let chrome = Chrome::new(&self.window_focus)
-            .title(window_title(&self.app_name, panel))
+            .title(title)
             .menu(self.documents_menu.clone())
             .child(room_left().children(notes).child(panes).children(playback));
         let chrome = match panel.and_then(|panel| panel.status(cx)) {
@@ -2899,15 +2913,6 @@ fn towards<Focus: Action, Move: Action, SplitOff: Action>(
     }))
 }
 
-/// What names the window: the application, then the panel on show where there
-/// is one.
-fn window_title(app_name: &str, panel: Option<&AnyPanel>) -> String {
-    match panel {
-        Some(panel) => format!("{app_name} \u{2014} {}", panel.display_title()),
-        None => app_name.to_owned(),
-    }
-}
-
 /// What a window framing no panel shows in its place: that the session holds
 /// no document, or, where `any_open` says it holds one, that a view of it is to
 /// be shown from the Documents menu; and `open`, where the app opens files.
@@ -2947,10 +2952,6 @@ fn empty_state(colors: &ThemeColors, any_open: bool, open: Option<Button>) -> Di
 /// the place is what tells one row from another.
 fn window_name(place: usize, shown: &str) -> SharedString {
     format!("{place}. {shown}").into()
-}
-
-fn set_window_title(app_name: &str, panel: Option<&AnyPanel>, window: &mut Window) {
-    window.set_window_title(&window_title(app_name, panel));
 }
 
 /// The context stack from the window's root to a panel scoped to `scope`,
