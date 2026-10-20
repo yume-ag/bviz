@@ -4,7 +4,10 @@ load("@rules_rs//rs:rust_test.bzl", "rust_test")
 
 exports_files(
     ["testdata/sample.bep"],
-    visibility = ["//sniff:__pkg__"],
+    visibility = [
+        "//bviz:__pkg__",
+        "//sniff:__pkg__",
+    ],
 )
 
 # display/mod.rs holds alacritty's URL hint pattern verbatim.

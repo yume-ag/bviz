@@ -17,6 +17,8 @@ rust_library(
         "//ui/assets",
         "//ui/components",
         "//ui/execlog/args",
+        "//ui/playback",
+        "//ui/session",
         "//ui/spawn_phase",
         "//ui/theme",
         "//ui/workspace",

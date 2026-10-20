@@ -16,8 +16,10 @@ rust_library(
         "//ui/execlog:__pkg__",
         "//ui/graph:__pkg__",
         "//ui/playback:__pkg__",
+        "//ui/session:__pkg__",
         "//ui/spawn_phase:__pkg__",
         "//ui/trace:__pkg__",
+        "//ui/workspace:__pkg__",
     ],
 )
 

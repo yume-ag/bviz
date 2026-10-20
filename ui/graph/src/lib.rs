@@ -14,10 +14,12 @@ use bviz_ui_components::{
     text_input, zoom_key_bindings,
 };
 use bviz_ui_graph_args::{AQUERY_LONG, CQUERY_LONG, GraphArgs, GraphSource, QUERY_LONG};
-use bviz_ui_playback::{Clock, DocumentClock};
+use bviz_ui_playback::Clock;
+use bviz_ui_session::Sharing;
 use bviz_ui_theme::{DataColors, Theme, ThemeColors};
 use bviz_ui_workspace::{
-    Member, Panel, PanelEvent, PanelKind, Role, Titled, ViewKind, ViewSpec, document_label,
+    Document, Member, Panel, PanelEvent, PanelKind, Role, Shared, Titled, ViewKind, ViewSpec,
+    document_label,
 };
 use clap::Parser;
 use gpui::{
@@ -391,7 +393,7 @@ pub struct GraphPanel {
     _changed: Subscription,
     /// Repaints the drawing, and only it, as a gesture moves the document's
     /// clock while the boxes are coloured by playback.
-    _clock_moved: Option<Subscription>,
+    _clock_moved: Subscription,
     /// Derives what the selected mode draws as the read lands: a derivation
     /// asked for while the graph was still being read could not start.
     _source_replaced: Subscription,
@@ -605,12 +607,11 @@ impl GraphPanel {
             colour::sync(view, cx);
             view.invalidate_canvas(cx);
         });
-        let clock_moved = model.read(cx).clock().cloned().map(|clock| {
-            cx.observe(&clock, |view, _, cx| {
-                if view.colouring == Colouring::Playback {
-                    view.invalidate_canvas_only(cx);
-                }
-            })
+        let clock = model.read(cx).clock().clone();
+        let clock_moved = cx.observe(&clock, |view, _, cx| {
+            if view.colouring == Colouring::Playback {
+                view.invalidate_canvas_only(cx);
+            }
         });
         let source_replaced = cx.subscribe(&model, |view, _, _: &SourceReplaced, cx| {
             view.take_up_source(cx)
@@ -1414,8 +1415,8 @@ impl Render for GraphCanvas {
             return div().into_any_element();
         };
         let clock = view.model.read(cx).clock();
-        let at = clock.and_then(|clock| clock.read(cx).now());
-        let playing = clock.filter(|_| view.colouring == Colouring::Playback);
+        let at = clock.read(cx).now();
+        let playing = (view.colouring == Colouring::Playback).then_some(clock);
         Clock::keep_pace(playing, window, cx);
         let content = drawn.content();
         let recenter_target = match view.view_zoom(&drawn).and_then(|zoom| drawn.view(zoom)) {
@@ -1572,21 +1573,26 @@ fn title(source: &GraphSource) -> SharedString {
     }
 }
 
+/// The view a graph opens with, by which a document is told to hold one.
+pub type LeadPanel = GraphPanel;
+
 /// The views drawing the graph `load` reads, which tells `session` what the
-/// graph knows of the invocation where it is opened as part of one.
+/// graph knows of its document's invocation, and follow `clock`. The graph
+/// derives the action graph only where `sharing` lets another file read it.
 pub fn open(
     load: impl Into<Load>,
-    session: Option<Entity<Session>>,
-    clock: Option<DocumentClock>,
+    session: Entity<Session>,
+    clock: Entity<Clock>,
+    sharing: Sharing,
     _window: &mut Window,
     cx: &mut App,
 ) -> Member {
     let load = load.into();
     let label = load.title;
-    let model = cx.new(|cx| GraphModel::reading(load.built, session, clock, cx));
+    let model = cx.new(|cx| GraphModel::reading(load.built, session, clock, sharing, cx));
     let graph = ViewSpec::new({
         let model = model.clone();
-        move |cx| cx.new(|cx| GraphPanel::new(model.clone(), cx))
+        move |cx| cx.new(|cx| LeadPanel::new(model.clone(), cx))
     });
     let scatter = ViewSpec::new({
         let model = model.clone();
@@ -1613,7 +1619,12 @@ pub fn run() {
         bviz_ui_workspace::WINDOW_SIZE,
         |cli: Cli| cli.graph.source().map(Load::from),
         &format!("one of --{AQUERY_LONG}, --{CQUERY_LONG} or --{QUERY_LONG}"),
-        |load: Load, window, cx| open(load, None, None, window, cx).into(),
+        |load: Load, window, cx| {
+            let shared = Shared::new(cx);
+            let (session, clock) = (shared.session().clone(), shared.clock().clone());
+            let member = open(load, session, clock, Sharing::Alone, window, cx);
+            Document::alone(member, None, shared)
+        },
         &[register_keys],
     );
 }
@@ -2698,15 +2709,16 @@ mod tests {
         );
     }
 
+    /// The graph read from `paths`, an aquery, a cquery and a query output in
+    /// that order, as many of them as are given.
     fn source(paths: &[&str]) -> GraphSource {
-        let inputs = paths
-            .iter()
-            .map(|path| bviz_ui_graph_args::Input {
-                kind: bviz_ui_graph_args::InputKind::Aquery,
-                path: path.into(),
-            })
-            .collect();
-        GraphSource::new(inputs).expect("the paths name a graph")
+        use bviz_ui_graph_args::InputKind;
+        let mut args = GraphArgs::default();
+        let kinds = [InputKind::Aquery, InputKind::Cquery, InputKind::Query];
+        for (kind, path) in kinds.into_iter().zip(paths) {
+            *args.file_mut(kind) = Some(path.into());
+        }
+        args.source().expect("the paths name a graph")
     }
 
     /// One graph is drawn however many files it merges, so its title names the

@@ -1,10 +1,14 @@
-use crate::workspace::{ResetArrangement, ToggleDocuments};
-use crate::{DocumentId, Documents, OpenDocument, ViewId, ViewState, Workspace};
+use crate::app_actions::{AppAction, AppActions};
+use crate::workspace::{CloseDocument, OpenFiles, ResetArrangement, ToggleDocuments};
+use crate::{
+    DocumentId, Documents, OpenDocument, PathOpener, ViewId, ViewState, Workspace, documents,
+};
 use bviz_ui_components::{Button, KeyScope, Nesting, action_label, key_text_in, menu_chrome};
 use bviz_ui_theme::{ThemeColors, over};
 use gpui::{
-    Action, AnyElement, Context, ElementId, Entity, FocusHandle, Hsla, IntoElement, Pixels, Render,
-    SharedString, Subscription, WeakEntity, Window, deferred, div, prelude::*, px, relative,
+    Action, AnyElement, App, Context, Div, ElementId, Entity, FocusHandle, Hsla, IntoElement,
+    Pixels, Render, SharedString, Stateful, Subscription, WeakEntity, Window, deferred, div,
+    prelude::*, px, relative,
 };
 
 gpui::actions!(
@@ -84,6 +88,24 @@ fn hovered(fill: Hsla, colors: &ThemeColors) -> Hsla {
     Hsla::from(over(colors.element_hover, fill))
 }
 
+/// What a row of the menu does in its window besides showing a view.
+enum Act {
+    OpenFiles,
+    App(AppAction),
+    ResetArrangement,
+}
+
+impl Act {
+    /// The action the row is labelled by.
+    fn action(&self) -> &dyn Action {
+        match self {
+            Self::OpenFiles => &OpenFiles,
+            Self::App(action) => action.action(),
+            Self::ResetArrangement => &ResetArrangement,
+        }
+    }
+}
+
 /// A view a click shows, and how its row reads.
 struct ViewRow {
     document: DocumentId,
@@ -97,6 +119,7 @@ struct ViewRow {
 enum Listing {
     Alone(ViewRow),
     Under {
+        document: DocumentId,
         label: SharedString,
         views: Vec<ViewRow>,
     },
@@ -123,6 +146,7 @@ fn listings(documents: Vec<OpenDocument>) -> Vec<Listing> {
                 ..only
             }),
             Err(views) => Listing::Under {
+                document: id,
                 label: document.label,
                 views,
             },
@@ -179,9 +203,12 @@ impl DocumentsMenu {
         if self.open {
             self.close(cx);
             if let Some(workspace) = self.workspace.upgrade() {
-                let panel = workspace.read(cx).active_panel(cx);
-                window.focus(&panel.focus_handle(cx), cx);
+                let focus = workspace.read(cx).content_focus(cx);
+                window.focus(&focus, cx);
             }
+            return;
+        }
+        if self.documents.read(cx).is_empty() && self.acts(cx).is_empty() {
             return;
         }
         self.open = true;
@@ -200,17 +227,6 @@ impl DocumentsMenu {
         }
     }
 
-    /// Lays this menu's own window out as it opened, closing the menu over it.
-    fn reset_arrangement(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.close(cx);
-        let Some(workspace) = self.workspace.upgrade() else {
-            return;
-        };
-        workspace.update(cx, |workspace, cx| {
-            workspace.reset_arrangement(window, cx);
-        });
-    }
-
     /// Shows `view` of `document` in this menu's own window, closing the menu
     /// over it.
     fn show(
@@ -224,9 +240,49 @@ impl DocumentsMenu {
         let Some(workspace) = self.workspace.upgrade() else {
             return;
         };
-        self.documents.update(cx, |documents, cx| {
-            documents.show(document, view, &workspace, window, cx);
+        documents::show(document, view, &workspace, window, cx);
+    }
+
+    /// Closes `document` in every window, closing the menu over it and handing
+    /// focus to what this menu's window shows next.
+    fn close_document(
+        &mut self,
+        document: DocumentId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close(cx);
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        workspace.update(cx, |workspace, cx| {
+            workspace.close_document(document, window, cx);
         });
+        let focus = workspace.read(cx).content_focus(cx);
+        window.focus(&focus, cx);
+    }
+
+    /// The control closing `document`, on the row that names it, where the
+    /// app opens files: where none open, a closed document is gone for good.
+    /// It names no keys: [`CloseDocument`] acts on the document of the panel
+    /// with focus, not on the one a row names.
+    fn close_control(&self, document: DocumentId, cx: &mut Context<Self>) -> Option<Button> {
+        if !cx.has_global::<PathOpener>() {
+            return None;
+        }
+        let label = action_label(&CloseDocument, cx).unwrap_or(CloseDocument.name());
+        let close = Button::new(
+            document.element_id("documents-menu-close"),
+            cx.listener(move |this, _, window, cx| {
+                cx.stop_propagation();
+                this.close_document(document, window, cx);
+            }),
+        )
+        .ghost()
+        .compact()
+        .icon("x")
+        .tooltip(label);
+        Some(close)
     }
 
     fn trigger(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -243,15 +299,24 @@ impl DocumentsMenu {
 
     /// The open menu, laid out above the trigger: the status bar it opens from
     /// sits at the window's bottom edge, so there is nothing below it to open
-    /// into.
+    /// into. `None` where it has no row to show.
     fn popover(
         &self,
         colors: &ThemeColors,
         window: &Window,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    ) -> Option<impl IntoElement + use<>> {
         let rows = self.rows(colors, cx);
-        deferred(
+        let acts: Vec<_> = (self.acts(cx).into_iter().enumerate())
+            .map(|(at, act)| {
+                let ruled = at == 0 && !rows.is_empty();
+                self.act_row(at, act, ruled, colors, window, cx)
+            })
+            .collect();
+        if rows.is_empty() && acts.is_empty() {
+            return None;
+        }
+        Some(deferred(
             div()
                 .absolute()
                 .bottom(relative(1.))
@@ -273,9 +338,9 @@ impl DocumentsMenu {
                         .shadow_lg()
                         .text_color(colors.text)
                         .children(rows)
-                        .child(self.reset_row(colors, window, cx)),
+                        .children(acts),
                 ),
-        )
+        ))
     }
 
     fn rows(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -284,11 +349,17 @@ impl DocumentsMenu {
         for listing in listed {
             match listing {
                 Listing::Alone(view) => {
+                    let close = self.close_control(view.document, cx);
                     let row = self.view_row(rows.len(), view, px(0.), colors, cx);
-                    rows.push(row.into_any_element());
+                    rows.push(row.children(close).into_any_element());
                 }
-                Listing::Under { label, views } => {
-                    rows.push(heading(label, colors).into_any_element());
+                Listing::Under {
+                    document,
+                    label,
+                    views,
+                } => {
+                    let close = self.close_control(document, cx);
+                    rows.push(heading(label, colors).children(close).into_any_element());
                     for view in views {
                         let row = self.view_row(rows.len(), view, VIEW_INDENT, colors, cx);
                         rows.push(row.into_any_element());
@@ -299,41 +370,80 @@ impl DocumentsMenu {
         rows
     }
 
-    /// The row that lays the window out as its files described themselves.
-    /// It acts on the window rather than on any one view, so it carries no mark
-    /// and is ruled off from the rows naming views.
-    fn reset_row(
+    /// What the menu offers to do in its window besides showing a view:
+    /// opening files where the app opens any, then what the app does, in the
+    /// order it lists its actions, then laying the window out afresh where it
+    /// frames panes.
+    fn acts(&self, cx: &App) -> Vec<Act> {
+        let actions = AppActions::of(cx);
+        let mut acts = Vec::with_capacity(actions.len() + 2);
+        if cx.has_global::<PathOpener>() {
+            acts.push(Act::OpenFiles);
+        }
+        acts.extend(actions.iter().cloned().map(Act::App));
+        let framed = self
+            .workspace
+            .upgrade()
+            .is_some_and(|workspace| workspace.read(cx).active_pane().is_some());
+        if framed {
+            acts.push(Act::ResetArrangement);
+        }
+        acts
+    }
+
+    /// Does `act` in this menu's window, closing the menu over it and handing
+    /// focus back to what the window shows, or to a dialog the act stood over
+    /// it.
+    fn act(&mut self, act: &Act, window: &mut Window, cx: &mut Context<Self>) {
+        self.close(cx);
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        workspace.update(cx, |workspace, cx| match act {
+            Act::OpenFiles => workspace.open_files(window, cx),
+            Act::App(action) => action.run(workspace, window, cx),
+            Act::ResetArrangement => workspace.reset_arrangement(window, cx),
+        });
+        let focus = workspace.read(cx).content_focus(cx);
+        window.focus(&focus, cx);
+    }
+
+    /// The row doing `act`, `at` its place among them, `ruled` off from rows
+    /// naming views above it. It acts on the window rather than on any one
+    /// view, so it carries no mark.
+    fn act_row(
         &self,
+        at: usize,
+        act: Act,
+        ruled: bool,
         colors: &ThemeColors,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let hovered = hovered(surface(colors), colors);
+        let action = act.action();
+        let label = action_label(action, cx).unwrap_or(action.name());
+        let keys = key_text_in(action, &self.focus_handle, window);
         div()
-            .id("documents-menu-reset")
+            .id(ElementId::NamedInteger(
+                "documents-menu-act".into(),
+                at as u64,
+            ))
             .flex()
             .flex_row()
             .items_center()
             .px(ROW_PAD)
-            .pt_1()
-            .pb_0p5()
-            .mt_1()
-            .border_t_1()
-            .border_color(colors.border)
+            .py_0p5()
+            .when(ruled, |row| {
+                row.mt_1().pt_1().border_t_1().border_color(colors.border)
+            })
             .cursor_pointer()
             .hover(move |s| s.bg(hovered))
-            .on_click(cx.listener(|this, _, window, cx| this.reset_arrangement(window, cx)))
+            .on_click(cx.listener(move |this, _, window, cx| this.act(&act, window, cx)))
             .justify_between()
             .gap(menu_chrome::LABEL_GAP)
-            .child(
-                div()
-                    .whitespace_nowrap()
-                    .child(action_label(&ResetArrangement, cx).unwrap_or(ResetArrangement.name())),
-            )
-            .children(
-                key_text_in(&ResetArrangement, &self.focus_handle, window)
-                    .map(|keys| menu_chrome::row_keys(keys, colors)),
-            )
+            .child(div().whitespace_nowrap().child(label))
+            .children(keys.map(|keys| menu_chrome::row_keys(keys, colors)))
     }
 
     /// A view's row, `at` its place in the list: its mark, its label set in `by`
@@ -345,7 +455,7 @@ impl DocumentsMenu {
         by: Pixels,
         colors: &ThemeColors,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    ) -> Stateful<Div> {
         let style = row_style(view.state, colors);
         let hovered = hovered(style.fill, colors);
         let (document, shown) = (view.document, view.view);
@@ -373,19 +483,22 @@ impl DocumentsMenu {
                     .flex_none()
                     .text_color(style.mark_ink),
             )
-            .child(div().whitespace_nowrap().child(view.label))
+            .child(div().flex_1().whitespace_nowrap().child(view.label))
     }
 }
 
 /// The name of a document standing over the rows of the views it can show.
-fn heading(label: SharedString, colors: &ThemeColors) -> impl IntoElement + use<> {
+fn heading(label: SharedString, colors: &ThemeColors) -> Div {
     div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
         .px(ROW_PAD)
         .pt_1()
         .pb_0p5()
         .text_color(colors.text_muted)
-        .whitespace_nowrap()
-        .child(label)
+        .child(div().flex_1().whitespace_nowrap().child(label))
 }
 
 impl Render for DocumentsMenu {
@@ -404,7 +517,11 @@ impl Render for DocumentsMenu {
                 }
             }))
             .child(self.trigger(cx))
-            .children(self.open.then(|| self.popover(&colors, window, cx)))
+            .children(
+                self.open
+                    .then(|| self.popover(&colors, window, cx))
+                    .flatten(),
+            )
     }
 }
 
@@ -412,7 +529,7 @@ impl Render for DocumentsMenu {
 mod tests {
     use super::*;
     use crate::documents::OpenView;
-    use crate::{Document, Member, Role, ViewKind, ViewSpec};
+    use crate::{DocumentOf, Member, Role, ViewKind, ViewSpec};
     use bviz_ui_theme::{
         MIN_SECONDARY_CONTRAST, MIN_TEXT_CONTRAST, MIN_VISIBLE_STEP, built_in_themes,
         contrast_ratio, level_step,
@@ -454,7 +571,7 @@ mod tests {
                 view(FLAME, "Flame Graph", ViewState::Closed),
             ],
         )]);
-        let [Listing::Under { label, views }] = &listed[..] else {
+        let [Listing::Under { label, views, .. }] = &listed[..] else {
             panic!("a document of two views is listed under a heading");
         };
         assert_eq!(label, "build.profile.gz");
@@ -474,22 +591,23 @@ mod tests {
 
     /// What a window opening with `first` and `others` lists before any panel
     /// shows a view.
-    fn opening_listings(first: Document, others: Vec<Document>) -> Vec<Listing> {
-        listings(Document::unshown(first, others))
+    fn opening_listings(first: DocumentOf<()>, others: Vec<DocumentOf<()>>) -> Vec<Listing> {
+        listings(OpenDocument::unshown(std::iter::once(first).chain(others)))
     }
 
     /// A joined document heads a row for every view of every file, in the order
     /// the files were joined, under the label it was joined under.
     #[test]
     fn a_joined_document_heads_a_row_for_every_view_of_its_files() {
-        let joined = Document::join(
-            "Invocation a5f7f3e6".into(),
+        let joined = DocumentOf::join(
+            bviz_invocation::InvocationId::new("a5f7f3e6").expect("a non-empty id"),
             file("build.profile.gz", TIMELINE, vec![FLAME]),
             file("build.bep", CONSOLE, Vec::new()),
             vec![file("aquery.pb", GRAPH, Vec::new())],
+            (),
         );
         let listed = opening_listings(joined, Vec::new());
-        let [Listing::Under { label, views }] = &listed[..] else {
+        let [Listing::Under { label, views, .. }] = &listed[..] else {
             panic!("a joined document is listed under a heading");
         };
         assert_eq!(label, "Invocation a5f7f3e6");
@@ -526,19 +644,20 @@ mod tests {
     #[test]
     fn a_file_is_listed_under_the_number_it_has_among_the_files_of_every_document() {
         let session = || {
-            Document::join(
-                "Invocation a5f7f3e6".into(),
+            DocumentOf::join(
+                bviz_invocation::InvocationId::new("a5f7f3e6").expect("a non-empty id"),
                 file("build.profile.gz", TIMELINE, vec![FLAME]),
                 file("aquery.pb", GRAPH, Vec::new()),
                 Vec::new(),
+                (),
             )
         };
         let listed = opening_listings(
             session(),
             vec![
-                file("aquery.pb", GRAPH, Vec::new()).into(),
-                file("build.profile.gz", TIMELINE, vec![FLAME]).into(),
-                file("build.bep", CONSOLE, Vec::new()).into(),
+                DocumentOf::alone(file("aquery.pb", GRAPH, Vec::new()), None, ()),
+                DocumentOf::alone(file("build.profile.gz", TIMELINE, vec![FLAME]), None, ()),
+                DocumentOf::alone(file("build.bep", CONSOLE, Vec::new()), None, ()),
             ],
         );
         assert_eq!(
@@ -555,17 +674,18 @@ mod tests {
     #[test]
     fn joined_documents_sharing_a_label_are_listed_by_number() {
         let session = |profile| {
-            Document::join(
-                "Invocation a5f7f3e6".into(),
+            DocumentOf::join(
+                bviz_invocation::InvocationId::new("a5f7f3e6").expect("a non-empty id"),
                 file(profile, TIMELINE, vec![FLAME]),
                 file("build.bep", CONSOLE, Vec::new()),
                 Vec::new(),
+                (),
             )
         };
         let listed = opening_listings(session("a.profile.gz"), vec![session("b.profile.gz")]);
         assert_eq!(
             listed_names(&listed),
-            ["Invocation a5f7f3e6 (1)", "Invocation a5f7f3e6 (2)"]
+            ["Invocation a5f7f3e6", "Invocation a5f7f3e6 (2)"]
         );
     }
 

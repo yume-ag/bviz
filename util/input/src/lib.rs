@@ -4,6 +4,7 @@
 
 use std::io::{self, Read};
 use std::ops::Deref;
+use std::sync::Arc;
 
 #[cfg(any(unix, windows))]
 mod file;
@@ -45,6 +46,12 @@ pub trait ReadAt: Send + Sync {
     /// cursor.
     fn read_to_end_from(self: Box<Self>, offset: u64, buf: &mut Vec<u8>) -> io::Result<usize> {
         At::new(self, offset).read_to_end(buf)
+    }
+}
+
+impl<R: ReadAt + ?Sized> ReadAt for Arc<R> {
+    fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<usize> {
+        (**self).read_at(buf, offset)
     }
 }
 
@@ -143,6 +150,30 @@ impl Input {
         io::Cursor::new(self.head.unwrap_or_default()).chain(rest)
     }
 
+    /// The input, and what opens it afresh as often as asked, where it is
+    /// read at any offset; a stream, which yields its bytes once, comes back
+    /// as `Err`.
+    pub fn reopenable(self) -> Result<(Input, Reopener), Input> {
+        let Access::Seekable { source, size } = self.access else {
+            return Err(self);
+        };
+        let source: Arc<dyn ReadAt> = Arc::from(source);
+        let reopener = Reopener {
+            name: self.name.clone(),
+            source: source.clone(),
+            size,
+        };
+        let input = Input {
+            name: self.name,
+            head: self.head,
+            access: Access::Seekable {
+                source: Box::new(source),
+                size,
+            },
+        };
+        Ok((input, reopener))
+    }
+
     /// The whole input, in one buffer.
     pub fn read_all(self) -> io::Result<Vec<u8>> {
         let read_ahead = self.read_ahead();
@@ -155,6 +186,26 @@ impl Input {
             Access::Stream { mut reader, .. } => reader.read_to_end(&mut all)?,
         };
         Ok(all)
+    }
+}
+
+/// Opens an input read at any offset afresh, holding its source but not its
+/// head.
+#[derive(Clone)]
+pub struct Reopener {
+    name: String,
+    source: Arc<dyn ReadAt>,
+    size: u64,
+}
+
+impl Reopener {
+    /// The input from its start, its head read ahead again.
+    pub fn open(&self) -> io::Result<Input> {
+        let access = Access::Seekable {
+            source: Box::new(self.source.clone()),
+            size: self.size,
+        };
+        Input::new(self.name.clone(), access)
     }
 }
 
@@ -307,6 +358,25 @@ mod tests {
         assert!(input.reader().is_none());
         assert!(input.seekable().is_none());
         assert_eq!(input.size(), None);
+        assert!(input.reopenable().is_err());
+    }
+
+    #[test]
+    fn a_reopened_input_reads_as_the_first_opening_did() {
+        for len in LENGTHS {
+            let content = bytes(len);
+            let Ok((input, reopener)) = seekable(content.clone()).reopenable() else {
+                panic!("a seekable input reopens");
+            };
+            assert_eq!(read(input.into_reader()), content, "{len}");
+            for _ in 0..2 {
+                let again = reopener.open().expect("an in-memory input reads");
+                assert_eq!(again.name(), "seekable");
+                assert_eq!(again.size(), Some(len as u64));
+                assert_eq!(again.head(), Some(&content[..len.min(HEAD_BYTES)]));
+                assert_eq!(read(again.into_reader()), content, "{len}");
+            }
+        }
     }
 
     #[test]

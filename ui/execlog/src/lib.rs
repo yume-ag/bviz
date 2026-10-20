@@ -16,10 +16,12 @@ use bviz_input::Input;
 use bviz_invocation::{InvocationId, Session};
 use bviz_ui_components::{Pending, declare_scopes, legend_key_bindings};
 use bviz_ui_execlog_args::{EXEC_LOG_LONG, ExecLogArgs, ExecLogSource};
-use bviz_ui_workspace::{Member, ViewSpec, document_label};
+use bviz_ui_playback::Clock;
+use bviz_ui_session::Sharing;
+use bviz_ui_workspace::{Document, Member, Shared, ViewSpec, document_label};
 use clap::Parser;
 use gpui::{App, Entity, SharedString, Window, prelude::*};
-use model::{ExecLogModel, Read};
+use model::{ExecLogModel, Read, Reread};
 use std::path::Path;
 use summary::Summary;
 
@@ -64,25 +66,41 @@ impl From<ExecLogSource> for Load {
 
 fn read_log(input: Input) -> Result<Read, String> {
     let name = input.name().to_owned();
+    let invocation = invocation_id(&input);
+    let (input, reopener) = match input.reopenable() {
+        Ok((input, reopener)) => (input, Some(reopener)),
+        Err(stream) => (stream, None),
+    };
     let log = ExecLog::from_input(input).map_err(|e| format!("cannot read {name}: {e}"))?;
+    let reread = reopener
+        .zip(invocation)
+        .map(|(reopener, invocation)| Reread {
+            reopener,
+            invocation,
+        });
     Ok(Read {
         summary: log.as_ref().map(Summary::of),
         spawns: log.into_inner().into_spawns(),
+        reread,
     })
 }
 
-/// The view of the spawn time the log `load` reads. Where it is opened as
-/// part of an invocation's `session`, the log's spawns are reported to it.
+/// The view an execution log opens with, by which a document is told to hold one.
+pub type LeadPanel = SpawnTimePanel;
+
+/// The view of the spawn time the log `load` reads, which reports the log's
+/// spawns to its document's `session` as `sharing` and `clock` ask.
 pub fn open(
     load: impl Into<Load>,
-    session: Option<Entity<Session>>,
+    session: Entity<Session>,
+    clock: Entity<Clock>,
+    sharing: Sharing,
     _window: &mut Window,
     cx: &mut App,
 ) -> Member {
     let load = load.into();
-    let session = session.as_ref().map(Entity::downgrade);
-    let model = cx.new(|cx| ExecLogModel::reading(load.log, session, cx));
-    let view = ViewSpec::new(move |cx| cx.new(|cx| SpawnTimePanel::new(model.clone(), cx)));
+    let model = cx.new(|cx| ExecLogModel::reading(load.log, session, clock, sharing, cx));
+    let view = ViewSpec::new(move |cx| cx.new(|cx| LeadPanel::new(model.clone(), cx)));
     Member::new(load.title, view, Vec::new())
 }
 
@@ -102,7 +120,12 @@ pub fn run() {
         bviz_ui_workspace::TEXT_WINDOW_SIZE,
         |cli: Cli| cli.exec_log.sources().map(Load::from),
         &format!("--{EXEC_LOG_LONG}"),
-        |load, window, cx| open(load, None, window, cx).into(),
+        |load, window, cx| {
+            let shared = Shared::new(cx);
+            let (session, clock) = (shared.session().clone(), shared.clock().clone());
+            let member = open(load, session, clock, Sharing::Alone, window, cx);
+            Document::alone(member, None, shared)
+        },
         &[register_keys],
     );
 }

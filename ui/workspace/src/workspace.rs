@@ -5,15 +5,19 @@ use crate::gestures::{CHROME_GESTURES, ChromeIntent, chrome_gestures};
 use crate::pane::Handover;
 use crate::panel::keys_focus;
 use crate::panel_menu::{Deed, Standing};
+use crate::path_prompt::{PathPrompt, PathPromptEvent};
+use crate::regions::{Placement, placement};
 use crate::{
-    AnyPanel, Arrangement, DividerId, Document, Documents, Framing, Layout, Maximize, Pane,
-    PaneEvent, Regions, Removal, Role, Side, Split, SplitSide, WindowsChanged, documents,
-    drag_icon, drop, panel_menu,
+    AnyPanel, AppActions, Arrangement, DividerId, Document, DocumentId, Documents, Framing,
+    Joinable, Layout, Maximize, Member, Pane, PaneEvent, PathOpener, Regions, Removal, Role,
+    Shared, Side, Split, SplitSide, WindowsChanged, documents, drag_icon, drop, panel_menu,
 };
+use bviz_ui_components::dialog;
 use bviz_ui_components::gesture::Pointer;
 use bviz_ui_components::{
-    Divider, DragEnd, GestureGroup, KeyScope, KeyStyle, KeysHelp, Menu, MenuEvent, action_label,
-    declare_scopes, declared_scopes, keys_in_effect, overlay_canvas, text_input, track_drag,
+    Button, Divider, DragEnd, GestureGroup, KeyScope, KeyStyle, KeysHelp, Menu, MenuEvent,
+    action_label, declare_scopes, declared_scopes, keys_in_effect, note_strip, overlay_canvas,
+    text_input, track_drag,
 };
 use bviz_ui_playback::{
     Clock, KEY_CONTEXT as PLAYBACK_KEY_CONTEXT, PlayPause, PlaybackBar, SeekEnd, SeekStart,
@@ -22,14 +26,17 @@ use bviz_ui_playback::{
 use bviz_ui_shell::Chrome;
 use bviz_ui_theme::ThemeColors;
 use gpui::{
-    Action, AnyElement, AnyWindowHandle, App, Axis, Bounds, Canvas, Div, ElementId, Entity,
-    EntityId, FocusHandle, IconScale, IntoElement, KeyBinding, KeyContext, MouseDownEvent, Pixels,
-    PlatformDragEvent, Point, Rems, Render, SharedString, Size, Stateful, Subscription, WeakEntity,
-    Window, actions, deferred, div, point, prelude::*, px,
+    Action, AnyElement, AnyView, AnyWindowHandle, App, Axis, Bounds, Canvas, Div, ElementId,
+    Entity, EntityId, EventEmitter, ExternalPaths, FocusHandle, Focusable, IconScale, IntoElement,
+    KeyBinding, KeyContext, MouseDownEvent, PathPromptOptions, Pixels, PlatformDragEvent, Point,
+    Rems, Render, SharedString, Size, Stateful, Subscription, WeakEntity, Window, actions,
+    deferred, div, point, prelude::*, px,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::iter;
+use std::path::PathBuf;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 actions!(
     bviz_workspace,
@@ -40,6 +47,8 @@ actions!(
         PreviousTab,
         /// Close panel
         ClosePanel,
+        /// Close document
+        CloseDocument,
         /// Move panel to new window
         DetachPanel,
         /// Maximise or restore pane
@@ -76,6 +85,8 @@ actions!(
         ResetArrangement,
         /// Show keys and gestures
         ShowKeysAndGestures,
+        /// Open files
+        OpenFiles,
     ]
 );
 
@@ -138,7 +149,30 @@ const MARK_FILL: f32 = 0.3;
 /// holds.
 const MENU_LAYER: usize = 1;
 
-pub(crate) fn register_keys(cx: &mut App) {
+/// What a file chooser's control choosing the files says it does.
+const OPEN: &str = "Open";
+
+/// How an empty window says that files dropped on it open.
+const DROP_HINT: &str = "or drop them on this window";
+
+/// How long a note told briefly stands: long enough to be read at a glance
+/// away from whatever the user was doing.
+const BRIEF_NOTE: Duration = Duration::from_secs(4);
+
+/// Adds `note` to `notes` in place of one reading the same, so a note told
+/// again stands once, from when it was last told.
+fn add_note(notes: &mut Vec<Note>, note: Note) {
+    notes.retain(|standing| standing.text != note.text);
+    notes.push(note);
+}
+
+/// What the control dismissing a note says it does.
+const DISMISS_NOTE: &str = "Dismiss";
+
+/// Registers the window's key scopes and bindings, binding [`OpenFiles`], and
+/// [`CloseDocument`] with it, only where `opens_files` says the app opens files
+/// at all: where none open, a closed document is gone for good.
+pub(crate) fn register_keys(cx: &mut App, opens_files: bool) {
     declare_scopes(
         cx,
         [
@@ -147,12 +181,16 @@ pub(crate) fn register_keys(cx: &mut App) {
             documents_menu::KEY_CONTEXT,
         ],
     );
+    cx.bind_keys(bindings(opens_files));
+}
+
+fn bindings(opens_files: bool) -> Vec<KeyBinding> {
     let workspace = Some(KEY_CONTEXT.id());
     let unless_typing = text_input::unless_typing(KEY_CONTEXT);
     let unless_typing = Some(unless_typing.as_str());
     let playback = text_input::unless_typing(PLAYBACK_KEY_CONTEXT);
     let playback = Some(playback.as_str());
-    cx.bind_keys([
+    let mut bindings = vec![
         KeyBinding::new("?", ShowKeysAndGestures, unless_typing),
         KeyBinding::new("f1", ShowKeysAndGestures, workspace),
         KeyBinding::new("ctrl-tab", NextTab, workspace),
@@ -187,7 +225,12 @@ pub(crate) fn register_keys(cx: &mut App) {
         KeyBinding::new("end", SeekEnd, playback),
         KeyBinding::new("]", SpeedUp, playback),
         KeyBinding::new("[", SpeedDown, playback),
-    ]);
+    ];
+    if opens_files {
+        bindings.push(KeyBinding::new("secondary-o", OpenFiles, workspace));
+        bindings.push(KeyBinding::new("secondary-alt-w", CloseDocument, workspace));
+    }
+    bindings
 }
 
 /// Where a panel is re-homed by [`Workspace::move_panel`]. A pane is named by
@@ -298,7 +341,7 @@ pub(crate) enum Towards<P = Entity<Pane>> {
 }
 
 /// What a workspace keeps for each pane it frames.
-struct Framed {
+struct FramedPane {
     _events: Subscription,
     /// Where the last frame that drew the arrangement laid this pane out, which
     /// is `None` until one has. Read between frames, to tell which pane a
@@ -306,45 +349,265 @@ struct Framed {
     bounds: Option<Bounds<Pixels>>,
 }
 
-/// A window's root view: the application chrome, and the arrangement of panes it
-/// frames. One pane is the active one, which the panel actions act on and whose
-/// panel titles the window.
+/// The panes a window frames and the gestures aimed across them. One pane is the
+/// active one, which the panel actions act on and whose panel titles the window.
+struct Frame {
+    arrangement: Arrangement,
+    active: Entity<Pane>,
+    /// What is kept for every pane of `arrangement`, retired as its pane leaves.
+    panes: HashMap<EntityId, FramedPane>,
+    /// The divider being dragged, while one is.
+    divider_drag: Option<DividerId>,
+    /// The press on a panel's tab being carried, while one is.
+    panel_drag: Option<PanelDrag>,
+    /// The menu a panel was asked for, while it stands.
+    panel_menu: Option<PanelMenu>,
+}
+
+impl Frame {
+    /// `layout` with `active` as its active pane and no gesture under way.
+    fn new(layout: Layout, active: Entity<Pane>) -> Self {
+        Self {
+            arrangement: Arrangement::new(layout),
+            active,
+            panes: HashMap::new(),
+            divider_drag: None,
+            panel_drag: None,
+            panel_menu: None,
+        }
+    }
+
+    /// The panel the active pane shows.
+    fn active_panel(&self, cx: &App) -> AnyPanel {
+        self.active.read(cx).active_panel().clone()
+    }
+
+    /// The pane holding `panel` and the tab it holds it at.
+    fn holder(&self, panel: EntityId, cx: &App) -> Option<(Entity<Pane>, usize)> {
+        self.arrangement
+            .layout()
+            .panes()
+            .find_map(|pane| pane.read(cx).index_of(panel).map(|at| (pane.clone(), at)))
+    }
+
+    fn pane_bounds(&self, pane: &Entity<Pane>) -> Option<Bounds<Pixels>> {
+        self.panes.get(&pane.entity_id())?.bounds
+    }
+
+    /// Puts every pane back where the arrangement lays it out.
+    fn restore(&mut self, cx: &mut Context<Workspace>) {
+        let revealed = self.arrangement.restore();
+        mark_revealed(revealed, cx);
+    }
+
+    fn rearrange(&mut self, cx: &mut Context<Workspace>) -> &mut Layout {
+        self.restore(cx);
+        self.arrangement.rearrange()
+    }
+
+    /// Tells the panel every pane shows that it is on show no longer, for a
+    /// caller about to frame the panels afresh: the panes built in their place
+    /// tell the panels they go on to show, and one left behind another's tab
+    /// would otherwise go on drawing what it draws over the cursor.
+    fn hide_shown_panels(&self, window: &mut Window, cx: &mut App) {
+        for pane in self.arrangement.layout().panes() {
+            let showing = pane.read(cx).active_panel().clone();
+            showing.set_active(false, window, cx);
+        }
+    }
+
+    /// Takes up the events of `pane`, a pane of the arrangement.
+    fn watch(&mut self, pane: &Entity<Pane>, window: &Window, cx: &mut Context<Workspace>) {
+        let events = cx.subscribe_in(
+            pane,
+            window,
+            |workspace, pane, event, window, cx| match event {
+                PaneEvent::Changed => cx.notify(),
+                PaneEvent::Closed => workspace.close_pane(pane, window, cx),
+                PaneEvent::Maximize => workspace.toggle_maximize(pane, cx),
+                PaneEvent::Pressed { panel, at } => workspace.press_panel(*panel, *at, cx),
+                PaneEvent::Released { at } => workspace.drop_panel(*at, window, cx),
+                PaneEvent::Menu { panel, at } => {
+                    workspace.open_panel_menu(*panel, *at, window, cx);
+                }
+                PaneEvent::KeysHelp(panel) => workspace.toggle_keys_help(*panel, window, cx),
+                PaneEvent::Reveal(panel) => {
+                    // The gesture asking for it may have come from another
+                    // window.
+                    workspace.reveal(*panel, window, cx);
+                    window.activate_window();
+                }
+            },
+        );
+        self.panes.insert(
+            pane.entity_id(),
+            FramedPane {
+                _events: events,
+                bounds: None,
+            },
+        );
+    }
+
+    /// A pane of the arrangement showing `panel` alone.
+    fn pane_for(
+        &mut self,
+        panel: AnyPanel,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) -> Entity<Pane> {
+        let pane = cx.new(|cx| Pane::new(panel, window, cx));
+        self.watch(&pane, window, cx);
+        pane
+    }
+
+    /// Lays `panel` out where its [`placement`] puts it, and gives the pane it
+    /// lands in.
+    fn place(
+        &mut self,
+        panel: AnyPanel,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) -> Entity<Pane> {
+        let panes = self.arrangement.layout().panes().map(|pane| {
+            let roles = pane.read(cx).panels().map(AnyPanel::role);
+            (pane.clone(), roles)
+        });
+        match placement(panel.role(), panes) {
+            Placement::Tab(pane) => {
+                pane.update(cx, |pane, cx| pane.add(panel, window, cx));
+                pane
+            }
+            Placement::Apart(apart) => {
+                let landed = self.pane_for(panel, window, cx);
+                apart.lay_out(self.rearrange(cx), landed.clone());
+                landed
+            }
+        }
+    }
+
+    /// Where the last frame laid each pane of the arrangement out. A pane no
+    /// frame has laid out is left out: nothing is known of where a drop over it
+    /// would land, and only the panes the arrangement holds are asked at all,
+    /// so no frame that has since let a pane go is read for one.
+    fn pane_geometry(&self, cx: &App) -> Vec<PaneGeometry<Entity<Pane>>> {
+        let layout = self.arrangement.layout();
+        let mut geometry = Vec::with_capacity(layout.panes().count());
+        geometry.extend(layout.panes().filter_map(|pane| {
+            let held = pane.read(cx);
+            Some(PaneGeometry {
+                pane: pane.clone(),
+                bounds: self.pane_bounds(pane)?,
+                tab_count: held.tab_count(),
+                band: held.band(),
+            })
+        }));
+        geometry
+    }
+
+    /// The pane `side` of `from` a move or a focus in that direction picks.
+    fn pane_in_direction(&self, from: &Entity<Pane>, side: Side) -> Towards {
+        in_direction(self.arrangement.layout(), from, side, |pane| {
+            self.pane_bounds(pane)
+        })
+    }
+
+    /// Every panel the frame holds: the one its first pane shows, then the
+    /// others pane by pane in the order the arrangement lays them out, each
+    /// pane's in tab order.
+    fn held_panels(&self, cx: &App) -> (AnyPanel, Vec<AnyPanel>) {
+        let layout = self.arrangement.layout();
+        let leading = layout.first_pane().read(cx).active_panel().clone();
+        let held: usize = layout.panes().map(|pane| pane.read(cx).tab_count()).sum();
+        let mut others = Vec::with_capacity(held - 1);
+        for pane in layout.panes() {
+            others.extend(
+                pane.read(cx)
+                    .panels()
+                    .filter(|panel| panel.entity_id() != leading.entity_id())
+                    .cloned(),
+            );
+        }
+        (leading, others)
+    }
+}
+
+/// Marks the panel of each pane a restore brought back on screen for the
+/// repaint it is owed, and draws the window afresh to bring it back.
+fn mark_revealed(revealed: Vec<Entity<Pane>>, cx: &mut Context<Workspace>) {
+    if revealed.is_empty() {
+        return;
+    }
+    for pane in revealed {
+        pane.update(cx, |pane, cx| pane.mark_shown(cx));
+    }
+    cx.notify();
+}
+
+/// Something a window tells its user until dismissed.
+struct Note {
+    /// Names the note apart from every other the window has been told, so its
+    /// dismissal reaches it whichever notes go before it.
+    id: u64,
+    text: SharedString,
+}
+
+/// A dialog standing over the window, and what it answers into.
+struct Asking {
+    dialog: AnyView,
+    /// Where the dialog's keys are read.
+    answer: FocusHandle,
+    _answered: Subscription,
+}
+
+/// What a window shows below its title bar.
+enum Body {
+    /// No panel at all: the window stands open for documents to be opened
+    /// into it.
+    Empty,
+    Framed(Box<Frame>),
+}
+
+/// A window's root view: the application chrome, and the [`Body`] it holds.
 pub struct Workspace {
     /// The application, named ahead of the active panel in the window title
     /// so a task list tells a bviz window from any other.
     app_name: SharedString,
+    /// The title last handed to the window system, which a frame hands it
+    /// again only once it reads otherwise.
+    titled: String,
     /// Focus for the chrome, so the shell's window actions (quit, close, tab)
     /// dispatch here; the ancestor of every panel's own focus.
     window_focus: FocusHandle,
     /// The window this workspace is the root of, through which a panel of
     /// another window is taken out of the panes here.
     window: AnyWindowHandle,
-    arrangement: Arrangement,
-    active: Entity<Pane>,
+    body: Body,
     /// The status bar's list of the session's documents, through which a view
     /// closed here or shown in another window is brought into this one.
     documents_menu: Entity<DocumentsMenu>,
-    /// What is kept for every pane of `layout`, retired as its pane leaves.
-    panes: HashMap<EntityId, Framed>,
     /// Where the last frame laid the arrangement out, which is the region of
     /// the window a drag reads its edges and its panes against. `None` until a
     /// frame has laid it out.
-    body: Option<Bounds<Pixels>>,
-    /// The divider being dragged, while one is.
-    divider_drag: Option<DividerId>,
-    /// The press on a panel's tab being carried, while one is.
-    panel_drag: Option<PanelDrag>,
+    body_bounds: Option<Bounds<Pixels>>,
     /// The drags the window system is carrying for this window: the one this
     /// window handed it, and the one it carries over this window.
     carrying: Carrying<EntityId, Destination>,
-    /// The menu a panel was asked for, while it stands.
-    panel_menu: Option<PanelMenu>,
     /// The bar driving the clock of the active panel's document, while that
     /// document plays back.
     playback: Option<Entity<PlaybackBar>>,
+    /// What the window has to tell its user, each shown until dismissed.
+    notes: Vec<Note>,
+    /// How many notes the window has been told, which numbers the next.
+    notes_told: u64,
+    /// The dialogs waiting on an answer, in the order they were asked; the
+    /// first stands over the window, and the rest wait their turn behind it.
+    dialogs: VecDeque<Asking>,
     /// Draws the window afresh as the session's windows open and close, which
     /// changes where a panel of this one can be carried to.
     _windows_changed: Subscription,
+    /// Draws the window afresh as the registry changes, which renames a
+    /// document whose name the window's title and playback bar may show.
+    _documents_changed: Subscription,
 }
 
 impl Workspace {
@@ -355,30 +618,38 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let (layout, active, panes) = framed_panes(regions, window, cx);
+        let mut workspace = Self::empty(app_name, window, cx);
+        workspace.reframe(regions, window, cx);
+        workspace
+    }
+
+    /// Builds a workspace framing no panel.
+    pub(crate) fn empty(
+        app_name: impl Into<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let this = cx.weak_entity();
         let documents_menu = cx.new(|cx| DocumentsMenu::new(this, window, cx));
         let documents = Documents::global(cx);
         let windows_changed = cx.subscribe(&documents, |_, _, _: &WindowsChanged, cx| cx.notify());
-        let mut workspace = Self {
+        let documents_changed = cx.observe(&documents, |_, _, cx| cx.notify());
+        let workspace = Self {
             app_name: app_name.into(),
+            titled: String::new(),
             window_focus: cx.focus_handle(),
             window: window.window_handle(),
-            arrangement: Arrangement::new(layout),
-            active,
+            body: Body::Empty,
             documents_menu,
-            panes: HashMap::new(),
-            body: None,
-            divider_drag: None,
-            panel_drag: None,
+            body_bounds: None,
             carrying: Carrying::new(),
-            panel_menu: None,
             playback: None,
+            notes: Vec::new(),
+            notes_told: 0,
+            dialogs: VecDeque::new(),
             _windows_changed: windows_changed,
+            _documents_changed: documents_changed,
         };
-        for pane in panes {
-            workspace.watch(&pane, window, cx);
-        }
         window.accept_platform_drag(panel_mime());
         let carried = cx.weak_entity();
         window.on_platform_drag(move |event, window, cx| {
@@ -392,28 +663,316 @@ impl Workspace {
         documents.update(cx, |documents, cx| {
             documents.watch_workspace(&framed, cx);
         });
-        // Every pane took focus as it was built, so the active pane's panel takes
-        // it back.
-        let panel = workspace.active_panel(cx);
-        window.focus(&panel.focus_handle(cx), cx);
-        set_window_title(&workspace.app_name, &panel, window);
+        workspace.show_active(window, cx);
         workspace
     }
 
-    /// Builds a workspace framing the views of `first` and `others`, each in its
-    /// role's region.
+    /// Builds a workspace framing the views of `documents`, as
+    /// [`Workspace::open_documents`] lays them out.
     pub(crate) fn with_documents(
         app_name: impl Into<SharedString>,
-        first: Document,
-        others: Vec<Document>,
+        documents: Vec<Document>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::new(app_name, Document::open(first, others, cx), window, cx)
+        let mut workspace = Self::empty(app_name, window, cx);
+        workspace.open_documents(documents, window, cx);
+        workspace
     }
 
-    pub fn active_pane(&self) -> &Entity<Pane> {
-        &self.active
+    /// Registers each of `documents` and shows its views here: a window framing
+    /// no panel frames them by role as a window opening with them does, and
+    /// one framing panes lays each panel out where its [`placement`] puts it.
+    /// The pane showing the first document's first view becomes the active one.
+    pub fn open_documents(
+        &mut self,
+        documents: Vec<Document>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Body::Framed(frame) = &mut self.body else {
+            if let Some(regions) = Document::open(documents, cx) {
+                self.reframe(regions, window, cx);
+            }
+            return;
+        };
+        let registry = Documents::global(cx);
+        let mut leading = None;
+        for document in documents {
+            let (first, rest) = registry.update(cx, |registry, cx| registry.open(document, cx));
+            leading.get_or_insert(first.entity_id());
+            for panel in iter::once(first).chain(rest) {
+                frame.place(panel, window, cx);
+            }
+        }
+        if let Some(panel) = leading {
+            self.reveal(panel, window, cx);
+        }
+    }
+
+    /// The panes the window frames, `None` while it frames none.
+    fn frame(&self) -> Option<&Frame> {
+        match &self.body {
+            Body::Framed(frame) => Some(frame),
+            Body::Empty => None,
+        }
+    }
+
+    fn frame_mut(&mut self) -> Option<&mut Frame> {
+        match &mut self.body {
+            Body::Framed(frame) => Some(frame),
+            Body::Empty => None,
+        }
+    }
+
+    /// Closes `document` in every window: each panel showing one of its views
+    /// leaves the window holding it, and the registry then lets the document
+    /// go, with the models its views were minted over.
+    pub fn close_document(
+        &mut self,
+        document: DocumentId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        documents::close(document, self, window, cx);
+    }
+
+    /// Takes every panel showing a view of `document` out of the pane holding
+    /// it, letting it go.
+    pub(crate) fn drop_panels_of(
+        &mut self,
+        document: DocumentId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(frame) = self.frame() else {
+            return;
+        };
+        let panels: Vec<EntityId> = frame
+            .arrangement
+            .layout()
+            .panes()
+            .flat_map(|pane| {
+                let held = pane.read(cx).panels();
+                held.filter(|panel| panel.document() == document)
+                    .map(AnyPanel::entity_id)
+            })
+            .collect();
+        for panel in panels {
+            self.take_panel(panel, window, cx);
+        }
+    }
+
+    /// Joins the files `open` makes to the open document `to` names, as
+    /// [`Documents::join`] does, and lays their views out here as
+    /// [`placement`] puts them. `Err` hands `open` back unrun where the
+    /// document has closed.
+    pub fn join_document<F>(
+        &mut self,
+        to: &Joinable,
+        open: F,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), F>
+    where
+        F: FnOnce(&Shared, &mut Window, &mut App) -> (Member, Vec<Member>),
+    {
+        let joined = Documents::global(cx)
+            .update(cx, |documents, cx| documents.join(to, open, window, cx))?;
+        for panel in joined {
+            self.add_panel(panel, window, cx);
+        }
+        Ok(())
+    }
+
+    /// Asks which files to open, through the platform's file chooser or, where
+    /// the platform offers none, the window's own dialog, and hands them to the
+    /// app's [`PathOpener`].
+    pub(crate) fn open_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !cx.has_global::<PathOpener>() {
+            return;
+        }
+        let chosen = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some(OPEN.into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let chosen = chosen.await;
+            this.update_in(cx, |workspace, window, cx| match chosen {
+                Ok(Ok(Some(paths))) => workspace.open_paths(paths, window, cx),
+                Ok(Ok(None)) => {}
+                Ok(Err(_)) | Err(_) => workspace.ask_for_paths(window, cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Opens the window's own dialog asking for the paths of files to open.
+    fn ask_for_paths(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let prompt = cx.new(PathPrompt::new);
+        self.ask(
+            prompt,
+            |workspace, event, window, cx| {
+                if let PathPromptEvent::Chosen(paths) = event {
+                    workspace.open_paths(paths.clone(), window, cx);
+                }
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Stands `dialog` over the window, once every dialog asked before it is
+    /// answered, and hands `answered` the first event it emits, which is its
+    /// answer: the dialog leaves the window as it emits one.
+    pub fn ask<V, E>(
+        &mut self,
+        dialog: Entity<V>,
+        answered: impl Fn(&mut Self, &E, &mut Window, &mut Context<Self>) + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) where
+        V: Render + Focusable + EventEmitter<E>,
+        E: 'static,
+    {
+        let asked = dialog.entity_id();
+        let answered = cx.subscribe_in(&dialog, window, move |workspace, _, event, window, cx| {
+            workspace.dismiss(asked, window, cx);
+            answered(workspace, event, window, cx);
+        });
+        let answer = dialog.focus_handle(cx);
+        self.dialogs.push_back(Asking {
+            dialog: dialog.into(),
+            answer,
+            _answered: answered,
+        });
+        self.focus_active_panel(window, cx);
+        cx.notify();
+    }
+
+    /// Takes the dialog `asked` names off the window.
+    fn dismiss(&mut self, asked: EntityId, window: &mut Window, cx: &mut Context<Self>) {
+        self.dialogs
+            .retain(|asking| asking.dialog.entity_id() != asked);
+        self.focus_active_panel(window, cx);
+        cx.notify();
+    }
+
+    /// Hands `paths` to the app's [`PathOpener`] to open into this window.
+    fn open_paths(&mut self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+        if paths.is_empty() {
+            return;
+        }
+        if let Some(opener) = cx.try_global::<PathOpener>().cloned() {
+            opener.open(paths, cx.weak_entity(), window, cx);
+        }
+    }
+
+    /// The control on an empty window running [`OpenFiles`], where the app
+    /// opens files at all.
+    fn open_files_button(&self, cx: &mut Context<Self>) -> Option<Button> {
+        if !cx.has_global::<PathOpener>() {
+            return None;
+        }
+        let button = Button::new(
+            "workspace-open-files",
+            cx.listener(|workspace, _, window, cx| workspace.open_files(window, cx)),
+        );
+        let button = match action_label(&OpenFiles, cx) {
+            Some(label) => button.label(label),
+            None => button,
+        };
+        Some(button.keys_for(&OpenFiles, &self.window_focus))
+    }
+
+    /// What takes files dropped on the window, marking the window while files
+    /// are carried over it; `None` where the app opens no files.
+    fn file_drop_target(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Option<Div> {
+        if !cx.has_global::<PathOpener>() {
+            return None;
+        }
+        let (fill, edge) = (colors.selection, colors.accent);
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .drag_over::<ExternalPaths>(move |style, _, _, _| {
+                    style.bg(fill).border(DRAG_EDGE).border_color(edge)
+                })
+                .on_drop(
+                    cx.listener(|workspace, dropped: &ExternalPaths, window, cx| {
+                        workspace.open_paths(dropped.paths().to_vec(), window, cx);
+                    }),
+                ),
+        )
+    }
+
+    /// Shows `note` above the window's panes until the user dismisses it.
+    pub fn tell(&mut self, note: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.add_note(note.into(), cx);
+    }
+
+    /// Shows `note` above the window's panes for [`BRIEF_NOTE`], or until the
+    /// user dismisses it sooner.
+    pub fn tell_briefly(&mut self, note: impl Into<SharedString>, cx: &mut Context<Self>) {
+        let id = self.add_note(note.into(), cx);
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(BRIEF_NOTE).await;
+            this.update(cx, |workspace, cx| workspace.dismiss_note(id, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    /// Adds a note reading `text`; the id naming it.
+    fn add_note(&mut self, text: SharedString, cx: &mut Context<Self>) -> u64 {
+        let id = self.notes_told;
+        self.notes_told += 1;
+        add_note(&mut self.notes, Note { id, text });
+        cx.notify();
+        id
+    }
+
+    fn dismiss_note(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.notes.retain(|note| note.id != id);
+        cx.notify();
+    }
+
+    /// A strip for each note the window holds, with the control dismissing it.
+    fn note_strips(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Vec<Div> {
+        let mut strips = Vec::with_capacity(self.notes.len());
+        for note in &self.notes {
+            let this = cx.weak_entity();
+            let id = note.id;
+            let dismiss = Button::new(
+                ElementId::NamedInteger("workspace-note-dismiss".into(), id),
+                move |_, _, cx| {
+                    this.update(cx, |workspace, cx| workspace.dismiss_note(id, cx))
+                        .ok();
+                },
+            )
+            .ghost()
+            .icon("x")
+            .compact()
+            .tooltip(DISMISS_NOTE);
+            strips.push(
+                note_strip(note.text.clone(), colors)
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(dismiss),
+            );
+        }
+        strips
+    }
+
+    pub fn active_pane(&self) -> Option<&Entity<Pane>> {
+        self.frame().map(|frame| &frame.active)
     }
 
     pub(crate) fn window(&self) -> AnyWindowHandle {
@@ -424,40 +983,28 @@ impl Workspace {
     /// holding it both showing it among its tabs and being a pane the window
     /// draws at all. `None` where no pane here holds it.
     pub(crate) fn shows(&self, panel: EntityId, cx: &App) -> Option<bool> {
-        shows_panel(&self.arrangement, self.holder(panel, cx), |pane| {
+        let frame = self.frame()?;
+        shows_panel(&frame.arrangement, frame.holder(panel, cx), |pane| {
             pane.read(cx).showing()
         })
     }
 
     fn toggle_maximize(&mut self, pane: &Entity<Pane>, cx: &mut Context<Self>) {
-        match self.arrangement.toggle_maximize(pane) {
+        let Some(frame) = self.frame_mut() else {
+            return;
+        };
+        match frame.arrangement.toggle_maximize(pane) {
             Maximize::Unchanged => {}
             Maximize::Maximized => cx.notify(),
-            Maximize::Restored(revealed) => self.mark_revealed(revealed, cx),
+            Maximize::Restored(revealed) => mark_revealed(revealed, cx),
         }
     }
 
     /// Puts every pane back where the arrangement lays it out.
     fn restore(&mut self, cx: &mut Context<Self>) {
-        let revealed = self.arrangement.restore();
-        self.mark_revealed(revealed, cx);
-    }
-
-    /// Marks the panel of each pane a restore brought back on screen for the
-    /// repaint it is owed, and draws the window afresh to bring it back.
-    fn mark_revealed(&mut self, revealed: Vec<Entity<Pane>>, cx: &mut Context<Self>) {
-        if revealed.is_empty() {
-            return;
+        if let Some(frame) = self.frame_mut() {
+            frame.restore(cx);
         }
-        for pane in revealed {
-            pane.update(cx, |pane, cx| pane.mark_shown(cx));
-        }
-        cx.notify();
-    }
-
-    fn rearrange(&mut self, cx: &mut Context<Self>) -> &mut Layout {
-        self.restore(cx);
-        self.arrangement.rearrange()
     }
 
     /// Lays the window out as it opened.
@@ -466,7 +1013,10 @@ impl Workspace {
     /// scrolled to, zoomed in on and selected, and goes on being the panel the
     /// registry records for its view.
     pub(crate) fn reset_arrangement(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (leading, others) = self.held_panels(cx);
+        let Some(frame) = self.frame() else {
+            return;
+        };
+        let (leading, others) = frame.held_panels(cx);
         let mut unplaced: HashMap<EntityId, AnyPanel> = iter::once(&leading)
             .chain(&others)
             .map(|panel| (panel.entity_id(), panel.clone()))
@@ -484,66 +1034,32 @@ impl Workspace {
     /// the pane holding their leading panel the active one.
     ///
     /// The panels move from the panes that held them to the panes built for
-    /// them, and are held by both while the new panes are being built, so
-    /// everything the old panes answer for is let go of first: the gestures
-    /// aimed at them, the panels they tell they are on show, and the
-    /// subscriptions carrying their events here.
+    /// them, and are held by both while the new panes are being built, so what
+    /// the old panes answer for is let go of first: the panels they tell they
+    /// are on show, and the subscriptions carrying their events here. The
+    /// gestures aimed across them go with the frame they were aimed across.
     fn reframe(&mut self, regions: Regions<AnyPanel>, window: &mut Window, cx: &mut Context<Self>) {
-        self.end_gestures();
-        self.hide_shown_panels(window, cx);
-        self.panes.clear();
-        let (layout, leading, panes) = framed_panes(regions, window, cx);
-        self.arrangement = Arrangement::new(layout);
-        for pane in panes {
-            self.watch(&pane, window, cx);
+        if let Some(frame) = self.frame_mut() {
+            frame.hide_shown_panels(window, cx);
+            frame.panes.clear();
         }
+        let (layout, leading, panes) = framed_panes(regions, window, cx);
+        let mut frame = Frame::new(layout, leading.clone());
+        for pane in panes {
+            frame.watch(&pane, window, cx);
+        }
+        self.replace_body(Body::Framed(Box::new(frame)));
         self.activate_pane(leading, window, cx);
     }
 
-    /// Lets go of every gesture the window is holding over the arrangement it
-    /// lays out. Each of them is aimed at a pane or at a boundary between two,
-    /// and answers for nothing once other panes stand in their place: a drag
-    /// would move a panel against panes no frame has measured, and a menu holds
-    /// the panes its rows would move a panel to.
-    fn end_gestures(&mut self) {
-        self.divider_drag = None;
-        self.panel_drag = None;
-        self.panel_menu = None;
-        // A drag the window system carries is the window system's to end, and
-        // letting go of it here would leave the gesture out there with nothing
-        // to report to. Where it is aimed is let go of instead: a destination
-        // names a pane the panes built here stand in place of.
+    /// Puts `body` in place of what the window shows. A drag the window
+    /// system carries is the window system's to end, and letting go of it here
+    /// would leave the gesture out there with nothing to report to. Where it
+    /// is aimed is let go of instead: a destination names a pane of the body
+    /// replaced.
+    fn replace_body(&mut self, body: Body) {
         self.carrying.aim(None);
-    }
-
-    /// Tells the panel every pane shows that it is on show no longer, for a
-    /// caller about to frame the panels afresh: the panes built in their place
-    /// tell the panels they go on to show, and one left behind another's tab
-    /// would otherwise go on drawing what it draws over the cursor.
-    fn hide_shown_panels(&self, window: &mut Window, cx: &mut Context<Self>) {
-        for pane in self.arrangement.layout().panes() {
-            let showing = pane.read(cx).active_panel().clone();
-            showing.set_active(false, window, cx);
-        }
-    }
-
-    /// Every panel the window holds: the one its first pane shows, then the
-    /// others pane by pane in the order the arrangement lays them out, each
-    /// pane's in tab order.
-    fn held_panels(&self, cx: &App) -> (AnyPanel, Vec<AnyPanel>) {
-        let layout = self.arrangement.layout();
-        let leading = layout.first_pane().read(cx).active_panel().clone();
-        let held: usize = layout.panes().map(|pane| pane.read(cx).tab_count()).sum();
-        let mut others = Vec::with_capacity(held - 1);
-        for pane in layout.panes() {
-            others.extend(
-                pane.read(cx)
-                    .panels()
-                    .filter(|panel| panel.entity_id() != leading.entity_id())
-                    .cloned(),
-            );
-        }
-        (leading, others)
+        self.body = body;
     }
 
     /// Brings `panel` forward in the pane holding it and makes that the active
@@ -570,7 +1086,14 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyPanel> {
-        let (pane, _) = self.holder(panel, cx)?;
+        let frame = self.frame_mut()?;
+        let (pane, _) = frame.holder(panel, cx)?;
+        // A menu names the panes its rows would move a panel to, which taking
+        // a panel out may take away; and the bar may drive the clock of the
+        // taken panel's document, which closing the document lets go of. The
+        // next frame puts up the bar of the active panel's document afresh.
+        frame.panel_menu = None;
+        self.playback = None;
         self.vacate(&pane, panel, window, cx)
     }
 
@@ -620,10 +1143,8 @@ impl Workspace {
         let opened = self.open_window_for(taken.clone(), window, cx);
         match (handover, opened) {
             (Handover::Kept(_), Ok(())) => {}
-            // A window the move leaves framing no pane is taken away only once
-            // this update unwinds, by which time the window opened here stands
-            // in its place, so moving the last panel out of the last window
-            // does not quit the application.
+            // The window opened here is one of the session's before this one
+            // is left framing no pane.
             (Handover::Emptied(_), Ok(())) => self.close_pane(from, window, cx),
             (Handover::Kept(taken), Err(error)) => {
                 no_window_opened(&error);
@@ -638,7 +1159,8 @@ impl Workspace {
         }
     }
 
-    /// Lays `panel` out at `to` and makes the pane it lands in the active one.
+    /// Lays `panel` out at `to` and makes the pane it lands in the active one,
+    /// or as [`Workspace::add_panel`] does where the window frames no pane.
     /// `taken` says which pane of this window it came out of and which tab of
     /// that pane it was, and is nothing where it comes from another window.
     fn land(
@@ -649,6 +1171,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(frame) = self.frame_mut() else {
+            self.add_panel(panel, window, cx);
+            return;
+        };
         let landed = match to {
             Landing::Tab { pane, index } => {
                 let taken = taken.and_then(|(from, at)| (from == pane).then_some(at));
@@ -657,14 +1183,15 @@ impl Workspace {
                 pane
             }
             Landing::Beside { pane, side } => {
-                let landed = self.pane_for(panel, window, cx);
-                self.rearrange(cx)
+                let landed = frame.pane_for(panel, window, cx);
+                frame
+                    .rearrange(cx)
                     .insert_beside(&pane, side, landed.clone());
                 landed
             }
             Landing::WindowEdge(side) => {
-                let landed = self.pane_for(panel, window, cx);
-                self.rearrange(cx).insert_at_edge(side, landed.clone());
+                let landed = frame.pane_for(panel, window, cx);
+                frame.rearrange(cx).insert_at_edge(side, landed.clone());
                 landed
             }
         };
@@ -688,8 +1215,11 @@ impl Workspace {
     /// [`re_homes`] for a pane this workspace frames, read for how many panels
     /// it holds.
     fn re_homes(&self, to: &Destination, from: Option<&Entity<Pane>>, cx: &App) -> bool {
+        let Some(frame) = self.frame() else {
+            return false;
+        };
         let alone = from.is_some_and(|pane| pane.read(cx).tab_count() == 1);
-        re_homes(to, from, alone, self.arrangement.layout())
+        re_homes(to, from, alone, frame.arrangement.layout())
     }
 
     /// Takes `panel` out of `from` for a caller re-homing it, and takes `from`
@@ -708,18 +1238,6 @@ impl Workspace {
                 Some(panel)
             }
         }
-    }
-
-    /// A pane of the arrangement showing `panel` alone.
-    fn pane_for(
-        &mut self,
-        panel: AnyPanel,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Entity<Pane> {
-        let pane = cx.new(|cx| Pane::new(panel, window, cx));
-        self.watch(&pane, window, cx);
-        pane
     }
 
     fn open_window_for(
@@ -747,17 +1265,20 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some((pane, _)) = self.holder(panel, cx) else {
+        let windows = self.other_windows(cx);
+        let Some(frame) = self.frame_mut() else {
             return;
         };
-        let windows = self.other_windows(cx);
-        let active = self.active_panel(cx);
+        let Some((pane, _)) = frame.holder(panel, cx) else {
+            return;
+        };
+        let active = frame.active_panel(cx);
         let keys_in = keys_focus(panel, Some(&active), cx);
         let items = panel_menu::items(
             panel,
             &cx.weak_entity(),
             &Standing {
-                arrangement: &self.arrangement,
+                arrangement: &frame.arrangement,
                 pane: &pane,
                 alone: pane.read(cx).tab_count() == 1,
             },
@@ -772,14 +1293,16 @@ impl Workspace {
             window,
             |workspace, _, event: &MenuEvent, window, cx| {
                 let MenuEvent::Dismissed { holding_focus } = event;
-                workspace.panel_menu = None;
+                if let Some(frame) = workspace.frame_mut() {
+                    frame.panel_menu = None;
+                }
                 if *holding_focus {
                     workspace.focus_active_panel(window, cx);
                 }
                 cx.notify();
             },
         );
-        self.panel_menu = Some(PanelMenu {
+        frame.panel_menu = Some(PanelMenu {
             menu,
             _dismissed: dismissed,
         });
@@ -797,11 +1320,15 @@ impl Workspace {
             pane.update(cx, |pane, cx| pane.close_keys_help(window, cx));
             return;
         }
-        if self.active_panel(cx).entity_id() != panel {
+        if self
+            .active_panel(cx)
+            .is_none_or(|active| active.entity_id() != panel)
+        {
             self.reveal(panel, window, cx);
         }
         let room = pane.read(cx).keys_help_room(window);
-        let help = self.keys_help(&self.active_panel(cx), room, window, cx);
+        let shown = pane.read(cx).active_panel().clone();
+        let help = self.keys_help(&shown, room, window, cx);
         pane.update(cx, |pane, cx| pane.show_keys_help(help, window, cx));
     }
 
@@ -855,22 +1382,46 @@ impl Workspace {
     /// playback scope while the active panel's document plays back.
     fn key_context(&self, cx: &mut App) -> KeyContext {
         let mut key_context = KeyContext::from(KEY_CONTEXT);
-        let document = self.active_panel(cx).document();
-        if Documents::global(cx).read(cx).playback(document).is_some() {
+        if let Some(panel) = self.active_panel(cx)
+            && Documents::global(cx)
+                .read(cx)
+                .playback(panel.document())
+                .is_some()
+        {
             key_context.add(PLAYBACK_KEY_CONTEXT.id());
         }
         key_context
     }
 
-    /// Hands focus to the panel the active pane shows. Which panel that is is
-    /// read here and not before: a menu names rows that close a panel and that
+    /// Hands focus to where it rests in this window, the
+    /// [`content_focus`](Self::content_focus). Which panel that is is read
+    /// here and not before: a menu names rows that close a panel and that
     /// move one to another window, so the panel a gesture was opened over may
     /// be gone by the time focus is to be given back, and a focus handle naming
     /// nothing this window draws leaves every one of the window's own key
     /// bindings unreachable until something is clicked.
     fn focus_active_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let panel = self.active_panel(cx);
-        window.focus(&panel.focus_handle(cx), cx);
+        window.focus(&self.content_focus(cx), cx);
+    }
+
+    /// Where focus rests in this window: on the dialog standing over it while
+    /// one awaits an answer, so that nothing changing underneath takes its
+    /// keys, else on the panel the active pane shows, or on the chrome where
+    /// the window frames no panel.
+    pub(crate) fn content_focus(&self, cx: &App) -> FocusHandle {
+        if let Some(asking) = self.dialogs.front() {
+            return asking.answer.clone();
+        }
+        match self.active_panel(cx) {
+            Some(panel) => panel.focus_handle(cx),
+            None => self.window_focus.clone(),
+        }
+    }
+
+    /// Gives focus to what the window shows.
+    fn show_active(&self, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.content_focus(cx), cx);
+        cx.notify();
     }
 
     /// The session's other open windows, each named as another window's menu
@@ -882,7 +1433,7 @@ impl Workspace {
         let mut named = Vec::with_capacity(open.len());
         for (place, workspace) in open.iter().enumerate() {
             if workspace.entity_id() != here {
-                let shown = workspace.read(cx).active_panel(cx).display_title();
+                let shown = workspace.read(cx).shown_title(cx);
                 named.push((workspace.downgrade(), window_name(place + 1, &shown)));
             }
         }
@@ -972,14 +1523,20 @@ impl Workspace {
             }
             workspace
                 .update(cx, |workspace, cx| {
-                    if workspace.panel_drag.is_some() {
+                    if workspace
+                        .frame()
+                        .is_some_and(|frame| frame.panel_drag.is_some())
+                    {
                         cx.stop_propagation();
                         workspace.end_panel_drag(cx);
                     }
                 })
                 .ok();
         });
-        self.panel_drag = Some(PanelDrag {
+        let Some(frame) = self.frame_mut() else {
+            return;
+        };
+        frame.panel_drag = Some(PanelDrag {
             panel,
             carried: Carried::Pressed(at),
             to: None,
@@ -992,7 +1549,9 @@ impl Workspace {
     /// Lets the press go without moving anything, retiring what it put over the
     /// window with it.
     fn end_panel_drag(&mut self, cx: &mut Context<Self>) {
-        self.panel_drag = None;
+        if let Some(frame) = self.frame_mut() {
+            frame.panel_drag = None;
+        }
         cx.notify();
     }
 
@@ -1007,7 +1566,7 @@ impl Workspace {
     /// far enough from where it landed, and is offered to the window system
     /// once it is carried far enough out of the window.
     fn drag_panel(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(drag) = &self.panel_drag else {
+        let Some(drag) = self.frame().and_then(|frame| frame.panel_drag.as_ref()) else {
             return;
         };
         let (panel, carried, refused) = (drag.panel, drag.carried, drag.refused);
@@ -1018,17 +1577,20 @@ impl Workspace {
         // A drag reads where the frame laid the panes out to tell where a drop
         // would put the panel, so every pane is on screen before it is carried
         // anywhere.
-        self.restore(cx);
-        let held = self.holder(panel, cx).is_some();
-        let drag = self.panel_drag.take();
-        self.panel_drag = drag.filter(|_| held).map(|drag| PanelDrag {
+        let Some(frame) = self.frame_mut() else {
+            return;
+        };
+        frame.restore(cx);
+        let held = frame.holder(panel, cx).is_some();
+        let drag = frame.panel_drag.take();
+        frame.panel_drag = drag.filter(|_| held).map(|drag| PanelDrag {
             carried: Carried::Dragging(at),
             ..drag
         });
         cx.notify();
         if carry == Carry::Over
             && !self.hand_over(window, cx)
-            && let Some(drag) = self.panel_drag.as_mut()
+            && let Some(drag) = self.frame_mut().and_then(|frame| frame.panel_drag.as_mut())
         {
             drag.refused = true;
         }
@@ -1047,11 +1609,14 @@ impl Workspace {
     /// ([`drop::tears_out`]), so that a drag flicked past the edge and back in
     /// is carried here as ever.
     fn hand_over(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some(drag) = self.panel_drag.as_ref() else {
+        let Some(frame) = self.frame() else {
+            return false;
+        };
+        let Some(drag) = frame.panel_drag.as_ref() else {
             return false;
         };
         let carried = drag.panel;
-        let Some((pane, index)) = self.holder(carried, cx) else {
+        let Some((pane, index)) = frame.holder(carried, cx) else {
             return false;
         };
         let Some(panel) = pane.read(cx).panel_at(index).cloned() else {
@@ -1075,7 +1640,9 @@ impl Workspace {
         if !window.start_platform_drag(panel_mime(), icon) {
             return false;
         }
-        self.panel_drag = None;
+        if let Some(frame) = self.frame_mut() {
+            frame.panel_drag = None;
+        }
         self.carrying.hand_over(carried);
         cx.notify();
         true
@@ -1089,7 +1656,7 @@ impl Workspace {
     /// here, so that whichever arrives first ends the one gesture. A press that
     /// never became a drag is left to the tab under it to make a click of.
     fn drop_panel(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(drag) = self.panel_drag.take() else {
+        let Some(drag) = self.frame_mut().and_then(|frame| frame.panel_drag.take()) else {
             return;
         };
         cx.notify();
@@ -1198,28 +1765,12 @@ impl Workspace {
             .find_map(|workspace| workspace.read(cx).handed_over())
     }
 
-    /// Where the last frame laid each pane of the arrangement out. A pane no
-    /// frame has laid out is left out: nothing is known of where a drop over it
-    /// would land, and only the panes the arrangement holds are asked at all,
-    /// so no frame that has since let a pane go is read for one.
-    fn pane_geometry(&self, cx: &App) -> Vec<PaneGeometry<Entity<Pane>>> {
-        let layout = self.arrangement.layout();
-        let mut geometry = Vec::with_capacity(layout.panes().count());
-        geometry.extend(layout.panes().filter_map(|pane| {
-            let held = pane.read(cx);
-            Some(PaneGeometry {
-                pane: pane.clone(),
-                bounds: self.pane_bounds(pane)?,
-                tab_count: held.tab_count(),
-                band: held.band(),
-            })
-        }));
-        geometry
-    }
-
     /// The pane laid out nearest the active one on `side` of it, made active.
     fn focus_towards(&mut self, side: Side, window: &mut Window, cx: &mut Context<Self>) {
-        if let Towards::Found(pane) = self.pane_in_direction(&self.active, side) {
+        let Some(frame) = self.frame() else {
+            return;
+        };
+        if let Towards::Found(pane) = frame.pane_in_direction(&frame.active, side) {
             pane.read(cx).reveal_shown_tab();
             self.activate_pane(pane, window, cx);
         }
@@ -1229,7 +1780,10 @@ impl Workspace {
     /// its last tab — or against that edge of the window, where no pane lies
     /// that way.
     fn move_towards(&mut self, side: Side, window: &mut Window, cx: &mut Context<Self>) {
-        let to = match self.pane_in_direction(&self.active, side) {
+        let Some(frame) = self.frame() else {
+            return;
+        };
+        let to = match frame.pane_in_direction(&frame.active, side) {
             Towards::Found(pane) => {
                 let index = pane.read(cx).tab_count();
                 Destination::Tab { pane, index }
@@ -1237,46 +1791,64 @@ impl Workspace {
             Towards::Edge => Destination::WindowEdge(side),
             Towards::Unknown => return,
         };
-        let panel = self.active_panel(cx).entity_id();
+        let panel = frame.active_panel(cx).entity_id();
         self.move_panel(panel, to, window, cx);
     }
 
     /// Takes the panel on show into a pane of its own on `side` of the pane
     /// showing it.
     fn split_towards(&mut self, side: Side, window: &mut Window, cx: &mut Context<Self>) {
-        let panel = self.active_panel(cx).entity_id();
-        let pane = self.active.clone();
+        let Some(frame) = self.frame() else {
+            return;
+        };
+        let panel = frame.active_panel(cx).entity_id();
+        let pane = frame.active.clone();
         self.move_panel(panel, Destination::Beside { pane, side }, window, cx);
-    }
-
-    /// The pane `side` of `from` a move or a focus in that direction picks.
-    pub(crate) fn pane_in_direction(&self, from: &Entity<Pane>, side: Side) -> Towards {
-        in_direction(self.arrangement.layout(), from, side, |pane| {
-            self.pane_bounds(pane)
-        })
-    }
-
-    fn pane_bounds(&self, pane: &Entity<Pane>) -> Option<Bounds<Pixels>> {
-        self.panes.get(&pane.entity_id())?.bounds
     }
 
     /// Records where the frame being laid out put `pane`.
     fn laid_out(&mut self, pane: EntityId, bounds: Bounds<Pixels>) {
-        if let Some(framed) = self.panes.get_mut(&pane) {
+        if let Some(framed) = self
+            .frame_mut()
+            .and_then(|frame| frame.panes.get_mut(&pane))
+        {
             framed.bounds = Some(bounds);
         }
     }
 
     /// The pane holding `panel` and the tab it holds it at.
     fn holder(&self, panel: EntityId, cx: &App) -> Option<(Entity<Pane>, usize)> {
-        self.arrangement
-            .layout()
-            .panes()
-            .find_map(|pane| pane.read(cx).index_of(panel).map(|at| (pane.clone(), at)))
+        self.frame()?.holder(panel, cx)
     }
 
-    pub fn active_panel(&self, cx: &App) -> AnyPanel {
-        self.active.read(cx).active_panel().clone()
+    /// The panel the active pane shows, `None` while the window frames no
+    /// pane.
+    pub fn active_panel(&self, cx: &App) -> Option<AnyPanel> {
+        Some(self.frame()?.active_panel(cx))
+    }
+
+    /// What names the window: the application, then, where a panel is on
+    /// show, the name of its document where that is an invocation's, then the
+    /// panel's title.
+    fn window_title(&self, panel: Option<&AnyPanel>, cx: &mut App) -> String {
+        let Some(panel) = panel else {
+            return self.app_name.to_string();
+        };
+        let app_name = &self.app_name;
+        let title = panel.display_title();
+        match Documents::global(cx).read(cx).joined_name(panel.document()) {
+            Some(joined) => format!("{app_name} \u{2014} {joined} \u{2014} {title}"),
+            None => format!("{app_name} \u{2014} {title}"),
+        }
+    }
+
+    /// What the window shows, as another window's menu names it: the panel on
+    /// show, or the application's name where it shows none.
+    fn shown_title(&self, cx: &App) -> SharedString {
+        match self.active_panel(cx) {
+            Some(panel) => panel.display_title(),
+            None => self.app_name.clone(),
+        }
     }
 
     /// Applies `gesture` to the clock the active panel's document plays back
@@ -1287,122 +1859,113 @@ impl Workspace {
         cx: &mut Context<Self>,
         gesture: impl FnOnce(&mut Clock, &mut Context<Clock>),
     ) {
-        let document = self.active_panel(cx).document();
+        let Some(panel) = self.active_panel(cx) else {
+            cx.propagate();
+            return;
+        };
         let documents = Documents::global(cx);
-        match documents.read(cx).playback(document) {
+        match documents.read(cx).playback(panel.document()) {
             Some((_, clock)) if clock.read(cx).timeline().is_some() => clock.update(cx, gesture),
             _ => cx.propagate(),
         }
     }
 
-    /// The bar driving the clock `panel`'s document plays back on, kept while
-    /// the active panel's document stays the same one, and `None` for a
-    /// document that does not play back.
+    /// The bar driving the clock `panel`'s document plays back on, labelled
+    /// with the name the document goes by, kept while the active panel's
+    /// document stays the same one, and `None` for a document that does not
+    /// play back and where no panel is shown.
     fn playback_bar(
         &mut self,
-        panel: &AnyPanel,
+        panel: Option<&AnyPanel>,
         cx: &mut Context<Self>,
     ) -> Option<Entity<PlaybackBar>> {
         let documents = Documents::global(cx);
-        let Some((name, clock)) = documents.read(cx).playback(panel.document()) else {
+        let playback = panel.and_then(|panel| documents.read(cx).playback(panel.document()));
+        let Some((name, clock)) = playback else {
             self.playback = None;
             return None;
         };
-        let current = self
-            .playback
-            .as_ref()
-            .is_some_and(|bar| *bar.read(cx).clock() == clock);
-        if !current {
-            self.playback = Some(cx.new(|cx| PlaybackBar::new(name, clock, cx)));
+        match self.playback.as_ref() {
+            Some(bar) if *bar.read(cx).clock() == clock => {
+                if *bar.read(cx).name() != name {
+                    bar.update(cx, |bar, cx| bar.rename(name, cx));
+                }
+            }
+            _ => self.playback = Some(cx.new(|cx| PlaybackBar::new(name, clock, cx))),
         }
         self.playback.clone()
     }
 
-    /// Adds `panel` to the pane [`pane_for_role`] picks for its role and shows
-    /// it.
+    /// Lays `panel` out where its [`placement`] puts it and shows it there,
+    /// framing it alone where the window frames no pane.
     pub(crate) fn add_panel(
         &mut self,
         panel: AnyPanel,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let panes = self.arrangement.layout().panes().map(|pane| {
-            let roles = pane.read(cx).panels().map(AnyPanel::role);
-            (pane, roles)
-        });
-        let pane = pane_for_role(panel.role(), panes, &self.active).clone();
-        self.activate_pane(pane.clone(), window, cx);
-        pane.update(cx, |pane, cx| pane.add(panel, window, cx));
+        match self.frame_mut() {
+            Some(frame) => {
+                let landed = frame.place(panel, window, cx);
+                self.activate_pane(landed, window, cx);
+            }
+            None => self.reframe(Regions::new(panel.role(), panel), window, cx),
+        }
     }
 
     /// Takes the panel the active pane shows into a window of its own, and
-    /// focuses it there. A pane left with no panel leaves the arrangement, and a
-    /// window left framing no pane closes.
+    /// focuses it there. A pane left with no panel leaves the arrangement.
     pub fn detach_active_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let panel = self.active_panel(cx).entity_id();
-        self.move_panel(panel, Destination::NewWindow, window, cx);
-    }
-
-    fn watch(&mut self, pane: &Entity<Pane>, window: &Window, cx: &mut Context<Self>) {
-        let events = cx.subscribe_in(
-            pane,
-            window,
-            |workspace, pane, event, window, cx| match event {
-                PaneEvent::Changed => {
-                    if *pane == workspace.active {
-                        set_window_title(&workspace.app_name, &workspace.active_panel(cx), window);
-                    }
-                    cx.notify();
-                }
-                PaneEvent::Closed => workspace.close_pane(pane, window, cx),
-                PaneEvent::Maximize => workspace.toggle_maximize(pane, cx),
-                PaneEvent::Pressed { panel, at } => workspace.press_panel(*panel, *at, cx),
-                PaneEvent::Released { at } => workspace.drop_panel(*at, window, cx),
-                PaneEvent::Menu { panel, at } => {
-                    workspace.open_panel_menu(*panel, *at, window, cx);
-                }
-                PaneEvent::KeysHelp(panel) => workspace.toggle_keys_help(*panel, window, cx),
-                PaneEvent::Reveal(panel) => {
-                    // The gesture asking for it may have come from another
-                    // window.
-                    workspace.reveal(*panel, window, cx);
-                    window.activate_window();
-                }
-            },
-        );
-        self.panes.insert(
-            pane.entity_id(),
-            Framed {
-                _events: events,
-                bounds: None,
-            },
-        );
+        if let Some(panel) = self.active_panel(cx) {
+            self.move_panel(panel.entity_id(), Destination::NewWindow, window, cx);
+        }
     }
 
     fn close_pane(&mut self, pane: &Entity<Pane>, window: &mut Window, cx: &mut Context<Self>) {
-        let removal = self.rearrange(cx).remove(pane);
+        let Some(frame) = self.frame_mut() else {
+            return;
+        };
+        let removal = frame.rearrange(cx).remove(pane);
         if removal != Removal::NotFound {
             // A pane out of the arrangement is no longer this workspace's to
             // answer for: an emptied one goes on holding the panel it gave up,
             // so its events would otherwise reach here as well as the workspace
             // the panel moved to.
-            self.panes.remove(&pane.entity_id());
+            frame.panes.remove(&pane.entity_id());
         }
         match removal {
             Removal::NotFound => {}
-            // The window has nothing left to frame.
-            Removal::Emptied => window.remove_window(),
+            Removal::Emptied => self.frame_nothing(window, cx),
             Removal::Removed => {
                 // A close can take away the boundary a drag is holding, and the
                 // overlay that carries the drag goes with it.
-                self.divider_drag = None;
-                if *pane == self.active
-                    && let Some(next) = self.arrangement.layout().panes().next().cloned()
+                frame.divider_drag = None;
+                if *pane == frame.active
+                    && let Some(next) = frame.arrangement.layout().panes().next().cloned()
                 {
                     self.activate_pane(next, window, cx);
                 }
                 cx.notify();
             }
+        }
+    }
+
+    /// Leaves the window framing nothing: closed where the session holds
+    /// another window open, and standing empty where it is the last, so that
+    /// only closing a window itself ends the application, or where a dialog
+    /// awaits an answer the window is to act on.
+    fn frame_nothing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.replace_body(Body::Empty);
+        self.playback = None;
+        let here = cx.entity_id();
+        let closed = self.dialogs.is_empty()
+            && Documents::global(cx).update(cx, |documents, cx| {
+                documents.close_window_unless_last(here, cx)
+            });
+        if closed {
+            window.remove_window();
+        } else {
+            self.show_active(window, cx);
         }
     }
 
@@ -1412,17 +1975,19 @@ impl Workspace {
     /// for focus and the window's title to follow, so every path that brings a
     /// view forward passes through here.
     fn activate_pane(&mut self, pane: Entity<Pane>, window: &mut Window, cx: &mut Context<Self>) {
-        let revealed = self.arrangement.uncover(&pane);
-        self.mark_revealed(revealed, cx);
-        self.active = pane;
-        let panel = self.active_panel(cx);
-        window.focus(&panel.focus_handle(cx), cx);
-        set_window_title(&self.app_name, &panel, window);
-        cx.notify();
+        let Some(frame) = self.frame_mut() else {
+            return;
+        };
+        let revealed = frame.arrangement.uncover(&pane);
+        mark_revealed(revealed, cx);
+        frame.active = pane;
+        self.show_active(window, cx);
     }
 
     fn move_divider(&mut self, divider: DividerId, share: f32, cx: &mut Context<Self>) {
-        if self.rearrange(cx).move_divider(divider, share) {
+        if let Some(frame) = self.frame_mut()
+            && frame.rearrange(cx).move_divider(divider, share)
+        {
             cx.notify();
         }
     }
@@ -1431,8 +1996,11 @@ impl Workspace {
     /// boundary a drag is holding, so that the press ahead of this one leaves
     /// no drag running behind it.
     fn rest_split(&mut self, divider: DividerId, cx: &mut Context<Self>) {
-        self.divider_drag = None;
-        self.rearrange(cx).rest_split(divider);
+        let Some(frame) = self.frame_mut() else {
+            return;
+        };
+        frame.divider_drag = None;
+        frame.rearrange(cx).rest_split(divider);
         cx.notify();
     }
 
@@ -1440,7 +2008,10 @@ impl Workspace {
     /// of that split's extent. A window of one pane lays it out in no split,
     /// and there is nothing to even.
     fn even_pane_split(&mut self, pane: &Entity<Pane>, cx: &mut Context<Self>) {
-        let layout = self.rearrange(cx);
+        let Some(frame) = self.frame_mut() else {
+            return;
+        };
+        let layout = frame.rearrange(cx);
         if let Some(divider) = layout.innermost_divider(pane) {
             layout.even_split(divider);
             cx.notify();
@@ -1451,19 +2022,22 @@ impl Workspace {
     /// pane. The arrangement is the workspace's to know, and a frame draws a
     /// window from its root, so every pane hears this before it draws itself.
     fn tell_panes_where_they_stand(&self, cx: &mut Context<Self>) {
+        let Some(frame) = self.frame() else {
+            return;
+        };
         let here = cx.entity_id();
         let elsewhere = Documents::global(cx).read(cx).holds_another_window(here);
-        let layout = self.arrangement.layout();
+        let layout = frame.arrangement.layout();
         let lone = layout.panes().nth(1).is_none();
         for pane in layout.panes() {
-            let framing = if self.arrangement.maximized() == Some(pane) {
+            let framing = if frame.arrangement.maximized() == Some(pane) {
                 Framing::Maximized
             } else if lone {
                 Framing::Lone { elsewhere }
             } else {
                 Framing::Beside
             };
-            let active = *pane == self.active;
+            let active = *pane == frame.active;
             pane.update(cx, |pane, _| {
                 pane.set_framing(framing);
                 pane.set_window_active(active);
@@ -1479,14 +2053,17 @@ impl Workspace {
     /// drag is aimed across.
     fn aim_panel_drag(&mut self, window: &Window, cx: &mut Context<Self>) {
         let to = self.drag_destination(window, cx);
-        for pane in self.arrangement.layout().panes() {
+        let Body::Framed(frame) = &mut self.body else {
+            return;
+        };
+        for pane in frame.arrangement.layout().panes() {
             let joins = joined_pane(to.as_ref()) == Some(pane);
             pane.update(cx, |pane, _| pane.set_joined_by_drag(joins));
         }
         match self.carrying.incoming().is_some() {
             true => self.carrying.aim(to),
             false => {
-                if let Some(drag) = self.panel_drag.as_mut() {
+                if let Some(drag) = frame.panel_drag.as_mut() {
                     drag.to = to;
                 }
             }
@@ -1506,7 +2083,7 @@ impl Workspace {
         let (panel, at) = match self.carrying.incoming() {
             Some(incoming) => (incoming.panel, incoming.at),
             None => {
-                let drag = self.panel_drag.as_ref()?;
+                let drag = self.frame()?.panel_drag.as_ref()?;
                 (drag.panel, drag.carried.dragging()?)
             }
         };
@@ -1524,27 +2101,34 @@ impl Workspace {
         window: &Window,
         cx: &App,
     ) -> Option<Destination> {
-        let from = self.holder(panel, cx).map(|(pane, _)| pane);
-        let geometry = self.pane_geometry(cx);
+        let frame = self.frame()?;
+        let from = frame.holder(panel, cx).map(|(pane, _)| pane);
+        let geometry = frame.pane_geometry(cx);
         drop::dropped_at(
             at,
             viewport(window),
-            self.body?,
+            self.body_bounds?,
             &geometry,
             from.as_ref(),
             |to| self.re_homes(to, from.as_ref(), cx),
         )
     }
 
-    /// What the window's body draws: the pane given the whole of it, or every
-    /// pane as the arrangement lays them out. A pane given the whole body is
-    /// drawn somewhere other than where the arrangement lays it out, so that
-    /// frame measures no pane and the placements the arrangement was last drawn
-    /// at go on saying where its panes stand.
+    /// What the window's body draws: the pane given the whole of it, every
+    /// pane as the arrangement lays them out, or what an empty window offers.
+    /// A pane given the whole body is drawn somewhere other than where the
+    /// arrangement lays it out, so that frame measures no pane and the
+    /// placements the arrangement was last drawn at go on saying where its
+    /// panes stand.
     fn body_element(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> AnyElement {
-        match self.arrangement.maximized() {
+        let Some(frame) = self.frame() else {
+            let any_open = !Documents::global(cx).read(cx).is_empty();
+            let open = self.open_files_button(cx);
+            return empty_state(colors, any_open, open).into_any_element();
+        };
+        match frame.arrangement.maximized() {
             Some(pane) => self.framed_pane(pane, cx).into_any_element(),
-            None => self.layout_element(self.arrangement.layout(), colors, cx),
+            None => self.layout_element(frame.arrangement.layout(), colors, cx),
         }
     }
 
@@ -1595,7 +2179,7 @@ impl Workspace {
                     .absolute()
                     .inset_0()
                     .capture_any_mouse_down(cx.listener(move |workspace, _, window, cx| {
-                        if workspace.active != handle {
+                        if workspace.active_pane() != Some(&handle) {
                             workspace.activate_pane(handle.clone(), window, cx);
                         }
                     })),
@@ -1624,7 +2208,9 @@ impl Workspace {
         } in split.sides()
         {
             if let Some(id) = against {
-                let dragging = self.divider_drag == Some(id);
+                let dragging = self
+                    .frame()
+                    .is_some_and(|frame| frame.divider_drag == Some(id));
                 container = container.child(divider(id, axis, dragging, colors, cx));
                 if dragging {
                     dragged = Some((id, boundaries));
@@ -1660,7 +2246,7 @@ impl Workspace {
             let mark = self.marked(to, incoming.at, colors, cx)?;
             return Some(deferred(mark).into_any_element());
         }
-        let drag = self.panel_drag.as_ref()?;
+        let drag = self.frame()?.panel_drag.as_ref()?;
         let mut over = div().absolute().inset_0().child(panel_drag_handlers(cx));
         if let Some(at) = drag.carried.dragging() {
             let marked = drag
@@ -1684,9 +2270,10 @@ impl Workspace {
         colors: &ThemeColors,
         cx: &App,
     ) -> Option<Div> {
-        let geometry = self.pane_geometry(cx);
-        let mark = drop::preview(to, at, self.body?, &geometry, |side| {
-            self.arrangement.layout().at_edge(side)
+        let frame = self.frame()?;
+        let geometry = frame.pane_geometry(cx);
+        let mark = drop::preview(to, at, self.body_bounds?, &geometry, |side| {
+            frame.arrangement.layout().at_edge(side)
         })?;
         Some(match mark {
             Preview::Region(region) => placed(region)
@@ -1750,19 +2337,6 @@ fn beside_cursor(at: Point<Pixels>, viewport: Size<Pixels>) -> Div {
         true => ghost.bottom(viewport.height - at.y + GHOST_OFFSET),
         false => ghost.top(at.y + GHOST_OFFSET),
     }
-}
-
-/// The first of `panes`, each given with the roles of the panels it holds,
-/// holding a panel of `role`, and `active` where none does.
-fn pane_for_role<P>(
-    role: Role,
-    panes: impl IntoIterator<Item = (P, impl IntoIterator<Item = Role>)>,
-    active: P,
-) -> P {
-    panes
-        .into_iter()
-        .find_map(|(pane, roles)| roles.into_iter().any(|held| held == role).then_some(pane))
-        .unwrap_or(active)
 }
 
 /// `placed` with each of `leading` and `others` that is `unplaced` pushed into
@@ -1974,7 +2548,7 @@ fn measure(pane: &Entity<Pane>, cx: &mut Context<Workspace>) -> Canvas<()> {
 fn measure_body(cx: &mut Context<Workspace>) -> Canvas<()> {
     let workspace = cx.entity();
     overlay_canvas(move |bounds, _, cx| {
-        workspace.update(cx, |workspace, _| workspace.body = Some(bounds));
+        workspace.update(cx, |workspace, _| workspace.body_bounds = Some(bounds));
     })
 }
 
@@ -2105,7 +2679,9 @@ fn divider(
                     true
                 }
                 ChromeIntent::ResizeSplit => {
-                    workspace.divider_drag = Some(id);
+                    if let Some(frame) = workspace.frame_mut() {
+                        frame.divider_drag = Some(id);
+                    }
                     cx.notify();
                     true
                 }
@@ -2152,7 +2728,9 @@ fn divider_drag(
                 }
             },
             move |workspace, _, _: DragEnd, _, cx| {
-                workspace.divider_drag = None;
+                if let Some(frame) = workspace.frame_mut() {
+                    frame.divider_drag = None;
+                }
                 cx.notify();
             },
         );
@@ -2187,6 +2765,7 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = bviz_ui_theme::theme(window, cx).colors;
         let panel = self.active_panel(cx);
+        let panel = panel.as_ref();
         self.tell_panes_where_they_stand(cx);
         self.aim_panel_drag(window, cx);
         // The room the chrome's bands leave, asked for as the room left rather
@@ -2196,49 +2775,67 @@ impl Render for Workspace {
         let panes = room_left()
             .child(self.body_element(&colors, cx))
             .child(measure_body(cx));
-        let playback = self.playback_bar(&panel, cx);
+        let playback = self.playback_bar(panel, cx);
+        let notes = self.note_strips(&colors, cx);
         let key_context = self.key_context(cx);
+        let title = self.window_title(panel, cx);
+        if title != self.titled {
+            window.set_window_title(&title);
+            self.titled.clone_from(&title);
+        }
         let chrome = Chrome::new(&self.window_focus)
-            .title(window_title(&self.app_name, &panel))
+            .title(title)
             .menu(self.documents_menu.clone())
-            .child(room_left().child(panes).children(playback));
-        let chrome = match panel.status(cx) {
+            .child(room_left().children(notes).child(panes).children(playback));
+        let chrome = match panel.and_then(|panel| panel.status(cx)) {
             Some(status) => chrome.status(status),
             None => chrome,
         };
         let body = div()
             .key_context(key_context)
             .size_full()
+            .relative()
+            .on_action(cx.listener(|workspace, _: &OpenFiles, window, cx| {
+                workspace.open_files(window, cx);
+            }))
             .on_action(cx.listener(|workspace, _: &NextTab, window, cx| {
-                workspace
-                    .active
-                    .update(cx, |pane, cx| pane.activate_next(window, cx));
+                if let Some(pane) = workspace.active_pane().cloned() {
+                    pane.update(cx, |pane, cx| pane.activate_next(window, cx));
+                }
             }))
             .on_action(cx.listener(|workspace, _: &PreviousTab, window, cx| {
-                workspace
-                    .active
-                    .update(cx, |pane, cx| pane.activate_previous(window, cx));
+                if let Some(pane) = workspace.active_pane().cloned() {
+                    pane.update(cx, |pane, cx| pane.activate_previous(window, cx));
+                }
             }))
             .on_action(cx.listener(|workspace, _: &ClosePanel, window, cx| {
-                workspace
-                    .active
-                    .update(cx, |pane, cx| pane.close_active(window, cx));
+                if let Some(pane) = workspace.active_pane().cloned() {
+                    pane.update(cx, |pane, cx| pane.close_active(window, cx));
+                }
+            }))
+            .on_action(cx.listener(|workspace, _: &CloseDocument, window, cx| {
+                if let Some(panel) = workspace.active_panel(cx) {
+                    workspace.close_document(panel.document(), window, cx);
+                }
             }))
             .on_action(cx.listener(|workspace, _: &DetachPanel, window, cx| {
                 workspace.detach_active_panel(window, cx);
             }))
             .on_action(cx.listener(|workspace, _: &ToggleMaximize, _, cx| {
-                let pane = workspace.active.clone();
-                workspace.toggle_maximize(&pane, cx);
+                if let Some(pane) = workspace.active_pane().cloned() {
+                    workspace.toggle_maximize(&pane, cx);
+                }
             }))
             .on_action(cx.listener(|workspace, _: &EvenSplit, _, cx| {
-                let pane = workspace.active.clone();
-                workspace.even_pane_split(&pane, cx);
+                if let Some(pane) = workspace.active_pane().cloned() {
+                    workspace.even_pane_split(&pane, cx);
+                }
             }))
             .on_action(
                 cx.listener(|workspace, _: &ShowKeysAndGestures, window, cx| {
-                    let panel = workspace.active_panel(cx).entity_id();
-                    workspace.toggle_keys_help(panel, window, cx);
+                    if let Some(panel) = workspace.active_panel(cx) {
+                        workspace.toggle_keys_help(panel.entity_id(), window, cx);
+                    }
                 }),
             )
             .on_action(cx.listener(|workspace, _: &ResetArrangement, window, cx| {
@@ -2272,16 +2869,30 @@ impl Render for Workspace {
                     menu.update(cx, |menu, cx| menu.toggle(window, cx));
                 }
             });
+        let app_actions = AppActions::of(cx).to_vec();
+        let body = (app_actions.iter()).fold(body, |body, action| action.listen(body, cx));
         let body = towards::<FocusLeft, MovePanelLeft, SplitLeft>(body, Side::Left, cx);
         let body = towards::<FocusRight, MovePanelRight, SplitRight>(body, Side::Right, cx);
         let body = towards::<FocusUp, MovePanelUp, SplitUp>(body, Side::Top, cx);
         let body = towards::<FocusDown, MovePanelDown, SplitDown>(body, Side::Bottom, cx);
         let dragging = self.panel_drag_overlay(&colors, window, cx);
+        let file_drop = self.file_drop_target(&colors, cx);
+        let dialog = self.dialogs.front().map(|asking| {
+            let sheet = div().child(asking.dialog.clone());
+            dialog::over_window(sheet, &asking.answer, window, &colors)
+        });
         let menu = self
-            .panel_menu
-            .as_ref()
+            .frame()
+            .and_then(|frame| frame.panel_menu.as_ref())
             .map(|open| deferred(open.menu.clone()).with_priority(MENU_LAYER));
-        body.child(chrome).children(dragging).children(menu)
+        let body = body
+            .child(chrome)
+            .children(file_drop)
+            .children(dragging)
+            .children(menu);
+        // A sibling of the body, so that no key or action of the workspace's
+        // reaches through the dialog to what it stands over.
+        div().size_full().child(body).children(dialog)
     }
 }
 
@@ -2302,22 +2913,45 @@ fn towards<Focus: Action, Move: Action, SplitOff: Action>(
     }))
 }
 
-/// What names the window: the application, then the document on show.
-fn window_title(app_name: &str, panel: &AnyPanel) -> String {
-    format!("{app_name} \u{2014} {}", panel.display_title())
+/// What a window framing no panel shows in its place: that the session holds
+/// no document, or, where `any_open` says it holds one, that a view of it is to
+/// be shown from the Documents menu; and `open`, where the app opens files.
+fn empty_state(colors: &ThemeColors, any_open: bool, open: Option<Button>) -> Div {
+    let heading = if any_open {
+        "No views shown"
+    } else {
+        "No documents open"
+    };
+    let shown = any_open.then_some("Show one from the Documents menu.");
+    let hint = |text: &'static str| div().text_sm().text_color(colors.text_muted).child(text);
+    let open = open.map(|open| {
+        div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap_1()
+            .child(open)
+            .child(hint(DROP_HINT))
+    });
+    div()
+        .size_full()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap_3()
+        .bg(colors.background)
+        .child(div().text_color(colors.text).child(heading))
+        .children(shown.map(hint))
+        .children(open)
 }
 
 /// How a window reads where another window's menu offers a move into it: what
 /// it shows, headed by its `place` among the session's open windows in the
 /// order they opened. Two windows can show panels that read exactly alike, so
-/// the place is what tells one row from another; the application's own name,
-/// which every window shares, is left off.
+/// the place is what tells one row from another.
 fn window_name(place: usize, shown: &str) -> SharedString {
     format!("{place}. {shown}").into()
-}
-
-fn set_window_title(app_name: &str, panel: &AnyPanel, window: &mut Window) {
-    window.set_window_title(&window_title(app_name, panel));
 }
 
 /// The context stack from the window's root to a panel scoped to `scope`,
@@ -2330,6 +2964,7 @@ fn stack_around(workspace: KeyContext, scope: KeyScope) -> Vec<KeyContext> {
 mod tests {
     use super::*;
     use crate::drop::Band;
+    use bviz_ui_components::keymap_probe::{dispatched, is};
     use gpui::{point, size};
 
     const EXTENT: f32 = 407.0;
@@ -2778,27 +3413,6 @@ mod tests {
         assert_eq!(put_back_shape(&[], "abc", &roles), "(ac|b)");
     }
 
-    /// A panel brought into a window joins the first pane holding a panel of its
-    /// role, and the active pane where none does.
-    #[test]
-    fn a_panel_brought_in_joins_the_first_pane_of_its_role() {
-        let panes = || {
-            [
-                ("graph", vec![Role::Canvas]),
-                ("trace", vec![Role::Timeline]),
-                ("flame", vec![Role::Timeline, Role::Analysis]),
-                ("stats", vec![Role::Analysis]),
-            ]
-        };
-        assert_eq!(pane_for_role(Role::Analysis, panes(), "active"), "flame");
-        assert_eq!(pane_for_role(Role::Timeline, panes(), "active"), "trace");
-        assert_eq!(pane_for_role(Role::Log, panes(), "active"), "active");
-        assert_eq!(
-            pane_for_role(Role::Canvas, Vec::<(&str, Vec<Role>)>::new(), "active"),
-            "active"
-        );
-    }
-
     /// A press is holding the panel nowhere until it is a drag of it, so what a
     /// drop would do is asked only of a gesture that has become one.
     #[test]
@@ -2877,6 +3491,71 @@ mod tests {
         let second = window_name(2, "build.profile.gz");
         assert_ne!(first, second);
         assert!(first.contains("build.profile.gz"), "{first}");
+    }
+
+    /// The context stack of a key pressed with focus in a panel of the window.
+    fn in_a_panel() -> [&'static str; 3] {
+        [KEY_CONTEXT.id(), bviz_ui_shell::KEY_CONTEXT.id(), "Panel"]
+    }
+
+    #[test]
+    fn a_window_closes_the_document_of_the_panel_with_focus_only_where_the_app_opens_files() {
+        assert!(is(
+            dispatched(bindings(true), "secondary-alt-w", &in_a_panel()),
+            CloseDocument
+        ));
+        assert!(dispatched(bindings(false), "secondary-alt-w", &in_a_panel()).is_none());
+    }
+
+    #[test]
+    fn a_note_told_again_stands_once_as_last_told() {
+        let note = |id, text: &'static str| Note {
+            id,
+            text: text.into(),
+        };
+        let mut notes = Vec::new();
+        add_note(&mut notes, note(0, "copied"));
+        add_note(&mut notes, note(1, "cannot open a"));
+        add_note(&mut notes, note(2, "copied"));
+        let standing: Vec<_> = notes.iter().map(|note| note.id).collect();
+        assert_eq!(standing, [1, 2]);
+    }
+
+    #[test]
+    fn a_window_binds_its_open_files_key_only_where_the_app_opens_files() {
+        assert!(is(
+            dispatched(bindings(true), "secondary-o", &in_a_panel()),
+            OpenFiles
+        ));
+        assert!(dispatched(bindings(false), "secondary-o", &in_a_panel()).is_none());
+    }
+
+    /// The path dialog is drawn outside the workspace's key context, so with
+    /// focus in its field the window's keys act on nothing it stands over.
+    #[test]
+    fn the_window_keys_reach_nothing_through_the_path_dialog() {
+        let in_the_dialog = [
+            bviz_ui_components::dialog::KEY_CONTEXT.id(),
+            bviz_ui_components::text_input::KEY_CONTEXT.id(),
+        ];
+        assert!(is(
+            dispatched(bindings(true), "secondary-w", &in_a_panel()),
+            ClosePanel
+        ));
+        for keys in [
+            "secondary-w",
+            "secondary-alt-w",
+            "secondary-o",
+            "ctrl-tab",
+            "secondary-shift-n",
+        ] {
+            let mut window_keys = bindings(true);
+            window_keys.extend(bviz_ui_shell::bindings());
+            assert!(
+                dispatched(window_keys, keys, &in_the_dialog).is_none(),
+                "{keys}"
+            );
+        }
     }
 
     /// The keys help of a panel the last frame's path to focus left out still

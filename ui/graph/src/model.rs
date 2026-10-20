@@ -26,7 +26,8 @@ use bviz_graph_layout::{Capabilities, Facets, Id, InputSet, Joint, MapLayout, Na
 use bviz_invocation::{ActionGraph, Chosen, Configurations, Revision, Session};
 use bviz_ui_components::{Pending, load_in_background};
 use bviz_ui_graph_args::GraphSource;
-use bviz_ui_playback::{Clock, DocumentClock};
+use bviz_ui_playback::Clock;
+use bviz_ui_session::{Reports, Sharing};
 use gpui::{App, Context, Entity, EntityId, EventEmitter, SharedString, Subscription, Task};
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
@@ -710,10 +711,52 @@ pub(crate) struct GraphModel {
     /// The matcher pool the lists over the graph — each panel's palette and
     /// each query bar's completion — take up in turn.
     matchers: fuzzy::Pool,
-    joined: Option<Joined>,
-    /// The playback clock of the document the graph is opened in, where that
-    /// document plays back.
-    clock: Option<DocumentClock>,
+    in_session: InSession,
+    /// The playback clock of the document the graph is opened in.
+    clock: Entity<Clock>,
+}
+
+/// Takes up what `session` reports of the graph `source` loaded, saying whether
+/// that changed anything a view of it shows, and the reveal of what was
+/// chosen of the critical path since, which the panel the graph's other
+/// views defer to, `deferred`, shows in place.
+fn take_up_from(
+    source: &mut Source,
+    deferred: Option<&Deferred>,
+    session: &Session,
+) -> (bool, Option<RevealRequested>) {
+    let Source::Loaded(loaded) = source else {
+        return (false, None);
+    };
+    let changed = loaded.report(session);
+    let reveal = loaded
+        .take_up_choice(session)
+        .zip(deferred)
+        .map(|(node, deferred)| RevealRequested {
+            panel: deferred.panel,
+            node,
+            reveal: Reveal::InPlace,
+        });
+    (changed, reveal)
+}
+
+/// Lands the map `placed` through `landing`, or fails `source` where the map
+/// could not be placed.
+fn land(
+    source: &mut Source,
+    placed: Result<Arc<MapLayout>, String>,
+    landing: Landing,
+) -> Option<Arc<MapLayout>> {
+    match placed {
+        Ok(map) => {
+            landing.land(Arc::clone(&map));
+            Some(map)
+        }
+        Err(err) => {
+            *source = Source::Failed(err);
+            None
+        }
+    }
 }
 
 /// How many nodes the document keeps named what leaves them out of the
@@ -730,11 +773,11 @@ struct ExclusionNaming {
     _work: Task<()>,
 }
 
-/// The invocation a graph is opened as part of.
-struct Joined {
+/// The graph's part in its document's session.
+struct InSession {
     /// Held for as long as the graph is: a session nothing holds is released,
     /// and tells its observers nothing further.
-    session: Entity<Session>,
+    reports: Reports,
     /// Takes up what the build reports whenever the session changes.
     _changed: Subscription,
 }
@@ -769,18 +812,19 @@ impl GraphModel {
     /// where it does not.
     pub(crate) fn reading(
         load: Pending<Read>,
-        session: Option<Entity<Session>>,
-        clock: Option<DocumentClock>,
+        session: Entity<Session>,
+        clock: Entity<Clock>,
+        sharing: Sharing,
         cx: &mut Context<Self>,
     ) -> Self {
         // The build's outcomes can land on either side of the graph, so they
         // are taken up as the graph lands and again whenever the session
         // changes.
-        let joined = session.map(|session| Joined {
+        let in_session = InSession {
             _changed: cx.observe(&session, |model, _, cx| model.take_up(cx)),
-            session,
-        });
-        let shares = joined.is_some();
+            reports: Reports::new(session, cx),
+        };
+        let shares = sharing == Sharing::Invocation;
         let work = load_in_background(
             cx,
             move || {
@@ -797,16 +841,15 @@ impl GraphModel {
                   cx| {
                 model.source = match result {
                     Ok((mut read, described, actions)) => {
-                        if let Some(joined) = &model.joined {
-                            read.loaded.pass_over_choice(joined.session.read(cx));
-                            joined.session.update(cx, |session, cx| {
-                                session.add_configurations(described);
-                                if let Some(actions) = actions {
-                                    session.report_action_graph(actions);
-                                }
-                                cx.notify();
-                            });
-                        }
+                        let reports = &model.in_session.reports;
+                        read.loaded.pass_over_choice(reports.session().read(cx));
+                        reports.report(cx, |session, by, cx| {
+                            session.add_configurations(described);
+                            if let Some(actions) = actions {
+                                session.report_action_graph(by, actions);
+                            }
+                            cx.notify();
+                        });
                         model._placing = Self::placing(read.placing, read.landing, cx);
                         Source::Loaded(read.loaded)
                     }
@@ -820,45 +863,19 @@ impl GraphModel {
                 model.replaced(cx);
             },
         );
-        Self {
-            joined,
-            clock,
-            ..Self::new(work)
-        }
+        Self::new(work, in_session, clock)
     }
 
     /// Takes up what the session's build reports of the loaded graph.
     fn take_up(&mut self, cx: &mut Context<Self>) {
-        let Some(session) = self.joined.as_ref().map(|joined| joined.session.clone()) else {
-            return;
-        };
-        let (changed, reveal) = self.take_up_from(session.read(cx));
+        let session = self.in_session.reports.session().read(cx);
+        let (changed, reveal) = take_up_from(&mut self.source, self.deferred.as_ref(), session);
         if changed {
             cx.notify();
         }
         if let Some(reveal) = reveal {
             cx.emit(reveal);
         }
-    }
-
-    /// Takes up what `session` reports of the loaded graph, saying whether
-    /// that changed anything a view of it shows, and the reveal of what was
-    /// chosen of the critical path since, which the panel the graph's other
-    /// views defer to shows in place.
-    fn take_up_from(&mut self, session: &Session) -> (bool, Option<RevealRequested>) {
-        let Source::Loaded(loaded) = &mut self.source else {
-            return (false, None);
-        };
-        let changed = loaded.report(session);
-        let reveal = loaded
-            .take_up_choice(session)
-            .zip(self.deferred.as_ref())
-            .map(|(node, deferred)| RevealRequested {
-                panel: deferred.panel,
-                node,
-                reveal: Reveal::InPlace,
-            });
-        (changed, reveal)
     }
 
     /// Announces that the graph has been replaced, whose nodes no selection
@@ -877,7 +894,7 @@ impl GraphModel {
         load_in_background(
             cx,
             move || placing.join(),
-            |model, placed, cx| match model.land(placed, landing) {
+            |model, placed, cx| match land(&mut model.source, placed, landing) {
                 Some(map) => {
                     derive_levels(map, cx);
                     cx.emit(MapPlaced);
@@ -890,24 +907,7 @@ impl GraphModel {
     /// Lands what placing the loaded graph's map came to: the map, through
     /// `landing`, or a failed read where placing failed. Returns the map where
     /// it landed.
-    fn land(
-        &mut self,
-        placed: Result<Arc<MapLayout>, String>,
-        landing: Landing,
-    ) -> Option<Arc<MapLayout>> {
-        match placed {
-            Ok(map) => {
-                landing.land(Arc::clone(&map));
-                Some(map)
-            }
-            Err(err) => {
-                self.source = Source::Failed(err);
-                None
-            }
-        }
-    }
-
-    fn new(work: Task<()>) -> Self {
+    fn new(work: Task<()>, in_session: InSession, clock: Entity<Clock>) -> Self {
         Self {
             source: Source::Loading,
             _work: work,
@@ -924,8 +924,8 @@ impl GraphModel {
             exclusions: Vec::with_capacity(NAMED_EXCLUSIONS),
             selected: Selected::default(),
             matchers: fuzzy::Pool::default(),
-            joined: None,
-            clock: None,
+            in_session,
+            clock,
         }
     }
 
@@ -1347,8 +1347,8 @@ impl GraphModel {
         }
     }
 
-    pub(crate) fn clock(&self) -> Option<&Entity<Clock>> {
-        self.clock.as_ref().map(DocumentClock::clock)
+    pub(crate) fn clock(&self) -> &Entity<Clock> {
+        &self.clock
     }
 
     pub(crate) fn source(&self) -> &Source {
@@ -1356,10 +1356,9 @@ impl GraphModel {
     }
 
     /// The configurations known of the invocation the graph is opened as part
-    /// of; `None` for a graph opened as part of none.
-    pub(crate) fn configurations<'a>(&self, cx: &'a App) -> Option<&'a Configurations> {
-        let joined = self.joined.as_ref()?;
-        Some(joined.session.read(cx).configurations())
+    /// of, or of the graph alone.
+    pub(crate) fn configurations<'a>(&self, cx: &'a App) -> &'a Configurations {
+        self.in_session.reports.session().read(cx).configurations()
     }
 
     pub(crate) fn loaded(&self) -> Option<&Loaded> {
@@ -1482,10 +1481,11 @@ mod tests {
     fn a_graph_takes_up_the_outcomes_its_session_holds_once_per_report_of_them() {
         let mut loaded = loaded();
         let mut session = Session::default();
+        let by = session.reporter();
         assert!(!loaded.report(&session));
         assert_eq!(loaded.statuses, Statuses::default());
 
-        session.report_outcomes(reporting(BuildOutcome::NotBuilt));
+        session.report_outcomes(by, reporting(BuildOutcome::NotBuilt));
         assert!(loaded.report(&session));
         assert_ne!(loaded.statuses, Statuses::default());
         assert!(!loaded.report(&session));
@@ -1493,9 +1493,9 @@ mod tests {
         session.add_configurations(Configurations::default());
         assert!(!loaded.report(&session));
 
-        session.report_outcomes(reporting(BuildOutcome::NotBuilt));
+        session.report_outcomes(by, reporting(BuildOutcome::NotBuilt));
         assert!(!loaded.report(&session));
-        session.report_outcomes(reporting(BuildOutcome::Built));
+        session.report_outcomes(by, reporting(BuildOutcome::Built));
         assert!(loaded.report(&session));
     }
 
@@ -1518,21 +1518,22 @@ mod tests {
     fn a_graph_takes_up_timings_and_outcomes_each_once_per_report_of_them() {
         let mut loaded = loaded();
         let mut session = Session::default();
+        let by = session.reporter();
         assert_eq!(loaded.times, Err(Untimed::NoProfile));
 
-        session.report_timings(timing("bazel-out/bin/app/bin"));
+        session.report_timings(by, timing("bazel-out/bin/app/bin"));
         assert!(loaded.report(&session));
         assert!(loaded.times.is_ok());
         assert!(!loaded.report(&session));
 
-        session.report_outcomes(reporting(BuildOutcome::NotBuilt));
+        session.report_outcomes(by, reporting(BuildOutcome::NotBuilt));
         let timed = loaded.timed;
         assert!(loaded.report(&session));
         assert_eq!(loaded.timed, timed);
         assert!(loaded.times.is_ok());
 
         let taken_up = loaded.taken_up;
-        session.report_timings(timing("bazel-out/bin/app/other"));
+        session.report_timings(by, timing("bazel-out/bin/app/other"));
         assert!(loaded.report(&session));
         assert_eq!(loaded.taken_up, taken_up);
         assert_eq!(loaded.times, Err(Untimed::Unplaced));
@@ -1544,22 +1545,23 @@ mod tests {
     fn a_graph_takes_up_the_attempts_its_session_holds_once_per_report_of_them() {
         let mut loaded = loaded();
         let mut session = Session::default();
+        let by = session.reporter();
         assert!(!loaded.report(&session));
         assert!(loaded.states().is_none());
 
         let mut attempts = Attempts::default();
         let attempt = crate::playback::tests::attempt(0, 10, &[]);
         attempts.record(Some("bazel-out/bin/app/bin"), None, attempt);
-        session.report_attempts(attempts);
+        session.report_attempts(by, attempts);
         assert!(loaded.report(&session));
         assert!(loaded.states().is_some());
         assert!(!loaded.report(&session));
 
-        session.report_timings(timing("bazel-out/bin/app/bin"));
+        session.report_timings(by, timing("bazel-out/bin/app/bin"));
         assert!(loaded.report(&session));
         assert!(loaded.states().is_some());
 
-        session.report_attempts(Attempts::default());
+        session.report_attempts(by, Attempts::default());
         assert!(loaded.report(&session));
         assert!(loaded.states().is_none());
     }
@@ -1570,14 +1572,15 @@ mod tests {
     fn a_graph_takes_up_the_critical_path_once_per_report_of_it() {
         let mut loaded = loaded();
         let mut session = Session::default();
+        let by = session.reporter();
         let step = |primary_output: &str| CriticalStep::new(Some(primary_output), None);
 
-        session.report_critical_path(vec![step("bazel-out/bin/app/bin")], Vec::new());
+        session.report_critical_path(by, vec![step("bazel-out/bin/app/bin")], Vec::new());
         assert!(loaded.report(&session));
         assert!(loaded.critical().any());
         assert!(!loaded.report(&session));
 
-        session.report_critical_path(vec![step("bazel-out/bin/app/other")], Vec::new());
+        session.report_critical_path(by, vec![step("bazel-out/bin/app/other")], Vec::new());
         assert!(loaded.report(&session));
         assert!(!loaded.critical().any());
     }
@@ -1588,8 +1591,10 @@ mod tests {
     fn a_graph_shows_each_chosen_critical_path_step_once() {
         let mut loaded = loaded();
         let mut session = Session::default();
+        let by = session.reporter();
         let step = |primary_output: &str| CriticalStep::new(Some(primary_output), None);
         session.report_critical_path(
+            by,
             vec![
                 step("bazel-out/bin/app/bin"),
                 step("bazel-out/bin/app/other"),
@@ -1618,8 +1623,10 @@ mod tests {
     fn a_graph_shows_a_chosen_nearly_critical_action() {
         let mut loaded = loaded();
         let mut session = Session::default();
+        let by = session.reporter();
         let action = |primary_output: &str| CriticalStep::new(Some(primary_output), None);
         session.report_critical_path(
+            by,
             vec![action("bazel-out/bin/app/other")],
             vec![action("bazel-out/bin/app/bin")],
         );
@@ -1636,8 +1643,9 @@ mod tests {
     #[test]
     fn a_graph_passes_over_a_step_chosen_before_it_landed() {
         let mut session = Session::default();
+        let by = session.reporter();
         let step = CriticalStep::new(Some("bazel-out/bin/app/bin"), None);
-        session.report_critical_path(vec![step], Vec::new());
+        session.report_critical_path(by, vec![step], Vec::new());
         assert!(session.choose(Some(Chosen::Step(0))));
         let mut loaded = loaded();
         loaded.pass_over_choice(&session);
@@ -1653,32 +1661,34 @@ mod tests {
     #[test]
     fn a_chosen_step_is_revealed_in_place_in_the_deferred_to_panel() {
         let mut session = Session::default();
+        let by = session.reporter();
         let step = CriticalStep::new(Some("bazel-out/bin/app/bin"), None);
-        session.report_critical_path(vec![step], Vec::new());
-        let mut model = GraphModel::new(Task::ready(()));
-        model.source = Source::Loaded(loaded());
+        session.report_critical_path(by, vec![step], Vec::new());
+        let mut source = Source::Loaded(loaded());
         let panel = EntityId::from(1);
-        model.deferred = Some(Deferred {
+        let deferred = Some(Deferred {
             panel,
             _released: Subscription::new(|| {}),
         });
-        assert!(model.take_up_from(&session).1.is_none());
+        let mut take_up = |session: &Session| take_up_from(&mut source, deferred.as_ref(), session);
+        assert!(take_up(&session).1.is_none());
 
         assert!(session.choose(Some(Chosen::Step(0))));
-        let (_, reveal) = model.take_up_from(&session);
+        let (_, reveal) = take_up(&session);
         let reveal = reveal.expect("a reveal");
         assert_eq!((reveal.panel, reveal.reveal), (panel, Reveal::InPlace));
-        assert_eq!(
-            Some(reveal.node),
-            model.loaded().and_then(|l| l.critical().step(0))
-        );
+        let Source::Loaded(loaded) = &source else {
+            panic!("a loaded graph");
+        };
+        assert_eq!(Some(reveal.node), loaded.critical().step(0));
     }
 
     /// Outcomes reported before the graph is read are the first it takes up.
     #[test]
     fn a_graph_takes_up_outcomes_reported_before_it_landed() {
         let mut session = Session::default();
-        session.report_outcomes(reporting(BuildOutcome::Built));
+        let by = session.reporter();
+        session.report_outcomes(by, reporting(BuildOutcome::Built));
         let mut loaded = loaded();
         assert!(loaded.report(&session));
         assert_ne!(loaded.statuses, Statuses::default());
@@ -1689,11 +1699,11 @@ mod tests {
     #[test]
     fn a_placement_that_panics_fails_the_read() {
         let (placement, landing) = Placement::pending();
-        let mut model = GraphModel::new(Task::ready(()));
+        let mut source = Source::Loading;
         let placed = Pending::<Arc<MapLayout>>::start(|| panic!("placing the map")).join();
 
-        assert!(model.land(placed, landing).is_none());
-        assert!(matches!(model.source(), Source::Failed(_)));
+        assert!(land(&mut source, placed, landing).is_none());
+        assert!(matches!(source, Source::Failed(_)));
         assert!(placement.placed().is_none());
     }
 

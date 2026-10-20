@@ -1,16 +1,26 @@
-//! The bviz window: a document per file named on the command line, the files
-//! of one Bazel invocation sharing one.
+//! The bviz window: a document per file named on the command line or to a
+//! running window, the files of one Bazel invocation sharing one.
 
+mod classify;
 mod group;
 
+use bviz_bazel_flags_args::BazelrcArgs;
 use bviz_cli::{Cli, Request, Source, Sources};
 use bviz_input::Input;
-use bviz_invocation::{InvocationId, Session};
-use bviz_ui_playback::DocumentClock;
-use bviz_ui_workspace::{Document, Member};
+use bviz_invocation::InvocationId;
+use bviz_ui_components::{ChoiceDialog, ChoiceDialogEvent, ChoiceItem};
+use bviz_ui_graph_args::{GraphArgs, GraphSource};
+use bviz_ui_session::Sharing;
+use bviz_ui_workspace::{
+    AppAction, Document, Documents, Joinable, Member, Panel, PathOpener, Shared, ViewKind,
+    Workspace, document_label,
+};
 use clap::Parser;
-use gpui::{App, AppContext, Entity, Window};
-use group::{File, Given, Kind, Opening};
+use classify::Classified;
+use gpui::{App, AppContext, ClipboardItem, Context, SharedString, WeakEntity, Window, actions};
+use group::{File, Given, Kind, Open, Opening, Placing};
+use std::iter;
+use std::path::PathBuf;
 
 #[global_allocator]
 static GLOBAL: bviz_alloc::MiMalloc = bviz_alloc::MiMalloc;
@@ -76,6 +86,15 @@ impl Load {
         }
     }
 
+    /// The load reading `input`, a file of `kind`.
+    fn of(kind: Kind, input: Input) -> Self {
+        match kind {
+            Kind::Profile => Self::Trace(input.into()),
+            Kind::Bep => Self::Console(input.into()),
+            Kind::ExecLog => Self::ExecLog(input.into()),
+        }
+    }
+
     fn start_all(sources: Sources) -> Given<Self> {
         let start_each = |files: Vec<Source>| files.into_iter().map(Self::start).collect();
         match sources {
@@ -90,77 +109,299 @@ impl Load {
         }
     }
 
-    /// The views of what this reads, sharing `session` with the other files of
-    /// its invocation where it is opened as one of them, and following `clock`
-    /// where its document plays back.
-    fn open(
-        self,
-        session: Option<&Entity<Session>>,
-        clock: Option<&DocumentClock>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Member {
-        let session = session.cloned();
+    /// The views of what this reads, sharing `shared` with the other files of
+    /// its document, which `sharing` says whether it is an invocation's.
+    fn open(self, shared: &Shared, sharing: Sharing, window: &mut Window, cx: &mut App) -> Member {
+        let (session, clock) = (shared.session().clone(), shared.clock().clone());
         match self {
-            Self::Graph(load) => bviz_ui_graph::open(load, session, clock.cloned(), window, cx),
-            Self::Trace(load) => bviz_ui_trace::open(load, session, clock.cloned(), window, cx),
-            Self::Console(load) => bviz_ui_console::open(load, session, clock.cloned(), window, cx),
-            Self::ExecLog(load) => bviz_ui_execlog::open(load, session, window, cx),
+            Self::Graph(load) => bviz_ui_graph::open(load, session, clock, sharing, window, cx),
+            Self::Trace(load) => bviz_ui_trace::open(load, session, clock, window, cx),
+            Self::Console(load) => bviz_ui_console::open(load, session, clock, window, cx),
+            Self::ExecLog(load) => bviz_ui_execlog::open(load, session, clock, sharing, window, cx),
         }
     }
 }
 
 /// The document `opening` is shown as: a file's own, or an invocation's files
-/// joined under a label naming it. A build's console replay plays back alone;
-/// a profile or a graph alone has nothing to play back with. Every invocation
-/// carries a clock; one whose files give it no time to play, such as an
-/// execution log with a graph, shows no playback bar.
+/// joined, each with a session and a clock of its own.
 fn open(opening: Opening<Load>, window: &mut Window, cx: &mut App) -> Document {
+    let shared = Shared::new(cx);
     match opening {
-        Opening::Alone(load @ Load::Console(_)) => {
-            Document::playing_on(DocumentClock::alone(cx), |clock| {
-                load.open(None, Some(clock), window, cx).into()
-            })
+        Opening::Alone { file, invocation } => {
+            let sharing = if invocation.is_some() {
+                Sharing::Invocation
+            } else {
+                Sharing::Alone
+            };
+            let member = file.open(&shared, sharing, window, cx);
+            Document::alone(member, invocation, shared)
         }
-        Opening::Alone(load) => load.open(None, None, window, cx).into(),
         Opening::Invocation {
             id,
             first,
             second,
             rest,
         } => {
-            let session = cx.new(|_| Session::default());
-            Document::playing_on(DocumentClock::joined(cx), |clock| {
-                let mut open = |load: Load| load.open(Some(&session), Some(clock), window, cx);
-                let first = open(first);
-                let second = open(second);
-                let mut others = Vec::with_capacity(rest.len());
-                for load in rest {
-                    others.push(open(load));
-                }
-                Document::join(group::label(&id).into(), first, second, others)
-            })
+            let others = iter::once(second).chain(rest);
+            let (first, others) = open_invocation_files(first, others, &shared, window, cx);
+            of_invocation(id, first, others, shared)
         }
     }
+}
+
+/// The views of `first` and `rest`, files of one invocation sharing `shared`.
+fn open_invocation_files(
+    first: Load,
+    rest: impl IntoIterator<Item = Load>,
+    shared: &Shared,
+    window: &mut Window,
+    cx: &mut App,
+) -> (Member, Vec<Member>) {
+    let mut open = |load: Load| load.open(shared, Sharing::Invocation, window, cx);
+    let first = open(first);
+    let rest = rest.into_iter();
+    let mut others = Vec::with_capacity(rest.size_hint().0);
+    for load in rest {
+        others.push(open(load));
+    }
+    (first, others)
+}
+
+/// Opens `paths`, named to the window `into` frames, once a background task
+/// has told what each holds.
+fn open_paths(paths: Vec<PathBuf>, into: WeakEntity<Workspace>, window: &mut Window, cx: &mut App) {
+    open_classified(move || classify::classify(paths), into, window, cx);
+}
+
+/// Opens what `classifying` tells of files named to the window `into` frames,
+/// running it on a background task.
+fn open_classified(
+    classifying: impl FnOnce() -> Classified + Send + 'static,
+    into: WeakEntity<Workspace>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let classifying = cx.background_executor().spawn(async move { classifying() });
+    window
+        .spawn(cx, async move |cx| {
+            let classified = classifying.await;
+            into.update_in(cx, |workspace, window, cx| {
+                place(classified, workspace, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+}
+
+/// What the dialog asking the kind of files says of why it asks.
+const ASK_KIND: &str = "bviz cannot tell from how these files begin what they hold. \
+     Choose what to read each as, or skip it.";
+
+/// Asks the user what each of `unknown` holds, and opens those given a kind as
+/// files named to the window `workspace` frames, after the files opened
+/// with them.
+fn ask_kinds(
+    unknown: Vec<PathBuf>,
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let choices = (classify::KINDS.iter())
+        .map(|&(kind, name)| (kind, SharedString::from(name)))
+        .collect();
+    let items = unknown.iter().map(|path| {
+        ChoiceItem::new(document_label(path)).detail(path.to_string_lossy().into_owned())
+    });
+    let dialog =
+        cx.new(|cx| ChoiceDialog::new("Open files as", ASK_KIND, "Open", choices, items, cx));
+    workspace.ask(
+        dialog,
+        move |_, event: &ChoiceDialogEvent<bviz_sniff::Kind>, window, cx| {
+            let ChoiceDialogEvent::Chosen(chosen) = event else {
+                return;
+            };
+            let chosen: Vec<(PathBuf, bviz_sniff::Kind)> = (unknown.iter().zip(chosen))
+                .filter_map(|(path, &kind)| Some((path.clone(), kind?)))
+                .collect();
+            if !chosen.is_empty() {
+                let into = cx.weak_entity();
+                open_classified(move || classify::classify_as(chosen), into, window, cx);
+            }
+        },
+        window,
+        cx,
+    );
+}
+
+/// Opens what `classified` names into `workspace`, as documents grouped as
+/// the command line groups them, tells the user of each file it cannot open,
+/// and asks what each file it cannot tell holds.
+fn place(
+    classified: Classified,
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let Classified {
+        graph,
+        further_graphs,
+        files,
+        unknown,
+        unreadable,
+    } = classified;
+    for (path, error) in unreadable {
+        workspace.tell(format!("Cannot open {}: {error}", path.display()), cx);
+    }
+    open_batch(graph, further_graphs, files, workspace, window, cx);
+    if !unknown.is_empty() {
+        ask_kinds(unknown, workspace, window, cx);
+    }
+}
+
+/// Opens `graph`, `further_graphs` and `files`, named together, into
+/// `workspace` as documents grouped as the command line groups them.
+fn open_batch(
+    graph: GraphArgs,
+    further_graphs: Vec<GraphSource>,
+    files: Vec<File<Input>>,
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let files = files
+        .into_iter()
+        .map(|file| File {
+            file: Load::of(file.kind, file.file),
+            kind: file.kind,
+            invocation: file.invocation,
+        })
+        .collect();
+    let Some(given) = given(graph.source(), files) else {
+        return;
+    };
+    let (first, rest) = {
+        let registry = Documents::global(cx).read(cx);
+        group::with_open(given, &|id| registry.by_invocation(id).map(standing))
+    };
+    let further = further_graphs.into_iter().map(|graph| {
+        Placing::New(Opening::Alone {
+            file: Load::Graph(graph.into()),
+            invocation: None,
+        })
+    });
+    let mut documents = Vec::with_capacity(1 + rest.len() + further.len());
+    for placing in iter::once(first).chain(rest).chain(further) {
+        match placing {
+            Placing::New(opening) => documents.push(open(opening, window, cx)),
+            Placing::Join {
+                document,
+                first,
+                rest,
+            } => {
+                let joining = move |shared: &Shared, window: &mut Window, cx: &mut App| {
+                    open_invocation_files(first, rest, shared, window, cx)
+                };
+                if let Err(joining) = workspace.join_document(&document, joining, window, cx) {
+                    let shared = Shared::new(cx);
+                    let (first, rest) = joining(&shared, window, cx);
+                    let id = document.invocation().clone();
+                    documents.push(of_invocation(id, first, rest, shared));
+                }
+            }
+        }
+    }
+    workspace.open_documents(documents, window, cx);
+}
+
+/// `joinable` as files given later find it.
+fn standing(joinable: Joinable) -> Open<Joinable> {
+    let mut held = Vec::with_capacity(Kind::ALL.len());
+    for kind in Kind::ALL {
+        if joinable.shows(lead_view(kind)) {
+            held.push(kind);
+        }
+    }
+    Open {
+        shows_graph: joinable.shows(bviz_ui_graph::LeadPanel::kind().view),
+        held,
+        document: joinable,
+    }
+}
+
+/// The view a file of `kind` shows first, by which an open document tells it
+/// holds one.
+fn lead_view(kind: Kind) -> ViewKind {
+    match kind {
+        Kind::Profile => bviz_ui_trace::LeadPanel::kind().view,
+        Kind::Bep => bviz_ui_console::LeadPanel::kind().view,
+        Kind::ExecLog => bviz_ui_execlog::LeadPanel::kind().view,
+    }
+}
+
+/// The document `first` and `rest` make, files of the invocation `id`.
+fn of_invocation(id: InvocationId, first: Member, rest: Vec<Member>, shared: Shared) -> Document {
+    let mut rest = rest.into_iter();
+    match rest.next() {
+        Some(second) => Document::join(id, first, second, rest.collect(), shared),
+        None => Document::alone(first, Some(id), shared),
+    }
+}
+
+/// What `graph` and `files` name, `None` where they name nothing.
+fn given(graph: Option<GraphSource>, files: Vec<File<Load>>) -> Option<Given<Load>> {
+    if let Some(graph) = graph {
+        return Some(Given::Graph {
+            graph: Load::Graph(graph.into()),
+            files,
+        });
+    }
+    let mut files = files.into_iter();
+    let first = files.next()?;
+    Some(Given::Files {
+        first,
+        rest: files.collect(),
+    })
+}
+
+actions!(
+    bviz_app,
+    [
+        /// Copy bazelrc snippet
+        CopyBazelrc,
+    ]
+);
+
+/// Puts the bazelrc `bviz bazelrc` prints with no flags on the clipboard,
+/// telling the user so in the window that asked.
+fn copy_bazelrc(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    cx.write_to_clipboard(ClipboardItem::new_string(BazelrcArgs::default().bazelrc()));
+    workspace.tell_briefly("Copied the bazelrc snippet to the clipboard.", cx);
 }
 
 fn main() {
     // SAFETY: the first statement of main, before any other thread starts.
     unsafe { bviz_alloc::retain_freed_memory_across_load() };
-    match Cli::parse().request().unwrap_or_else(|e| e.exit()) {
+    match Cli::parse().request() {
         Request::Bazelrc(args) => args.print(),
-        Request::Open(sources) => open_window(sources),
+        Request::Open(sources) => {
+            let (first, rest) = group::by_invocation(Load::start_all(sources));
+            let mut openings = Vec::with_capacity(1 + rest.len());
+            openings.push(first);
+            openings.extend(rest);
+            open_window(openings);
+        }
+        Request::Empty => open_window(Vec::new()),
     }
 }
 
-fn open_window(sources: Sources) {
-    let (first, rest) = group::by_invocation(Load::start_all(sources));
+fn open_window(openings: Vec<Opening<Load>>) {
     bviz_ui_workspace::run_panels(
         "bviz",
         bviz_ui_workspace::WINDOW_SIZE,
-        first,
-        rest,
+        openings,
         open,
+        Some(PathOpener::new(open_paths)),
+        vec![AppAction::new(CopyBazelrc, copy_bazelrc)],
         &[
             bviz_ui_graph::register_keys,
             bviz_ui_trace::register_keys,
@@ -174,7 +415,6 @@ fn open_window(sources: Sources) {
 mod tests {
     use super::*;
     use bviz_ui_components::LABEL_MAX_CHARS;
-    use bviz_ui_workspace::{Panel, ViewKind};
     use std::collections::HashMap;
 
     /// What the namespace of every action bviz declares begins with.
@@ -246,7 +486,7 @@ mod tests {
             .unwrap_or_else(std::env::temp_dir);
         let missing = dir.join("missing.profile.gz");
         let args = ["bviz".into(), "--profile".into(), missing.into_os_string()];
-        let request = Cli::try_parse_from(args).and_then(Cli::request);
+        let request = Cli::try_parse_from(args).map(Cli::request);
         let Ok(Request::Open(Sources::Files { first, .. })) = request else {
             panic!("a profile opens as a file");
         };

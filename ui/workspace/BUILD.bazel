@@ -13,6 +13,7 @@ rust_library(
         "//ui/trace:__pkg__",
     ],
     deps = [
+        "//invocation",
         "//ui/assets",
         "//ui/components",
         "//ui/playback",
@@ -20,6 +21,7 @@ rust_library(
         "//ui/theme",
         "@crates//:clap",
         "@crates//:gpui",
+        "@crates//:shlex",
     ],
 )
 

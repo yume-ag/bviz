@@ -1,4 +1,4 @@
-use crate::PanelGroup;
+use crate::{Layout, PanelGroup, Side};
 use gpui::Axis;
 
 /// What a view is to the window showing it, which decides the region of the
@@ -15,6 +15,34 @@ pub enum Role {
     Analysis,
 }
 
+impl Role {
+    /// The role whose region shares this one's column of the template.
+    fn column_partner(self) -> Self {
+        match self {
+            Role::Canvas => Role::Log,
+            Role::Log => Role::Canvas,
+            Role::Timeline => Role::Analysis,
+            Role::Analysis => Role::Timeline,
+        }
+    }
+
+    /// The side of its column partner's region this role's region takes.
+    fn side_of_partner(self) -> Side {
+        match self {
+            Role::Canvas | Role::Timeline => Side::Top,
+            Role::Log | Role::Analysis => Side::Bottom,
+        }
+    }
+
+    /// The side of the window this role's column takes.
+    fn column_side(self) -> Side {
+        match self {
+            Role::Canvas | Role::Log => Side::Left,
+            Role::Timeline | Role::Analysis => Side::Right,
+        }
+    }
+}
+
 /// The share of the window's width the column of the canvas over the log
 /// takes. One divider parts it from the timeline over the analysis, so
 /// dragging it resizes the timeline and the analysis together.
@@ -22,6 +50,81 @@ const LEFT_SHARE: f32 = 1.0 / 3.0;
 /// The share of its column's height the upper region takes, the canvas's on
 /// the left and the timeline's on the right.
 const TOP_SHARE: f32 = 2.0 / 3.0;
+
+/// The share the template lays the leading side of a split along `axis` out
+/// at.
+fn template_share(axis: Axis) -> f32 {
+    match axis {
+        Axis::Horizontal => LEFT_SHARE,
+        Axis::Vertical => TOP_SHARE,
+    }
+}
+
+/// Where a panel brought into a window already framing panes is laid out, so
+/// that it lands where the template lays out a window opening with it.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Placement<P> {
+    /// Among the tabs of a pane holding a panel of its role.
+    Tab(P),
+    /// In a pane of its own.
+    Apart(Apart<P>),
+}
+
+/// Where a pane of its own is put for a panel whose role no pane holds.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Apart<P> {
+    /// On `side` of `pane`, which holds a panel of the role sharing its column.
+    Beside { pane: P, side: Side },
+    /// Against `side` of the window, where its column holds no panel.
+    Edge(Side),
+}
+
+impl<P: Clone + PartialEq> Apart<P> {
+    /// Lays `new` out in `layout` here, parted from what it is put beside at
+    /// the template's share.
+    pub(crate) fn lay_out(self, layout: &mut Layout<P>, new: P) {
+        match self {
+            Apart::Beside { pane, side } => {
+                let placed = layout.insert_beside_at(&pane, side, new, template_share(side.axis()));
+                debug_assert!(placed, "a pane is placed beside one the layout holds");
+            }
+            Apart::Edge(side) => layout.insert_at_edge_at(side, new, template_share(side.axis())),
+        }
+    }
+}
+
+/// Where a panel of `role` is laid out among `panes`, each given with the
+/// roles of the panels it holds: among the tabs of the first holding its role;
+/// else beside the first holding the role sharing its column, above or below
+/// it as the template stacks them; else against the window's edge on its
+/// column's side.
+pub(crate) fn placement<P>(
+    role: Role,
+    panes: impl IntoIterator<Item = (P, impl IntoIterator<Item = Role>)>,
+) -> Placement<P> {
+    let partner = role.column_partner();
+    let mut beside = None;
+    for (pane, roles) in panes {
+        let (mut holds_role, mut holds_partner) = (false, false);
+        for held in roles {
+            holds_role |= held == role;
+            holds_partner |= held == partner;
+        }
+        if holds_role {
+            return Placement::Tab(pane);
+        }
+        if holds_partner && beside.is_none() {
+            beside = Some(pane);
+        }
+    }
+    Placement::Apart(match beside {
+        Some(pane) => Apart::Beside {
+            pane,
+            side: role.side_of_partner(),
+        },
+        None => Apart::Edge(role.column_side()),
+    })
+}
 
 /// Panels gathered by role into the regions a window opens with, each region's
 /// in the order pushed. Built around a leading panel and only ever grown, so it
@@ -304,5 +407,116 @@ mod tests {
     #[test]
     fn no_panels_gather_into_no_regions() {
         assert!(Regions::<char>::gather([]).is_none());
+    }
+
+    /// A panel brought in joins the first pane holding a panel of its role,
+    /// whatever else that pane holds.
+    #[test]
+    fn a_panel_brought_in_joins_the_first_pane_of_its_role() {
+        let panes = || {
+            [
+                ("graph", vec![Role::Canvas]),
+                ("trace", vec![Role::Timeline]),
+                ("flame", vec![Role::Timeline, Role::Analysis]),
+                ("stats", vec![Role::Analysis]),
+            ]
+        };
+        assert_eq!(placement(Role::Analysis, panes()), Placement::Tab("flame"));
+        assert_eq!(placement(Role::Timeline, panes()), Placement::Tab("trace"));
+    }
+
+    /// A panel whose role no pane holds goes beside the first pane holding the
+    /// role sharing its column, and against its column's edge where none does.
+    #[test]
+    fn a_panel_of_a_role_no_pane_holds_takes_its_place_in_the_template() {
+        let panes = || [("log", vec![Role::Log]), ("flame", vec![Role::Analysis])];
+        assert_eq!(
+            placement(Role::Canvas, panes()),
+            Placement::Apart(Apart::Beside {
+                pane: "log",
+                side: Side::Top
+            })
+        );
+        assert_eq!(
+            placement(Role::Timeline, panes()),
+            Placement::Apart(Apart::Beside {
+                pane: "flame",
+                side: Side::Top
+            })
+        );
+        let log = || [("log", vec![Role::Log])];
+        assert_eq!(
+            placement(Role::Analysis, log()),
+            Placement::Apart(Apart::Edge(Side::Right))
+        );
+        let none = Vec::<(&str, Vec<Role>)>::new();
+        assert_eq!(
+            placement(Role::Canvas, none),
+            Placement::Apart(Apart::Edge(Side::Left))
+        );
+    }
+
+    /// The layout of `panels` brought into a window one at a time, the window
+    /// opening with the first.
+    fn placed_one_by_one(panels: &[(Role, char)]) -> crate::Layout<String> {
+        let ((role, first), rest) = panels.split_first().expect("panels to place");
+        let mut layout = crate::Layout::Pane(first.to_string());
+        let mut roles = vec![(first.to_string(), *role)];
+        for &(role, panel) in rest {
+            let panes = layout.panes().map(|pane| {
+                let held = roles.iter().filter(|(holder, _)| holder == pane);
+                (
+                    pane.clone(),
+                    held.map(|(_, role)| *role).collect::<Vec<_>>(),
+                )
+            });
+            let Placement::Apart(apart) = placement(role, panes) else {
+                panic!("{panel} has a role no pane holds");
+            };
+            apart.lay_out(&mut layout, panel.to_string());
+            roles.push((panel.to_string(), role));
+        }
+        layout
+    }
+
+    /// Every ordering of every non-empty subset of `left`, each led by `order`.
+    fn orderings(
+        left: &[(Role, char)],
+        order: &mut Vec<(Role, char)>,
+        found: &mut Vec<Vec<(Role, char)>>,
+    ) {
+        if !order.is_empty() {
+            found.push(order.clone());
+        }
+        for (at, &panel) in left.iter().enumerate() {
+            let mut rest = left.to_vec();
+            rest.remove(at);
+            order.push(panel);
+            orderings(&rest, order, found);
+            order.pop();
+        }
+    }
+
+    /// A window that panels of every subset of the roles are brought into one
+    /// by one, in every order, is laid out as one opened with them all.
+    #[test]
+    fn panels_brought_in_one_by_one_are_laid_out_as_a_window_opened_with_them() {
+        let mut orders = Vec::new();
+        orderings(
+            &[CANVAS, TIMELINE, LOG, ANALYSIS],
+            &mut Vec::new(),
+            &mut orders,
+        );
+        for order in orders {
+            let opened = arranged(&order);
+            let placed = placed_one_by_one(&order);
+            assert_eq!(shape(&placed), shape(&opened), "{order:?}");
+            let opened = crate::testing::extents(&opened);
+            let opened: Vec<Extent> = opened
+                .iter()
+                .map(|(pane, width, height)| (pane.as_str(), *width, *height))
+                .collect();
+            assert_extents(&placed, &opened);
+        }
     }
 }

@@ -12,12 +12,16 @@ rust_binary(
     ],
     deps = [
         "//alloc",
+        "//bazel_flags/args",
         "//cli",
         "//invocation",
+        "//sniff",
+        "//ui/components",
         "//ui/console:console_lib",
         "//ui/execlog:execlog_lib",
         "//ui/graph:graph_lib",
-        "//ui/playback",
+        "//ui/graph/args",
+        "//ui/session",
         "//ui/trace:trace_lib",
         "//ui/workspace",
         "//util/input",
@@ -29,8 +33,9 @@ rust_binary(
 rust_test(
     name = "bviz_test",
     size = "small",
+    compile_data = ["//terminal:testdata/sample.bep"],
     crate = ":bviz",
-    deps = ["//ui/components"],
+    rustc_env = {"SAMPLE_BEP": "$(execpath //terminal:testdata/sample.bep)"},
 )
 
 third_party_notices(

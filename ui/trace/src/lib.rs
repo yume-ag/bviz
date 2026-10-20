@@ -47,10 +47,11 @@ use bviz_ui_components::{
     declare_scopes, find_key_bindings, legend_key_bindings, overlay_canvas, text_input, track_drag,
     zoom_key_bindings,
 };
-use bviz_ui_playback::{DocumentClock, unaligned_note};
+use bviz_ui_playback::{Clock, unaligned_note};
 use bviz_ui_trace_args::{PROFILE_LONG, TraceArgs, TraceSource};
 use bviz_ui_workspace::{
-    Member, Panel, PanelEvent, PanelKind, Role, Titled, ViewKind, ViewSpec, document_label,
+    Document, Member, Panel, PanelEvent, PanelKind, Role, Shared, Titled, ViewKind, ViewSpec,
+    document_label,
 };
 use clap::Parser;
 use gpui::{
@@ -699,7 +700,7 @@ impl Render for TracePanel {
                 let unaligned = self
                     .model
                     .read(cx)
-                    .unaligned()
+                    .unaligned(cx)
                     .then(|| unaligned_note("profile", &theme.colors));
                 let cut_off = self
                     .model
@@ -1791,15 +1792,17 @@ impl From<TraceSource> for Load {
     }
 }
 
+/// The view a profile opens with, by which a document is told to hold one.
+pub type LeadPanel = TracePanel;
+
 /// The views rendering the profile `load` reads: the timeline, the flame graph
 /// and stats that aggregate whatever tracks it has selected, and the critical
-/// path. Where it is opened as part of an invocation's `session`,
-/// it names what the profile holds an id of by what the session knows, and
-/// plays on `clock` where its document plays back.
+/// path. It names what the profile holds an id of by what its document's
+/// `session` knows, and plays on `clock`.
 pub fn open(
     load: impl Into<Load>,
-    session: Option<Entity<Session>>,
-    clock: Option<DocumentClock>,
+    session: Entity<Session>,
+    clock: Entity<Clock>,
     _window: &mut Window,
     cx: &mut App,
 ) -> Member {
@@ -1808,7 +1811,7 @@ pub fn open(
     let model = cx.new(|cx| TraceModel::reading(load.profile, session, clock, cx));
     let timeline = ViewSpec::new({
         let model = model.clone();
-        move |cx| cx.new(|cx| TracePanel::new(model.clone(), cx))
+        move |cx| cx.new(|cx| LeadPanel::new(model.clone(), cx))
     });
     let flame = ViewSpec::new({
         let model = model.clone();
@@ -1839,7 +1842,12 @@ pub fn run() {
         bviz_ui_workspace::WINDOW_SIZE,
         |cli: Cli| cli.trace.sources().map(Load::from),
         &format!("--{PROFILE_LONG}"),
-        |load, window, cx| open(load, None, None, window, cx).into(),
+        |load, window, cx| {
+            let shared = Shared::new(cx);
+            let (session, clock) = (shared.session().clone(), shared.clock().clone());
+            let member = open(load, session, clock, window, cx);
+            Document::alone(member, None, shared)
+        },
         &[register_keys],
     );
 }

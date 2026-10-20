@@ -19,8 +19,8 @@ use bviz_input::Input;
 use bviz_invocation::{InvocationId, Session};
 use bviz_ui_components::Pending;
 use bviz_ui_console_args::{BEP_LONG, ConsoleArgs, ConsoleSource};
-use bviz_ui_playback::DocumentClock;
-use bviz_ui_workspace::{Document, Member, ViewSpec, document_label};
+use bviz_ui_playback::Clock;
+use bviz_ui_workspace::{Document, Member, Shared, ViewSpec, document_label};
 use clap::Parser;
 use gpui::{App, Entity, SharedString, Window, prelude::*};
 use std::path::{Path, PathBuf};
@@ -59,21 +59,23 @@ impl From<ConsoleSource> for Load {
     }
 }
 
+/// The view a build event stream opens with, by which a document is told to hold one.
+pub type LeadPanel = ConsolePanel;
+
 /// The views replaying the build `load` reads, which tells `session` what its
-/// stream knows of the invocation where it is opened as part of one, and plays
-/// on `clock` where its document plays back.
+/// stream knows of its document's invocation, and plays on `clock`.
 pub fn open(
     load: impl Into<Load>,
-    session: Option<Entity<Session>>,
-    clock: Option<DocumentClock>,
+    session: Entity<Session>,
+    clock: Entity<Clock>,
     _window: &mut Window,
     cx: &mut App,
 ) -> Member {
     let load = load.into();
     let label = load.title;
     let model = cx.new(|cx| ConsoleModel::reading(load.stream, session, clock, cx));
-    let console = ViewSpec::new(move |cx| cx.new(|cx| ConsolePanel::new(model.clone(), cx)));
-    Member::new(label, console, Vec::new())
+    let console = ViewSpec::new(move |cx| cx.new(|cx| LeadPanel::new(model.clone(), cx)));
+    Member::new(label, console, Vec::new()).playing_alone()
 }
 
 /// Replays the console output of a Bazel build. Each file given opens a replay
@@ -103,9 +105,15 @@ pub fn run() {
         |cli: Cli| cli.sources().map(Load::from),
         &format!("--{BEP_LONG} or a file argument"),
         |load, window, cx| {
-            Document::playing_on(DocumentClock::alone(cx), |clock| {
-                open(load, None, Some(clock.clone()), window, cx).into()
-            })
+            let shared = Shared::new(cx);
+            let member = open(
+                load,
+                shared.session().clone(),
+                shared.clock().clone(),
+                window,
+                cx,
+            );
+            Document::alone(member, None, shared)
         },
         &[console::register_keys],
     );

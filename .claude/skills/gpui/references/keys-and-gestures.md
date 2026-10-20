@@ -70,10 +70,13 @@ follows every rule below.
 | Focus the query field | `q` | — |
 | History | Alt-← / Alt-→ ("Go back" / "Go forward") | mouse back / forward button |
 | List | ↑ / ↓ move the aim, Enter acts on the aimed row where moving does not, Esc closes the list or clears its choice | a click acts on the row |
+| Dialog | Enter answers, Esc cancels; in a choice dialog ↑ / ↓ aim at an item and ← / → step through its choices | a click on a button or a choice |
 | Escape | closes the topmost transient (completion, field, palette, menu, popup card), else clears the selection, else puts away a lens such as the why paths | — |
-| Close | secondary-W the panel, secondary-Shift-W the window | — |
+| Close | secondary-W the panel, secondary-Alt-W its document where the app opens files, secondary-Shift-W the window | — |
 
 Secondary is Ctrl on Linux and Windows and ⌘ on macOS; a gesture's `Held::SECONDARY` also
 accepts Control on macOS. A transient takes Escape in a key context of its own while open, and
-hands focus back to where it came from as it closes. A menu lets a modified keystroke through
-to the panel.
+hands focus back to where it came from as it closes. A window's dialog instead keeps focus
+while it stands, whatever changes beneath it, and once answered hands focus to the dialog
+waiting next, else to the active panel (`Workspace::content_focus`). A menu lets a modified
+keystroke through to the panel.

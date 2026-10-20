@@ -46,6 +46,7 @@ rust_library(
         ":query_fields",
     ],
     crate_name = "bviz_sniff",
+    visibility = ["//bviz:__pkg__"],
     deps = [
         "@crates//:flate2",
         "@crates//:prost",

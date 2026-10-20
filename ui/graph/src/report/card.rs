@@ -77,7 +77,7 @@ impl<'a> Reported<'a> {
     fn of(view: &GraphPanel, cx: &'a App) -> Option<Self> {
         let model = view.model.read(cx);
         let loaded = model.loaded()?;
-        let configurations = model.configurations(cx)?;
+        let configurations = model.configurations(cx);
         (!loaded.reported().is_empty()).then_some(Reported {
             loaded,
             configurations,

@@ -1021,10 +1021,15 @@ impl Render for FlamePanel {
 }
 
 impl FlamePanel {
-    /// The graph itself, or the spinner standing in for it while the first
-    /// aggregate for the loaded document is still being built.
+    /// The graph itself, or what stands in for it: the profile's placeholder
+    /// until it has loaded, and a spinner while the first aggregate for it is
+    /// still being built.
     fn graph_body(&mut self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
-        if self.model.read(cx).aggregates().is_none() {
+        let model = self.model.read(cx);
+        if let Some(placeholder) = model.source().placeholder(&palette.colors) {
+            return placeholder.into_any_element();
+        }
+        if model.aggregates().is_none() {
             return centered_spinner("Building flame graph…", &palette.colors).into_any_element();
         }
         let entity = cx.entity();

@@ -1,11 +1,17 @@
-use crate::panel::FileName;
-use crate::{AnyPanel, Panel, Regions, Role, ViewKind, Workspace};
+use crate::panel::{FileName, Members, numbered};
+use crate::{
+    AnyPanel, Document, DocumentOf, Member, Panel, Regions, Role, Shared, ViewKind, Workspace,
+    invocation_label,
+};
+use bviz_invocation::InvocationId;
 use bviz_ui_playback::Clock;
 use gpui::{
-    App, AppContext, Context, Entity, EntityId, EventEmitter, Global, SharedString, Subscription,
-    WeakEntity, Window,
+    App, AppContext, Context, ElementId, Entity, EntityId, EventEmitter, Global, SharedString,
+    Subscription, WeakEntity, Window,
 };
+use std::collections::HashMap;
 use std::iter;
+use std::num::NonZeroUsize;
 use std::rc::Rc;
 
 /// Identity of a document the session holds open. Two readings of one file are
@@ -14,6 +20,11 @@ use std::rc::Rc;
 pub struct DocumentId(u64);
 
 impl DocumentId {
+    /// The id of the element `name` names for this document.
+    pub(crate) fn element_id(self, name: &'static str) -> ElementId {
+        ElementId::NamedInteger(name.into(), self.0)
+    }
+
     /// An identity for a test that stands in for the registry minting them.
     #[cfg(test)]
     pub(crate) const fn for_test(id: u64) -> Self {
@@ -101,18 +112,23 @@ pub struct OpenDocument {
 
 #[cfg(test)]
 impl OpenDocument {
-    /// `document` as a registry lists it while no panel shows a view of it.
-    pub(crate) fn unshown(document: Registration) -> Self {
-        Registered {
-            id: DocumentId::for_test(0),
-            name: document.name,
-            members: iter::once(&document.first)
-                .chain(&document.rest)
-                .map(Held::registered)
-                .collect(),
-            clock: document.clock,
+    /// `documents` as a registry opening them in their order lists them while
+    /// no panel shows a view of any.
+    pub(crate) fn unshown<S>(documents: impl IntoIterator<Item = DocumentOf<S>>) -> Vec<Self> {
+        let mut registry = Registry::new();
+        let mut listed = Vec::new();
+        for document in documents {
+            let document = registry.numbered(document);
+            let registered = Registered {
+                id: DocumentId::for_test(0),
+                name: document.name,
+                first: document.first.registered(),
+                rest: document.rest.iter().map(Held::registered).collect(),
+                shared: document.shared,
+            };
+            listed.push(registered.listed(&mut |_| ViewState::Closed));
         }
-        .listed(&mut |_| ViewState::Closed)
+        listed
     }
 }
 
@@ -143,10 +159,20 @@ pub struct OpenView {
 /// The documents a session holds open and the views each can show, so a view
 /// that closed with its panel can be shown again over the document it was
 /// showing. One registry serves the whole application: a document outlives the
-/// panels showing it, and its views may be asked for from any window.
-pub struct Documents {
+/// panels showing it, and its views may be asked for from any window. Each
+/// document keeps what its files share for as long as it is open.
+pub type Documents = Registry<Shared>;
+
+/// [`Documents`] keeping `S` for what each document's files share, which its
+/// bookkeeping is tested over without a running application.
+pub struct Registry<S> {
     next: u64,
-    documents: Vec<Registered>,
+    documents: Vec<Registered<S>>,
+    /// The numbers of the labels of files.
+    files: Numbering,
+    /// The numbers of the labels joined documents are listed under, which
+    /// count apart from those of files.
+    joined: Numbering,
     /// The session's open windows, in the order they opened.
     windows: Vec<OpenWindow>,
 }
@@ -154,13 +180,44 @@ pub struct Documents {
 /// A window the session holds open, named by the workspace framing it. A
 /// workspace belongs to the window it is the root view of, so it is named
 /// weakly here rather than held alive by the registry. The subscription drops
-/// this record when that workspace is released, and is the one writer that
-/// drops it, so no closed window is offered as a place to show a view or to
-/// move a panel to.
+/// this record when that workspace is released, so no closed window is offered
+/// as a place to show a view or to move a panel to; a window closing as it
+/// empties drops it ahead of that.
 struct OpenWindow {
     workspace: WeakEntity<Workspace>,
     _closed: Subscription,
 }
+
+/// An open document of an invocation, as a file of that invocation joining it
+/// finds it.
+pub struct Joinable {
+    document: DocumentId,
+    /// The invocation the document was found by.
+    invocation: InvocationId,
+    /// The kinds of the views its files show, in their order.
+    views: Vec<ViewKind>,
+}
+
+impl Joinable {
+    pub fn document(&self) -> DocumentId {
+        self.document
+    }
+
+    pub fn invocation(&self) -> &InvocationId {
+        &self.invocation
+    }
+
+    /// Whether a file of the document shows a view of `kind`.
+    pub fn shows(&self, kind: ViewKind) -> bool {
+        self.views.contains(&kind)
+    }
+}
+
+/// That the session has closed the document named, whose panels have left
+/// every window and whose views can be shown no more.
+pub struct Closed(pub DocumentId);
+
+impl EventEmitter<Closed> for Documents {}
 
 /// That the session has opened or closed a window, so where the panels of the
 /// windows still open can be moved to has changed.
@@ -168,14 +225,83 @@ pub(crate) struct WindowsChanged;
 
 impl EventEmitter<WindowsChanged> for Documents {}
 
-/// A document as a window opens it, its labels numbered among those the window
-/// opens with.
-pub(crate) struct Registration {
-    /// What the document is listed under, its number included.
-    pub(crate) name: SharedString,
+/// The numbers telling apart what bears one label: its first bearer goes
+/// unnumbered, and each later one takes the number after the last one taken.
+/// A label's count only rises, so no number is borne twice in a session, and
+/// none changes once taken.
+#[derive(Default)]
+struct Numbering {
+    /// By label borne so far, the number its latest bearer took, the unnumbered
+    /// first counting as one.
+    latest: HashMap<SharedString, NonZeroUsize>,
+}
+
+impl Numbering {
+    /// The number of the next bearer of `label`, `None` for its first.
+    fn take(&mut self, label: &SharedString) -> Option<NonZeroUsize> {
+        match self.latest.get_mut(label) {
+            Some(latest) => {
+                *latest = latest.saturating_add(1);
+                Some(*latest)
+            }
+            None => {
+                self.latest.insert(label.clone(), NonZeroUsize::MIN);
+                None
+            }
+        }
+    }
+}
+
+/// A document as the registry opens it, its labels numbered.
+pub(crate) struct Registration<S> {
+    pub(crate) name: Name,
     pub(crate) first: Held<ViewSpec>,
     pub(crate) rest: Vec<Held<ViewSpec>>,
-    pub(crate) clock: Option<Entity<Clock>>,
+    pub(crate) shared: S,
+}
+
+/// What a document is listed under, and the invocation it is of.
+pub(crate) enum Name {
+    /// A file opened by itself, listed under its numbered label.
+    File {
+        invocation: Option<InvocationId>,
+        /// Whether the file has time to play back by itself.
+        plays: bool,
+    },
+    /// Files of the invocation `id`, listed under its label.
+    Invocation {
+        id: InvocationId,
+        /// The invocation's label, its number included.
+        label: SharedString,
+    },
+}
+
+impl Name {
+    /// What a document of this name whose first file is `first` is listed
+    /// under.
+    fn listed_as(&self, first: &FileName) -> SharedString {
+        match self {
+            Self::File { .. } => first.numbered(),
+            Self::Invocation { label, .. } => label.clone(),
+        }
+    }
+
+    fn invocation(&self) -> Option<&InvocationId> {
+        match self {
+            Self::File { invocation, .. } => invocation.as_ref(),
+            Self::Invocation { id, .. } => Some(id),
+        }
+    }
+
+    /// Whether the document plays back: every invocation's does, its files'
+    /// times standing where the wall clock puts them, and a file's alone where
+    /// it has time to play by itself.
+    fn plays(&self) -> bool {
+        match self {
+            Self::File { plays, .. } => *plays,
+            Self::Invocation { .. } => true,
+        }
+    }
 }
 
 /// The views of one file of a document, in the order its viewer gave them.
@@ -219,20 +345,72 @@ impl Held<View> {
     }
 }
 
-struct Registered {
+struct Registered<S> {
     id: DocumentId,
-    name: SharedString,
-    members: Vec<Held<View>>,
-    clock: Option<Entity<Clock>>,
+    name: Name,
+    first: Held<View>,
+    rest: Vec<Held<View>>,
+    shared: S,
 }
 
-impl Registered {
+impl<S> Registered<S> {
+    /// The document's files, in the order they joined it, which is the order
+    /// a [`ViewId`] counts them in.
+    fn members(&self) -> impl Iterator<Item = &Held<View>> {
+        iter::once(&self.first).chain(&self.rest)
+    }
+
+    fn member(&self, at: usize) -> Option<&Held<View>> {
+        match at.checked_sub(1) {
+            None => Some(&self.first),
+            Some(at) => self.rest.get(at),
+        }
+    }
+
+    fn member_mut(&mut self, at: usize) -> Option<&mut Held<View>> {
+        match at.checked_sub(1) {
+            None => Some(&mut self.first),
+            Some(at) => self.rest.get_mut(at),
+        }
+    }
+
+    fn listed_as(&self) -> SharedString {
+        self.name.listed_as(&self.first.file)
+    }
+
+    /// Appends `members` to the document's files, numbered by `files` after
+    /// every file opened before them, and lists a document that was a file's
+    /// alone under the label of `invocation`, numbered by `joined`, from here
+    /// on. The place of the first file appended among the document's.
+    fn append(
+        &mut self,
+        invocation: &InvocationId,
+        members: impl IntoIterator<Item = Member>,
+        files: &mut Numbering,
+        joined: &mut Numbering,
+    ) -> usize {
+        let start = 1 + self.rest.len();
+        let held = members
+            .into_iter()
+            .map(|member| numbered_file(files, member));
+        self.rest.extend(held.map(|held| held.registered()));
+        if let Name::File { .. } = self.name {
+            let label = invocation_label(invocation);
+            let ordinal = joined.take(&label);
+            self.name = Name::Invocation {
+                id: invocation.clone(),
+                label: numbered(label, ordinal),
+            };
+        }
+        start
+    }
+
     /// The document as a reader choosing among what is open is given it,
     /// `state` saying what each view has on screen. The views are in the order
     /// the document's files give them.
     fn listed(&self, state: &mut impl FnMut(&View) -> ViewState) -> OpenDocument {
-        let mut views = Vec::with_capacity(self.members.iter().map(Held::view_count).sum());
-        for (member, held) in self.members.iter().enumerate() {
+        let mut views = Vec::with_capacity(self.members().map(Held::view_count).sum());
+        for (member, held) in self.members().enumerate() {
             views.extend(held.views().map(|view| OpenView {
                 id: ViewId {
                     member,
@@ -244,20 +422,20 @@ impl Registered {
         }
         OpenDocument {
             id: self.id,
-            label: self.name.clone(),
+            label: self.listed_as(),
             views,
         }
     }
 
     /// The view `id` names, and the file bringing it.
     fn view(&self, id: ViewId) -> Option<(&Held<View>, &View)> {
-        let member = self.members.get(id.member)?;
+        let member = self.member(id.member)?;
         let view = member.views().find(|held| held.kind == id.kind)?;
         Some((member, view))
     }
 
     fn view_mut(&mut self, id: ViewId) -> Option<&mut View> {
-        let member = self.members.get_mut(id.member)?;
+        let member = self.member_mut(id.member)?;
         member.views_mut().find(|held| held.kind == id.kind)
     }
 }
@@ -293,40 +471,96 @@ impl Documents {
         }
         cx.global::<GlobalDocuments>().0.clone()
     }
+}
 
+impl<S> Registry<S> {
     fn new() -> Self {
         Self {
             next: 0,
             documents: Vec::new(),
+            files: Numbering::default(),
+            joined: Numbering::default(),
             windows: Vec::new(),
         }
     }
 
+    /// `document` with its labels numbered after those of every document
+    /// opened before it. A file opened by itself is listed under its numbered
+    /// label, which is how its panels' titles name it.
+    fn numbered(&mut self, document: DocumentOf<S>) -> Registration<S> {
+        let DocumentOf { members, shared } = document;
+        let files = &mut self.files;
+        let mut held = |member: Member| numbered_file(files, member);
+        match members {
+            Members::Alone { member, invocation } => {
+                let plays = member.plays_alone;
+                let first = held(member);
+                Registration {
+                    name: Name::File { invocation, plays },
+                    first,
+                    rest: Vec::new(),
+                    shared,
+                }
+            }
+            Members::Joined {
+                invocation,
+                first,
+                second,
+                rest,
+            } => {
+                let first = held(first);
+                let mut others = Vec::with_capacity(1 + rest.len());
+                others.extend(iter::once(second).chain(rest).map(held));
+                let label = invocation_label(&invocation);
+                let ordinal = self.joined.take(&label);
+                Registration {
+                    name: Name::Invocation {
+                        id: invocation,
+                        label: numbered(label, ordinal),
+                    },
+                    first,
+                    rest: others,
+                    shared,
+                }
+            }
+        }
+    }
+}
+
+impl Documents {
     /// Registers `document`, and mints a panel for each view of each of its
     /// files, in the order the files and their views are given. The registry
-    /// keeps what it takes to mint them again.
+    /// keeps what it takes to mint them again. The clock of a document of
+    /// several files is joined, its readers placing their times anew.
     pub(crate) fn open(
         &mut self,
-        document: Registration,
+        document: Document,
         cx: &mut Context<Self>,
     ) -> (AnyPanel, Vec<AnyPanel>) {
         let Registration {
             name,
             first,
             rest,
-            clock,
-        } = document;
-        let (id, (first, rest)) = self.register(name, clock, |id| {
-            let mut members = Vec::with_capacity(1 + rest.len());
+            shared,
+        } = self.numbered(document);
+        if let Name::Invocation { .. } = name {
+            shared.clock().update(cx, |clock, cx| clock.join(cx));
+        }
+        let (id, (first, rest)) = self.register(name, shared, |id| {
             let mut minted = |member: Held<ViewSpec>| {
                 let held = member.registered();
                 let panels = held.mint(id, cx);
-                members.push(held);
-                panels
+                (held, panels)
             };
-            let first = minted(first);
-            let rest: Vec<(AnyPanel, Vec<AnyPanel>)> = rest.into_iter().map(minted).collect();
-            (members, (first, rest))
+            let (first, first_panels) = minted(first);
+            let mut others = Vec::with_capacity(rest.len());
+            let mut others_panels = Vec::with_capacity(rest.len());
+            for member in rest {
+                let (held, panels) = minted(member);
+                others.push(held);
+                others_panels.push(panels);
+            }
+            ((first, others), (first_panels, others_panels))
         });
         for (member, (first, more)) in iter::once(&first).chain(&rest).enumerate() {
             for panel in iter::once(first).chain(more) {
@@ -344,45 +578,80 @@ impl Documents {
         (lead, following)
     }
 
-    /// Shows `view` of `document` in `workspace`: the panel already showing it,
-    /// moved here out of whatever window holds it, or a fresh panel where none
-    /// is open. A reopened view comes back as its document stands, not as its
-    /// last panel had been scrolled or zoomed.
-    pub fn show(
+    /// Joins the files `open` makes to the document `to` names, sharing what
+    /// that document's files share, and mints a panel for each of their views,
+    /// in the order the files and their views are given. The document's clock
+    /// is joined before `open` runs, so the readers it opens place their times
+    /// on the clock of an invocation. `Err` hands `open` back unrun where the
+    /// document has closed, for the caller to open the files otherwise.
+    pub fn join<F>(
         &mut self,
-        document: DocumentId,
-        view: ViewId,
-        workspace: &Entity<Workspace>,
+        to: &Joinable,
+        open: F,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
-        let Some(held) = self.registered(document) else {
-            return;
+    ) -> Result<Vec<AnyPanel>, F>
+    where
+        F: FnOnce(&Shared, &mut Window, &mut App) -> (Member, Vec<Member>),
+    {
+        let Some(at) = self.position(to.document) else {
+            return Err(open);
         };
-        let Some((member, found)) = held.view(view) else {
-            return;
-        };
-        let file = member.file.clone();
-        let live = found.live.as_ref().map(|live| live.panel);
-        let mint = found.mint.clone();
-        match live {
-            Some(panel) => self.reveal(panel, workspace, window, cx),
-            None => {
-                let panel = mint(document, &file, cx);
-                self.watch(document, view, &panel, cx);
-                workspace.update(cx, |workspace, cx| {
-                    workspace.add_panel(panel, window, cx);
-                });
-                cx.notify();
-            }
+        let shared = self.documents[at].shared.clone();
+        shared.clock().update(cx, |clock, cx| clock.join(cx));
+        let (first, rest) = open(&shared, window, cx);
+        let registered = &mut self.documents[at];
+        let start = registered.append(
+            &to.invocation,
+            iter::once(first).chain(rest),
+            &mut self.files,
+            &mut self.joined,
+        );
+        let joined = || registered.members().enumerate().skip(start);
+        let mut minted = Vec::with_capacity(joined().map(|(_, held)| held.view_count()).sum());
+        for (member, held) in joined() {
+            let (first, more) = held.mint(to.document, cx);
+            minted.extend(iter::once(first).chain(more).map(|panel| (member, panel)));
+        }
+        for (member, panel) in &minted {
+            let kind = panel.view_kind();
+            let view = ViewId {
+                member: *member,
+                kind,
+            };
+            self.watch(to.document, view, panel, cx);
+        }
+        cx.notify();
+        Ok(minted.into_iter().map(|(_, panel)| panel).collect())
+    }
+
+    /// Forgets `document`, which [`close`] calls for once no window holds a
+    /// panel showing it.
+    fn forget(&mut self, document: DocumentId, cx: &mut Context<Self>) {
+        if self.remove(document).is_some() {
+            cx.emit(Closed(document));
+            cx.notify();
         }
     }
 
-    /// Which panel shows `view` of `document`, if one does.
-    #[cfg(test)]
-    fn panel(&self, document: DocumentId, view: ViewId) -> Option<EntityId> {
-        let (_, view) = self.registered(document)?.view(view)?;
-        view.live.as_ref().map(|live| live.panel)
+    /// The panel to show `view` of `document` with: the one already showing
+    /// it, or a fresh one minted where none is open. A reopened view comes back
+    /// as its document stands, not as its last panel had been scrolled or
+    /// zoomed.
+    fn showing(
+        &mut self,
+        document: DocumentId,
+        view: ViewId,
+        cx: &mut Context<Self>,
+    ) -> Option<Showing> {
+        let (member, found) = self.registered(document)?.view(view)?;
+        if let Some(live) = &found.live {
+            return Some(Showing::Open(live.panel));
+        }
+        let panel = (found.mint.clone())(document, &member.file, cx);
+        self.watch(document, view, &panel, cx);
+        cx.notify();
+        Some(Showing::Minted(panel))
     }
 
     /// Every document the session holds, in the order they opened, each with
@@ -394,25 +663,6 @@ impl Documents {
             open.push(document.listed(&mut |view| state(view, &workspaces, cx)));
         }
         open
-    }
-
-    /// What `panel` makes of the panel showing each view of the session's
-    /// documents, gathered by the view's role in the order the documents opened
-    /// and gave their files and views. A view whose panel `panel` makes nothing
-    /// of takes no place, and `None` where none takes one.
-    pub(crate) fn opening_regions<T>(
-        &self,
-        panel: &mut impl FnMut(EntityId) -> Option<T>,
-    ) -> Option<Regions<T>> {
-        let views = self
-            .documents
-            .iter()
-            .flat_map(|held| &held.members)
-            .flat_map(Held::views);
-        Regions::gather(views.filter_map(|view| {
-            let shown = panel(view.live.as_ref()?.panel)?;
-            Some((view.role, shown))
-        }))
     }
 
     /// Takes `workspace` as a place a view can be shown and a panel can be
@@ -436,32 +686,29 @@ impl Documents {
         cx.emit(WindowsChanged);
     }
 
+    /// Lets go of the window `workspace` frames, as [`let_go_unless_last`]
+    /// does, for a window closing as it empties; whether it let go of it.
+    pub(crate) fn close_window_unless_last(
+        &mut self,
+        workspace: EntityId,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let open = |held: &OpenWindow| {
+            let id = held.workspace.entity_id();
+            held.workspace.upgrade().map(|_| id)
+        };
+        let closed = let_go_unless_last(&mut self.windows, workspace, open);
+        if closed {
+            cx.emit(WindowsChanged);
+        }
+        closed
+    }
+
     /// Whether the session holds a window open besides the one `workspace`
     /// frames.
     pub(crate) fn holds_another_window(&self, workspace: EntityId) -> bool {
         self.open_windows()
             .any(|held| held.entity_id() != workspace)
-    }
-
-    /// Brings `panel` forward where `into` holds it, and otherwise moves it
-    /// there out of the window that does: a panel is rendered in one window at a
-    /// time, and Wayland offers no way to raise the window it sits in.
-    fn reveal(
-        &self,
-        panel: EntityId,
-        into: &Entity<Workspace>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if into.update(cx, |workspace, cx| workspace.reveal(panel, window, cx)) {
-            return;
-        }
-        let elsewhere = take_panel_from(self.workspaces(), panel, into.entity_id(), cx);
-        if let Some(taken) = elsewhere {
-            into.update(cx, |workspace, cx| {
-                workspace.add_panel(taken, window, cx);
-            });
-        }
     }
 
     /// Records `panel` as the one showing `view` of `document`, watched so that
@@ -481,6 +728,58 @@ impl Documents {
             });
         });
         self.opened(document, view, panel.entity_id(), released);
+    }
+
+    /// The clock `document` plays back on and the name it is listed under,
+    /// where it plays back.
+    pub(crate) fn playback(&self, document: DocumentId) -> Option<(SharedString, Entity<Clock>)> {
+        let registered = self.registered(document)?;
+        registered
+            .name
+            .plays()
+            .then(|| (registered.listed_as(), registered.shared.clock().clone()))
+    }
+
+    /// The workspaces framing the session's open windows, in the order their
+    /// windows opened.
+    pub(crate) fn workspaces(&self) -> Vec<Entity<Workspace>> {
+        let mut open = Vec::with_capacity(self.windows.len());
+        open.extend(self.open_windows());
+        open
+    }
+
+    fn open_windows(&self) -> impl Iterator<Item = Entity<Workspace>> {
+        self.windows
+            .iter()
+            .filter_map(|held| held.workspace.upgrade())
+    }
+}
+
+impl<S> Registry<S> {
+    /// Which panel shows `view` of `document`, if one does.
+    #[cfg(test)]
+    fn panel(&self, document: DocumentId, view: ViewId) -> Option<EntityId> {
+        let (_, view) = self.registered(document)?.view(view)?;
+        view.live.as_ref().map(|live| live.panel)
+    }
+
+    /// What `panel` makes of the panel showing each view of the session's
+    /// documents, gathered by the view's role in the order the documents opened
+    /// and gave their files and views. A view whose panel `panel` makes nothing
+    /// of takes no place, and `None` where none takes one.
+    pub(crate) fn opening_regions<T>(
+        &self,
+        panel: &mut impl FnMut(EntityId) -> Option<T>,
+    ) -> Option<Regions<T>> {
+        let views = self
+            .documents
+            .iter()
+            .flat_map(Registered::members)
+            .flat_map(Held::views);
+        Regions::gather(views.filter_map(|view| {
+            let shown = panel(view.live.as_ref()?.panel)?;
+            Some((view.role, shown))
+        }))
     }
 
     /// Records `panel` as the one showing `view` of `document`, until
@@ -507,46 +806,41 @@ impl Documents {
         }
     }
 
-    /// Lists a document under `name`, its files as `held` makes them knowing
-    /// the document's id, with what else `held` gives.
+    /// Lists a document under `name`, its first file and the others as `held`
+    /// makes them knowing the document's id, with what else `held` gives.
     fn register<T>(
         &mut self,
-        name: SharedString,
-        clock: Option<Entity<Clock>>,
-        held: impl FnOnce(DocumentId) -> (Vec<Held<View>>, T),
+        name: Name,
+        shared: S,
+        held: impl FnOnce(DocumentId) -> ((Held<View>, Vec<Held<View>>), T),
     ) -> (DocumentId, T) {
         let id = DocumentId(self.next);
         self.next += 1;
-        let (members, given) = held(id);
+        let ((first, rest), given) = held(id);
         self.documents.push(Registered {
             id,
             name,
-            members,
-            clock,
+            first,
+            rest,
+            shared,
         });
         (id, given)
     }
 
-    /// The clock `document` plays back on and the name it is listed under,
-    /// where it plays back.
-    pub(crate) fn playback(&self, document: DocumentId) -> Option<(SharedString, Entity<Clock>)> {
-        let registered = self.registered(document)?;
-        let clock = registered.clock.clone()?;
-        Some((registered.name.clone(), clock))
-    }
-
-    /// What `document` is listed under where it joins several files, a name
-    /// no title of its panels gives.
+    /// What `document` is listed under where it is an invocation's, a name no
+    /// title of its panels gives.
     pub(crate) fn joined_name(&self, document: DocumentId) -> Option<SharedString> {
-        let registered = self.registered(document)?;
-        (registered.members.len() > 1).then(|| registered.name.clone())
+        match &self.registered(document)?.name {
+            Name::File { .. } => None,
+            Name::Invocation { label, .. } => Some(label.clone()),
+        }
     }
 
-    fn registered(&self, document: DocumentId) -> Option<&Registered> {
+    fn registered(&self, document: DocumentId) -> Option<&Registered<S>> {
         self.documents.iter().find(|held| held.id == document)
     }
 
-    fn registered_mut(&mut self, document: DocumentId) -> Option<&mut Registered> {
+    fn registered_mut(&mut self, document: DocumentId) -> Option<&mut Registered<S>> {
         self.documents.iter_mut().find(|held| held.id == document)
     }
 
@@ -554,41 +848,168 @@ impl Documents {
         self.registered_mut(document)?.view_mut(view)
     }
 
-    /// The workspaces framing the session's open windows, in the order their
-    /// windows opened.
-    pub(crate) fn workspaces(&self) -> Vec<Entity<Workspace>> {
-        let mut open = Vec::with_capacity(self.windows.len());
-        open.extend(self.open_windows());
-        open
+    /// Whether the session holds no document.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.documents.is_empty()
     }
 
-    fn open_windows(&self) -> impl Iterator<Item = Entity<Workspace>> {
-        self.windows
+    /// The first-opened document of the invocation `id`, as a file of that
+    /// invocation joining it finds it. A document that names no invocation is
+    /// never found.
+    pub fn by_invocation(&self, id: &InvocationId) -> Option<Joinable> {
+        let found = self
+            .documents
             .iter()
-            .filter_map(|held| held.workspace.upgrade())
+            .find(|held| held.name.invocation() == Some(id))?;
+        let mut views = Vec::with_capacity(found.members().map(Held::view_count).sum());
+        for member in found.members() {
+            views.extend(member.views().map(|view| view.kind));
+        }
+        Some(Joinable {
+            document: found.id,
+            invocation: id.clone(),
+            views,
+        })
     }
+
+    fn position(&self, document: DocumentId) -> Option<usize> {
+        self.documents.iter().position(|held| held.id == document)
+    }
+
+    /// Takes `document` out of the registry, which lets go of what its files
+    /// share and of every model its views were minted over. The numbers its
+    /// labels took stay taken.
+    fn remove(&mut self, document: DocumentId) -> Option<Registered<S>> {
+        let at = self.position(document)?;
+        Some(self.documents.remove(at))
+    }
+}
+
+/// `member` as a file of a document, its label numbered by `files`.
+fn numbered_file(files: &mut Numbering, member: Member) -> Held<ViewSpec> {
+    Held {
+        file: FileName {
+            ordinal: files.take(&member.label),
+            label: member.label,
+        },
+        first: member.first,
+        rest: member.rest,
+    }
+}
+
+/// Where the panel showing a view comes from.
+enum Showing {
+    /// The panel already showing it, in whichever window holds it.
+    Open(EntityId),
+    Minted(AnyPanel),
+}
+
+/// Shows `view` of `document` in `workspace`: the panel already showing it,
+/// moved here out of whatever window holds it, or a fresh panel where none is
+/// open. Panels move once the registry's update has ended, so a window giving
+/// one up may read the registry.
+pub(crate) fn show(
+    document: DocumentId,
+    view: ViewId,
+    workspace: &Entity<Workspace>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let registry = Documents::global(cx);
+    let showing = registry.update(cx, |registry, cx| registry.showing(document, view, cx));
+    match showing {
+        Some(Showing::Open(panel)) => reveal(panel, workspace, window, cx),
+        Some(Showing::Minted(panel)) => {
+            workspace.update(cx, |workspace, cx| workspace.add_panel(panel, window, cx));
+        }
+        None => {}
+    }
+}
+
+/// Brings `panel` forward where `into` holds it, and otherwise moves it there
+/// out of the window that does: a panel is rendered in one window at a time,
+/// and Wayland offers no way to raise the window it sits in.
+fn reveal(panel: EntityId, into: &Entity<Workspace>, window: &mut Window, cx: &mut App) {
+    if into.update(cx, |workspace, cx| workspace.reveal(panel, window, cx)) {
+        return;
+    }
+    let open = Documents::global(cx).read(cx).workspaces();
+    if let Some(taken) = take_panel_from(open, panel, into.entity_id(), cx) {
+        into.update(cx, |workspace, cx| workspace.add_panel(taken, window, cx));
+    }
+}
+
+/// Takes the window `here` names out of `windows` where another of them is
+/// open, `open` naming each window that is; whether it took it out. A window
+/// taken out ahead of its closing counts as closed to the windows emptied
+/// after it, so of several emptied one after another the last stays.
+fn let_go_unless_last<W>(
+    windows: &mut Vec<W>,
+    here: EntityId,
+    open: impl Fn(&W) -> Option<EntityId>,
+) -> bool {
+    let another = windows
+        .iter()
+        .any(|window| open(window).is_some_and(|id| id != here));
+    if another {
+        windows.retain(|window| open(window) != Some(here));
+    }
+    another
 }
 
 /// Takes `panel` out of whichever of `open` holds it, for a caller re-homing it
 /// in the window it frames. The workspace `here` names is left alone: it is the
 /// caller's own, which takes the panel out for itself. `None` where none of the
-/// others holds it, and where the window framing the one that does has closed.
+/// others holds it.
 pub(crate) fn take_panel_from(
     open: Vec<Entity<Workspace>>,
     panel: EntityId,
     here: EntityId,
     cx: &mut App,
 ) -> Option<AnyPanel> {
+    find_in_other_workspaces(open, here, cx, |workspace, window, cx| {
+        workspace.take_panel(panel, window, cx)
+    })
+}
+
+/// [`Workspace::close_document`] on `here`.
+pub(crate) fn close(
+    document: DocumentId,
+    here: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    // The other windows go first, so that where the close empties every
+    // window, the one it was asked from is the last and stands empty.
+    let documents = Documents::global(cx);
+    let open = documents.read(cx).workspaces();
+    find_in_other_workspaces(open, cx.entity_id(), cx, |workspace, window, cx| {
+        workspace.drop_panels_of(document, window, cx);
+        None::<()>
+    });
+    here.drop_panels_of(document, window, cx);
+    documents.update(cx, |documents, cx| documents.forget(document, cx));
+}
+
+/// The first thing `visit` finds in the workspaces of `open`, visited in turn
+/// in the windows they frame. The workspace `here` names is left alone, as the
+/// caller holds it, and so is one whose window has closed.
+fn find_in_other_workspaces<T>(
+    open: Vec<Entity<Workspace>>,
+    here: EntityId,
+    cx: &mut App,
+    mut visit: impl FnMut(&mut Workspace, &mut Window, &mut Context<Workspace>) -> Option<T>,
+) -> Option<T> {
     for elsewhere in open {
         if elsewhere.entity_id() == here {
             continue;
         }
         let handle = elsewhere.read(cx).window();
-        let taken = handle.update(cx, |_, window, cx| {
-            elsewhere.update(cx, |workspace, cx| workspace.take_panel(panel, window, cx))
+        let found = handle.update(cx, |_, window, cx| {
+            elsewhere.update(cx, |workspace, cx| visit(workspace, window, cx))
         });
-        if let Ok(Some(taken)) = taken {
-            return Some(taken);
+        if let Ok(Some(found)) = found {
+            return Some(found);
         }
     }
     None
@@ -611,6 +1032,10 @@ fn state(view: &View, workspaces: &[Entity<Workspace>], cx: &App) -> ViewState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A registry of documents sharing nothing, as bookkeeping apart from a
+    /// running application holds them.
+    type TestRegistry = Registry<()>;
 
     use crate::PanelGroup;
     use crate::layout::shape;
@@ -659,11 +1084,19 @@ mod tests {
         }
     }
 
+    /// The name of a file opened by itself, of no invocation.
+    fn file_name() -> Name {
+        Name::File {
+            invocation: None,
+            plays: false,
+        }
+    }
+
     /// Registers a file opened by itself, which no other shares a label with.
-    fn register(documents: &mut Documents, label: &str, views: Vec<View>) -> DocumentId {
+    fn register(documents: &mut TestRegistry, label: &str, views: Vec<View>) -> DocumentId {
         let file = held(unnumbered(label), views);
         documents
-            .register(label.to_string().into(), None, |_| (vec![file], ()))
+            .register(file_name(), (), |_| ((file, Vec::new()), ()))
             .0
     }
 
@@ -680,8 +1113,8 @@ mod tests {
 
     /// A registry holding a document per label, each showing a timeline and a
     /// flame graph.
-    fn registry(labels: [&str; 2]) -> (Documents, [DocumentId; 2]) {
-        let mut documents = Documents::new();
+    fn registry(labels: [&str; 2]) -> (TestRegistry, [DocumentId; 2]) {
+        let mut documents = TestRegistry::new();
         let ids =
             labels.map(|label| register(&mut documents, label, vec![view(TIMELINE), view(FLAME)]));
         (documents, ids)
@@ -693,10 +1126,31 @@ mod tests {
         EntityId::from(id)
     }
 
+    /// Which of the windows `ids` names, emptied in turn, close; each window
+    /// open until it is let go of.
+    fn closing(ids: [u64; 3], emptied: [u64; 3]) -> [bool; 3] {
+        let mut windows: Vec<EntityId> = ids.into_iter().map(EntityId::from).collect();
+        emptied.map(|id| let_go_unless_last(&mut windows, EntityId::from(id), |id| Some(*id)))
+    }
+
+    #[test]
+    fn of_windows_emptied_one_after_another_the_last_stays() {
+        for emptied in [[1, 2, 3], [3, 1, 2], [2, 3, 1], [3, 2, 1]] {
+            assert_eq!(closing([1, 2, 3], emptied), [true, true, false]);
+        }
+    }
+
+    #[test]
+    fn a_closed_window_keeps_no_emptied_one_open() {
+        let mut windows = vec![(EntityId::from(1), true), (EntityId::from(2), false)];
+        let open = |(id, open): &(EntityId, bool)| open.then_some(*id);
+        assert!(!let_go_unless_last(&mut windows, EntityId::from(1), open));
+    }
+
     /// Records `panel` as showing `view` of `document`, watched by a
     /// subscription over nothing in place of the release observer a running
     /// application installs.
-    fn opened(documents: &mut Documents, document: DocumentId, view: ViewId, panel: EntityId) {
+    fn opened(documents: &mut TestRegistry, document: DocumentId, view: ViewId, panel: EntityId) {
         documents.opened(document, view, panel, Subscription::new(|| {}));
     }
 
@@ -768,8 +1222,8 @@ mod tests {
     /// A registry holding a document per label, each showing a profile's views
     /// with a panel open for every one of them. The panels are named by letter
     /// in the order the documents registered and gave their views.
-    fn shown(labels: &[&str]) -> (Documents, Vec<(EntityId, char)>) {
-        let mut documents = Documents::new();
+    fn shown(labels: &[&str]) -> (TestRegistry, Vec<(EntityId, char)>) {
+        let mut documents = TestRegistry::new();
         let mut panels = Vec::new();
         for label in labels {
             let id = register(&mut documents, label, profile_views());
@@ -787,7 +1241,7 @@ mod tests {
     /// as the registry meets it, exactly as a window's rebuild takes it, so a
     /// registry naming one panel from two places is handed it once.
     fn rebuilt(
-        documents: &Documents,
+        documents: &TestRegistry,
         panels: &[(EntityId, char)],
         here: &str,
     ) -> Option<PanelGroup<char>> {
@@ -803,7 +1257,7 @@ mod tests {
 
     /// That arrangement written out, each pane as the panels it holds in tab
     /// order. A panel is laid out in one place: a window holds it in one.
-    fn rebuilt_shape(documents: &Documents, panels: &[(EntityId, char)], here: &str) -> String {
+    fn rebuilt_shape(documents: &TestRegistry, panels: &[(EntityId, char)], here: &str) -> String {
         let group = rebuilt(documents, panels, here).expect("an arrangement of panels");
         let written = shape(&arrange(group));
         let mut laid_out: Vec<char> = written.chars().filter(char::is_ascii_alphabetic).collect();
@@ -869,7 +1323,7 @@ mod tests {
     /// lays out and the window holding it has to keep a place for it itself.
     #[test]
     fn a_kind_a_document_asks_for_twice_is_laid_out_once() {
-        let mut documents = Documents::new();
+        let mut documents = TestRegistry::new();
         let id = register(
             &mut documents,
             "build.profile.gz",
@@ -901,8 +1355,8 @@ mod tests {
     /// given for it, with a panel open for every view. The panels are named by
     /// letter in the order the documents registered and their files gave their
     /// views.
-    fn showing(documents: Vec<Vec<Held<ViewSpec>>>) -> (Documents, Vec<(EntityId, char)>) {
-        let mut registry = Documents::new();
+    fn showing(documents: Vec<Vec<Held<ViewSpec>>>) -> (TestRegistry, Vec<(EntityId, char)>) {
+        let mut registry = TestRegistry::new();
         let mut panels = Vec::new();
         for (at, files) in documents.into_iter().enumerate() {
             let members: Vec<Held<View>> = files.iter().map(Held::registered).collect();
@@ -914,7 +1368,18 @@ mod tests {
                     kinds.map(move |kind| ViewId { member, kind })
                 })
                 .collect();
-            let (id, ()) = registry.register(format!("d{at}").into(), None, |_| (members, ()));
+            let label = format!("d{at}");
+            let name = match members.len() {
+                1 => file_name(),
+                _ => Name::Invocation {
+                    id: InvocationId::new(&label).expect("a non-empty id"),
+                    label: label.into(),
+                },
+            };
+            let mut members = members.into_iter();
+            let first = members.next().expect("a document holds a file");
+            let rest = members.collect();
+            let (id, ()) = registry.register(name, (), |_| ((first, rest), ()));
             for view in views {
                 let named = (panel(panels.len() as u64), letter(panels.len()));
                 opened(&mut registry, id, view, named.0);
@@ -927,7 +1392,7 @@ mod tests {
     /// The arrangement a window holding the panels `here` names is put back
     /// to.
     fn rebuilt_layout(
-        documents: &Documents,
+        documents: &TestRegistry,
         panels: &[(EntityId, char)],
         here: &str,
     ) -> crate::Layout<String> {
@@ -987,7 +1452,7 @@ mod tests {
 
     /// Two profiles joined into one document, each a timeline over a flame
     /// graph and a stats table, with a panel open for every view.
-    fn two_profiles_joined() -> (Documents, Vec<(EntityId, char)>) {
+    fn two_profiles_joined() -> (TestRegistry, Vec<(EntityId, char)>) {
         let profile = || {
             held(
                 unnumbered("build.profile.gz"),
@@ -1055,7 +1520,7 @@ mod tests {
     /// view reopened in one file carries that file's number.
     #[test]
     fn a_view_is_found_with_the_number_of_its_own_file() {
-        let mut documents = Documents::new();
+        let mut documents = TestRegistry::new();
         let file = |ordinal| Held {
             file: FileName {
                 ordinal: NonZeroUsize::new(ordinal),
@@ -1064,7 +1529,7 @@ mod tests {
             first: view(TIMELINE),
             rest: Vec::new(),
         };
-        let (id, ()) = documents.register("Both".into(), None, |_| (vec![file(1), file(2)], ()));
+        let (id, ()) = documents.register(file_name(), (), |_| ((file(1), vec![file(2)]), ()));
         let ordinals: Vec<Option<NonZeroUsize>> = (0..2)
             .map(|member| {
                 let timeline = ViewId {
@@ -1103,5 +1568,404 @@ mod tests {
         assert_eq!(documents.panel(id, console(1)), Some(panels[3].0));
         assert_eq!(documents.panel(id, console(0)), None);
         assert_eq!(documents.panel(id, console(3)), None);
+    }
+
+    fn numbers(labels: &[&'static str]) -> Vec<Option<usize>> {
+        let mut numbering = Numbering::default();
+        labels
+            .iter()
+            .map(|&label| numbering.take(&label.into()).map(NonZeroUsize::get))
+            .collect()
+    }
+
+    #[test]
+    fn distinct_labels_are_not_numbered() {
+        assert_eq!(numbers(&[]), []);
+        assert_eq!(numbers(&["a.bep", "b.bep"]), [None, None]);
+    }
+
+    #[test]
+    fn a_label_s_first_bearer_is_unnumbered_and_later_ones_count_from_two() {
+        assert_eq!(numbers(&["x", "x"]), [None, Some(2)]);
+        assert_eq!(
+            numbers(&["x", "y", "x", "x"]),
+            [None, None, Some(2), Some(3)]
+        );
+    }
+
+    #[test]
+    fn each_label_counts_on_its_own() {
+        assert_eq!(
+            numbers(&["x", "y", "y", "x", "z"]),
+            [None, None, Some(2), Some(2), None]
+        );
+    }
+
+    fn member(label: &'static str, kinds: &[ViewKind]) -> Member {
+        let mut specs = kinds.iter().map(|&kind| spec(kind));
+        let first = specs.next().expect("a file brings a view");
+        Member::new(label.into(), first, specs.collect())
+    }
+
+    fn profile_member(label: &'static str) -> Member {
+        member(label, &[TIMELINE, FLAME])
+    }
+
+    fn id(id: &str) -> InvocationId {
+        InvocationId::new(id).expect("a non-empty id")
+    }
+
+    fn lone(member: Member) -> DocumentOf<()> {
+        DocumentOf::alone(member, None, ())
+    }
+
+    /// A profile and a build event stream of the invocation `invocation`.
+    fn session(invocation: &'static str, profile: &'static str) -> DocumentOf<()> {
+        DocumentOf::join(
+            id(invocation),
+            profile_member(profile),
+            member("build.bep", &[CONSOLE]),
+            Vec::new(),
+            (),
+        )
+    }
+
+    /// Each document `registry` opens of `documents`, in their order, as what
+    /// it is listed under and the numbered labels of its files.
+    fn named_in(
+        registry: &mut TestRegistry,
+        documents: Vec<DocumentOf<()>>,
+    ) -> Vec<(String, Vec<String>)> {
+        documents
+            .into_iter()
+            .map(|document| {
+                let registration = registry.numbered(document);
+                let files = iter::once(&registration.first)
+                    .chain(&registration.rest)
+                    .map(|held| held.file.numbered().to_string())
+                    .collect();
+                let name = registration.name.listed_as(&registration.first.file);
+                (name.to_string(), files)
+            })
+            .collect()
+    }
+
+    fn named(documents: Vec<DocumentOf<()>>) -> Vec<(String, Vec<String>)> {
+        named_in(&mut TestRegistry::new(), documents)
+    }
+
+    fn names(document: &str, files: &[&str]) -> (String, Vec<String>) {
+        let files = files.iter().map(|file| file.to_string()).collect();
+        (document.to_string(), files)
+    }
+
+    /// A joined document holds each file as the file's viewer opened it: under
+    /// its own label, with the views it asked for.
+    #[test]
+    fn a_joined_document_holds_every_file_as_it_was_opened() {
+        let joined = DocumentOf::join(
+            id("a5f7f3e6"),
+            profile_member("build.profile.gz"),
+            member("build.bep", &[CONSOLE]),
+            vec![member("aquery.pb", &[GRAPH])],
+            (),
+        );
+        let registration = TestRegistry::new().numbered(joined);
+        assert_eq!(
+            registration.name.listed_as(&registration.first.file),
+            "Invocation a5f7f3e6"
+        );
+        let files: Vec<(String, Vec<ViewKind>)> = iter::once(&registration.first)
+            .chain(&registration.rest)
+            .map(|held| {
+                let kinds = held.views().map(ViewSpec::kind).collect();
+                (held.file.numbered().to_string(), kinds)
+            })
+            .collect();
+        assert_eq!(
+            files,
+            [
+                ("build.profile.gz".to_string(), vec![TIMELINE, FLAME]),
+                ("build.bep".to_string(), vec![CONSOLE]),
+                ("aquery.pb".to_string(), vec![GRAPH]),
+            ]
+        );
+    }
+
+    /// A panel is titled by its file, so files of one name are told apart by
+    /// number in whichever documents they are held.
+    #[test]
+    fn files_sharing_a_label_are_numbered_across_joined_documents() {
+        assert_eq!(
+            named(vec![
+                session("a5f7f3e6", "build.profile.gz"),
+                session("0b437916", "build.profile.gz"),
+            ]),
+            [
+                names("Invocation a5f7f3e6", &["build.profile.gz", "build.bep"]),
+                names(
+                    "Invocation 0b437916",
+                    &["build.profile.gz (2)", "build.bep (2)"]
+                ),
+            ]
+        );
+    }
+
+    /// A file opened by itself is listed under the number its panels carry.
+    #[test]
+    fn a_joined_file_and_one_opened_by_itself_are_numbered_together() {
+        assert_eq!(
+            named(vec![
+                session("a5f7f3e6", "build.profile.gz"),
+                lone(profile_member("build.profile.gz")),
+                lone(member("aquery.pb", &[GRAPH])),
+            ]),
+            [
+                names("Invocation a5f7f3e6", &["build.profile.gz", "build.bep"]),
+                names("build.profile.gz (2)", &["build.profile.gz (2)"]),
+                names("aquery.pb", &["aquery.pb"]),
+            ]
+        );
+    }
+
+    /// The labels joined documents are listed under are numbered among
+    /// themselves: a file's label equal to one names something else.
+    #[test]
+    fn joined_documents_sharing_a_label_are_numbered_among_themselves() {
+        assert_eq!(
+            named(vec![
+                session("a5f7f3e6", "a.profile.gz"),
+                lone(member("Invocation a5f7f3e6", &[GRAPH])),
+                session("a5f7f3e6", "b.profile.gz"),
+                session("0b437916", "c.profile.gz"),
+            ]),
+            [
+                names("Invocation a5f7f3e6", &["a.profile.gz", "build.bep"]),
+                names("Invocation a5f7f3e6", &["Invocation a5f7f3e6"]),
+                names(
+                    "Invocation a5f7f3e6 (2)",
+                    &["b.profile.gz", "build.bep (2)"]
+                ),
+                names("Invocation 0b437916", &["c.profile.gz", "build.bep (3)"]),
+            ]
+        );
+    }
+
+    /// Numbers count across everything the session opens, not one window's
+    /// worth: a file opened later takes the number after the last one taken.
+    #[test]
+    fn a_later_opening_numbers_on_from_the_earlier_ones() {
+        let mut registry = TestRegistry::new();
+        let profile = || lone(profile_member("build.profile.gz"));
+        named_in(&mut registry, vec![profile(), profile()]);
+        assert_eq!(
+            named_in(&mut registry, vec![profile()]),
+            [names("build.profile.gz (3)", &["build.profile.gz (3)"])]
+        );
+    }
+
+    /// Registers `document` as opening it does, minting no panel.
+    fn open_unshown(registry: &mut TestRegistry, document: DocumentOf<()>) -> DocumentId {
+        let Registration {
+            name,
+            first,
+            rest,
+            shared,
+        } = registry.numbered(document);
+        let members = (
+            first.registered(),
+            rest.iter().map(Held::registered).collect(),
+        );
+        registry.register(name, shared, |_| (members, ())).0
+    }
+
+    #[test]
+    fn a_file_naming_its_invocation_is_found_by_it_with_the_views_it_shows() {
+        let mut registry = TestRegistry::new();
+        let profile =
+            DocumentOf::alone(profile_member("build.profile.gz"), Some(id("a5f7f3e6")), ());
+        let opened = open_unshown(&mut registry, profile);
+        let found = registry
+            .by_invocation(&id("a5f7f3e6"))
+            .expect("the profile's invocation");
+        assert_eq!(found.document(), opened);
+        assert!(found.shows(TIMELINE) && found.shows(FLAME));
+        assert!(!found.shows(CONSOLE));
+        assert!(registry.by_invocation(&id("0b437916")).is_none());
+    }
+
+    /// Only an invocation's id finds a document, so one that names none is
+    /// never joined.
+    #[test]
+    fn a_document_naming_no_invocation_is_never_found() {
+        let mut registry = TestRegistry::new();
+        open_unshown(&mut registry, lone(profile_member("build.profile.gz")));
+        assert!(
+            registry
+                .documents
+                .iter()
+                .all(|held| held.name.invocation().is_none())
+        );
+        assert!(registry.by_invocation(&id("build.profile.gz")).is_none());
+    }
+
+    /// Two documents may name one invocation, as a second profile of it opens
+    /// by itself; a joiner finds the one that opened first.
+    #[test]
+    fn of_two_documents_of_an_invocation_the_first_opened_is_found() {
+        let mut registry = TestRegistry::new();
+        let joined = open_unshown(&mut registry, session("a5f7f3e6", "build.profile.gz"));
+        let profile =
+            DocumentOf::alone(profile_member("build.profile.gz"), Some(id("a5f7f3e6")), ());
+        open_unshown(&mut registry, profile);
+        let found = registry
+            .by_invocation(&id("a5f7f3e6"))
+            .expect("the invocation");
+        assert_eq!(found.document(), joined);
+        assert!(found.shows(CONSOLE));
+    }
+
+    /// Every invocation's document plays back; a file by itself plays only
+    /// where it has time to play by itself.
+    #[test]
+    fn an_invocation_and_a_file_playing_alone_play_back() {
+        let mut registry = TestRegistry::new();
+        let still = open_unshown(&mut registry, lone(profile_member("build.profile.gz")));
+        let console = lone(member("build.bep", &[CONSOLE]).playing_alone());
+        let console = open_unshown(&mut registry, console);
+        let joined = open_unshown(&mut registry, session("a5f7f3e6", "a.profile.gz"));
+        let plays = |document| {
+            let registered = registry.registered(document).expect("an open document");
+            registered.name.plays()
+        };
+        assert_eq!([still, console, joined].map(plays), [false, true, true]);
+    }
+
+    /// The document `id` names, as a registry lists it while no panel shows
+    /// a view: its name and its views.
+    fn listing(registry: &TestRegistry, id: DocumentId) -> (String, Vec<ViewId>) {
+        let registered = registry.registered(id).expect("an open document");
+        let listed = registered.listed(&mut |_| ViewState::Closed);
+        let views = listed.views.iter().map(|view| view.id).collect();
+        (listed.label.to_string(), views)
+    }
+
+    /// Appends `members` to the document `to` names, as joining it does, and
+    /// gives the place of the first among the document's files.
+    fn append(registry: &mut TestRegistry, to: &Joinable, members: Vec<Member>) -> usize {
+        let at = registry.position(to.document).expect("an open document");
+        let (files, joined) = (&mut registry.files, &mut registry.joined);
+        registry.documents[at].append(&to.invocation, members, files, joined)
+    }
+
+    /// A file by itself that another of its invocation joins becomes that
+    /// invocation's document: listed under its label, playing back, and
+    /// holding its first file's views where they were, the joining file's
+    /// after them.
+    #[test]
+    fn a_file_joined_by_another_of_its_invocation_becomes_the_invocation_s() {
+        let mut registry = TestRegistry::new();
+        let profile =
+            DocumentOf::alone(profile_member("build.profile.gz"), Some(id("a5f7f3e6")), ());
+        let opened = open_unshown(&mut registry, profile);
+        let to = registry
+            .by_invocation(&id("a5f7f3e6"))
+            .expect("the invocation");
+        assert_eq!(
+            append(&mut registry, &to, vec![member("build.bep", &[CONSOLE])]),
+            1
+        );
+        let (name, views) = listing(&registry, opened);
+        assert_eq!(name, "Invocation a5f7f3e6");
+        assert_eq!(
+            views,
+            [
+                ViewId::for_test(0, TIMELINE),
+                ViewId::for_test(0, FLAME),
+                ViewId::for_test(1, CONSOLE),
+            ]
+        );
+        let registered = registry.registered(opened).expect("an open document");
+        assert!(registered.name.plays());
+        assert_eq!(
+            registry.joined_name(opened),
+            Some("Invocation a5f7f3e6".into())
+        );
+    }
+
+    /// A document renamed on joining takes the next number of its
+    /// invocation's label, as one opened joined does.
+    #[test]
+    fn a_renamed_document_is_numbered_among_the_joined_ones() {
+        let mut registry = TestRegistry::new();
+        open_unshown(&mut registry, session("a5f7f3e6", "a.profile.gz"));
+        let profile = DocumentOf::alone(profile_member("b.profile.gz"), Some(id("a5f7f3e6")), ());
+        let lone = open_unshown(&mut registry, profile);
+        let to = Joinable {
+            document: lone,
+            invocation: id("a5f7f3e6"),
+            views: Vec::new(),
+        };
+        append(&mut registry, &to, vec![member("build.bep", &[CONSOLE])]);
+        assert_eq!(listing(&registry, lone).0, "Invocation a5f7f3e6 (2)");
+    }
+
+    /// Files joining an invocation's document leave its name as it is, and are
+    /// numbered among every file opened before them.
+    #[test]
+    fn files_joining_an_invocation_s_document_keep_its_name() {
+        let mut registry = TestRegistry::new();
+        let joined = open_unshown(&mut registry, session("a5f7f3e6", "build.profile.gz"));
+        let to = registry
+            .by_invocation(&id("a5f7f3e6"))
+            .expect("the invocation");
+        let joining = vec![
+            member("aquery.pb", &[GRAPH]),
+            member("build.bep", &[CONSOLE]),
+        ];
+        assert_eq!(append(&mut registry, &to, joining), 2);
+        assert_eq!(listing(&registry, joined).0, "Invocation a5f7f3e6");
+        let registered = registry.registered(joined).expect("an open document");
+        let files: Vec<String> = registered
+            .members()
+            .map(|held| held.file.numbered().to_string())
+            .collect();
+        assert_eq!(
+            files,
+            [
+                "build.profile.gz",
+                "build.bep",
+                "aquery.pb",
+                "build.bep (2)"
+            ]
+        );
+    }
+
+    /// A closed document is found no more, by its invocation or otherwise, and
+    /// the documents opened beside it stay as they were.
+    #[test]
+    fn a_closed_document_is_gone_and_the_others_stay() {
+        let mut registry = TestRegistry::new();
+        let closed = open_unshown(&mut registry, session("a5f7f3e6", "a.profile.gz"));
+        let kept = open_unshown(&mut registry, session("0b437916", "b.profile.gz"));
+        assert!(registry.remove(closed).is_some());
+        assert!(registry.registered(closed).is_none());
+        assert!(registry.by_invocation(&id("a5f7f3e6")).is_none());
+        assert_eq!(listing(&registry, kept).0, "Invocation 0b437916");
+        assert!(registry.remove(closed).is_none());
+    }
+
+    /// A number a closed document took is not handed to the next document
+    /// bearing its label, and the documents still open keep theirs.
+    #[test]
+    fn numbers_are_not_reused_after_a_close() {
+        let mut registry = TestRegistry::new();
+        let profile = || lone(profile_member("build.profile.gz"));
+        let first = open_unshown(&mut registry, profile());
+        let second = open_unshown(&mut registry, profile());
+        registry.remove(second);
+        let third = open_unshown(&mut registry, profile());
+        assert_eq!(listing(&registry, first).0, "build.profile.gz");
+        assert_eq!(listing(&registry, third).0, "build.profile.gz (3)");
     }
 }

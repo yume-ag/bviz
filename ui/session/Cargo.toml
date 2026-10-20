@@ -1,0 +1,15 @@
+[package]
+name = "bviz_ui_session"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[lib]
+name = "bviz_ui_session"
+path = "src/lib.rs"
+
+[dependencies]
+gpui = { workspace = true }
+bviz_invocation = { workspace = true }

@@ -17,10 +17,12 @@ use bviz_trace_layout::{
 };
 use bviz_trace_profile::{LaneClass, Profile, SliceAt, Str, TimeSpan};
 use bviz_ui_components::{Pending, load_in_background};
-use bviz_ui_playback::{Clock, DocumentClock, OnClock, Span};
+use bviz_ui_playback::{Alignment, Clock, OnClock, Span};
+use bviz_ui_session::Reports;
 use gpui::{App, Context, Entity, EventEmitter, Subscription, Task};
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -132,34 +134,16 @@ fn critical_steps(steps: &[Step]) -> Vec<CriticalStep> {
         .collect()
 }
 
-/// Who holds what was chosen of the critical path in its panel.
-enum HeldChoice {
-    /// The invocation's session, which shares the choice with the views of
-    /// the invocation's other outputs and lets go of it where the path
-    /// reported to it changes.
-    InSession(Entity<Session>),
-    /// The model, for a profile opened alone, whose path is traced once.
-    Alone(Option<Chosen>),
-}
-
-impl HeldChoice {
-    fn get(&self, cx: &App) -> Option<Chosen> {
-        match self {
-            HeldChoice::InSession(session) => session.read(cx).chosen(),
-            HeldChoice::Alone(chosen) => *chosen,
-        }
-    }
-
-    fn set(&mut self, chosen: Option<Chosen>, cx: &mut App) {
-        match self {
-            HeldChoice::InSession(session) => session.update(cx, |session, cx| {
-                if session.choose(chosen) {
-                    cx.notify();
-                }
-            }),
-            HeldChoice::Alone(held) => *held = chosen,
-        }
-    }
+/// What ties a trace model to the document it is a file of.
+struct Ties {
+    /// Tells what the other outputs of the profile's invocation know of it,
+    /// read to name what the profile holds only an id of, and holds what is
+    /// chosen of the critical path, for the views of every output to show.
+    reports: Reports,
+    on_clock: OnClock,
+    /// Joins the critical path to the spawns and the action graph the session
+    /// learns of.
+    _session_changed: Subscription,
 }
 
 /// The names the repositories the labels `profile` records name are shown
@@ -184,9 +168,9 @@ pub(crate) struct LoadedProfile {
     working_lanes: Derived<WorkingLanes>,
     critical_path: TracedPath,
     /// Derives the profile's action timings and attempts and reports them to
-    /// its session; held with the profile, so that a profile replaced before
-    /// they are ready reports none.
-    _reporting_timings: Option<Task<()>>,
+    /// its session, `None` until its document is joined; held with the
+    /// profile, so that a profile replaced before they are ready reports none.
+    reporting_timings: Option<Task<()>>,
 }
 
 /// What is derived from a profile off the UI thread.
@@ -241,7 +225,6 @@ impl Joined {
 
 /// What a critical path is joined to from its session: the spawns its
 /// execution log records and its action graph.
-#[derive(Default)]
 struct JoinedTo {
     spawns: Option<Arc<LoggedSpawns>>,
     graph: Option<Arc<ActionGraph>>,
@@ -322,18 +305,13 @@ fn trace(
 }
 
 /// What `session` holds for a critical path to be joined to, and as of when.
-fn joined_to(session: Option<&Entity<Session>>, cx: &Context<TraceModel>) -> (JoinedTo, Joined) {
-    match session {
-        Some(session) => {
-            let session = session.read(cx);
-            let to = JoinedTo {
-                spawns: session.logged_spawns().cloned(),
-                graph: session.action_graph().cloned(),
-            };
-            (to, Joined::of(session))
-        }
-        None => (JoinedTo::default(), Joined::default()),
-    }
+fn joined_to(session: &Entity<Session>, cx: &Context<TraceModel>) -> (JoinedTo, Joined) {
+    let session = session.read(cx);
+    let to = JoinedTo {
+        spawns: session.logged_spawns().cloned(),
+        graph: session.action_graph().cloned(),
+    };
+    (to, Joined::of(session))
 }
 
 /// The tasks deriving what a [`LoadedProfile`] derives off the UI thread.
@@ -344,12 +322,11 @@ struct Derivations {
 
 impl LoadedProfile {
     /// `profile` as loaded, its working lanes and critical path on their way
-    /// to the model of `cx` and its action timings and attempts to `session`,
-    /// its critical path joined to what `session` holds.
+    /// to the model of `cx`, its critical path joined to what `session` holds.
     fn new(
         profile: Profile,
         repos: RepoNames,
-        session: Option<&Entity<Session>>,
+        session: &Entity<Session>,
         cx: &mut Context<TraceModel>,
     ) -> LoadedProfile {
         let flamer = Arc::new(TrackFlamer::new(&Arc::new(profile)));
@@ -370,33 +347,14 @@ impl LoadedProfile {
         });
         let (to, joined) = joined_to(session, cx);
         let tracing = trace(flamer.profile().clone(), to, joined, cx);
-        let reporting_timings = session.map(Entity::downgrade).map(|session| {
-            let timed = flamer.profile().clone();
-            cx.spawn(async move |_, cx| {
-                let (timings, attempts) = cx
-                    .background_executor()
-                    .spawn(async move { (timed.timings(), timed.attempts()) })
-                    .await;
-                session
-                    .update(cx, |session, cx| {
-                        session.report_timings(timings);
-                        session.report_attempts(attempts.unwrap_or_default());
-                        cx.notify();
-                    })
-                    .ok();
-            })
-        });
-        LoadedProfile {
-            _reporting_timings: reporting_timings,
-            ..LoadedProfile::deriving(
-                flamer,
-                Derivations {
-                    working_lanes: deriving,
-                    critical_path: tracing,
-                },
-                repos,
-            )
-        }
+        LoadedProfile::deriving(
+            flamer,
+            Derivations {
+                working_lanes: deriving,
+                critical_path: tracing,
+            },
+            repos,
+        )
     }
 
     fn deriving(
@@ -411,7 +369,7 @@ impl LoadedProfile {
                 _derivation: derivations.working_lanes,
             },
             critical_path: TracedPath::Tracing(derivations.critical_path),
-            _reporting_timings: None,
+            reporting_timings: None,
         }
     }
 
@@ -455,19 +413,10 @@ pub(crate) enum TrackPick {
     SetRun,
 }
 
-/// The shared trace document and the selection and visibility state derived from
-/// it, plus the layouts and aggregates cached from those. Shared as an entity by
-/// every view of one profile, so each reads one source of truth; a view's own
-/// state stays on its panel.
-pub(crate) struct TraceModel {
+/// The trace document and the selection and visibility state derived from it,
+/// plus the layouts and aggregates cached from those.
+pub(crate) struct TraceState {
     source: Source,
-    /// What the other outputs of the profile's invocation tell of it, read to
-    /// name what the profile holds only an id of. `None` for a profile opened
-    /// apart from any.
-    session: Option<Entity<Session>>,
-    /// Where the profile plays, `None` for a profile its document gives no
-    /// clock.
-    on_clock: Option<OnClock>,
     /// The full thread/counter lane layout for the loaded profile, built on first
     /// use. It depends only on the immutable profile, so it is cleared only when a
     /// new profile loads.
@@ -492,7 +441,6 @@ pub(crate) struct TraceModel {
     /// The profile time the flame graph and stats aggregate over, intersected
     /// with the selected tracks.
     time_selection: TimeSelection,
-    chosen: HeldChoice,
     /// Which lane-class groups are collapsed in the chart, indexed by
     /// [`STACKED_GROUPS`]. Loading starts collapsed — it holds one lane per external
     /// repository, hundreds on a large build.
@@ -529,11 +477,32 @@ pub(crate) struct TraceModel {
     /// Background-build bookkeeping for `aggregates`, keyed on
     /// `aggregate_key`.
     agg: Rebuild<u64>,
-    /// The read that fills `source`, held so that it is not cancelled.
+}
+
+/// A profile's [`TraceState`], tied to its document. Shared as an entity by
+/// every view of the profile, so each reads one source of truth, which it
+/// reaches through the model's dereference; a view's own state stays on its
+/// panel.
+pub(crate) struct TraceModel {
+    state: TraceState,
+    ties: Ties,
+    /// The read that fills the state's source, held so that it is not
+    /// cancelled.
     _load: Task<()>,
-    /// Joins the critical path to the spawns and the action graph `session`
-    /// learns of.
-    _session_changed: Option<Subscription>,
+}
+
+impl Deref for TraceModel {
+    type Target = TraceState;
+
+    fn deref(&self) -> &TraceState {
+        &self.state
+    }
+}
+
+impl DerefMut for TraceModel {
+    fn deref_mut(&mut self) -> &mut TraceState {
+        &mut self.state
+    }
 }
 
 impl EventEmitter<AggregateBuildStarted> for TraceModel {}
@@ -547,13 +516,15 @@ impl TraceModel {
     /// once the read finishes and failed where it does not.
     pub(crate) fn reading(
         profile: Pending<Recorded<Profile>>,
-        session: Option<Entity<Session>>,
-        clock: Option<DocumentClock>,
+        session: Entity<Session>,
+        clock: Entity<Clock>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let session_changed = session
-            .as_ref()
-            .map(|session| cx.observe(session, |model, _, cx| model.rejoin(cx)));
+        let ties = Ties {
+            _session_changed: cx.observe(&session, |model, _, cx| model.rejoin(cx)),
+            reports: Reports::new(session, cx),
+            on_clock: OnClock::new(clock, cx, Self::place_on_clock),
+        };
         let load = load_in_background(
             cx,
             move || {
@@ -564,10 +535,10 @@ impl TraceModel {
             |model, result: Result<(Recorded<Profile>, RepoNames), String>, cx| {
                 let source = match result {
                     Ok((profile, repos)) => {
-                        let session = model.session.clone();
-                        Source::Loaded(profile.map(|profile| {
-                            LoadedProfile::new(profile, repos, session.as_ref(), cx)
-                        }))
+                        let session = model.session().clone();
+                        Source::Loaded(
+                            profile.map(|profile| LoadedProfile::new(profile, repos, &session, cx)),
+                        )
                     }
                     Err(err) => Source::Failed(err),
                 };
@@ -576,15 +547,16 @@ impl TraceModel {
             },
         );
         Self {
-            _session_changed: session_changed,
-            ..Self::new(session, clock, load)
+            state: TraceState::new(),
+            ties,
+            _load: load,
         }
     }
 
     /// Traces the loaded profile's critical path again where its session
     /// holds other spawns or another action graph than it was traced with.
     fn rejoin(&mut self, cx: &mut Context<Self>) {
-        let (to, joined) = joined_to(self.session.as_ref(), cx);
+        let (to, joined) = joined_to(self.session(), cx);
         let Some(loaded) = self.loaded_mut() else {
             return;
         };
@@ -595,21 +567,339 @@ impl TraceModel {
         loaded.critical_path.retrace(tracing);
     }
 
-    fn new(session: Option<Entity<Session>>, clock: Option<DocumentClock>, load: Task<()>) -> Self {
-        let chosen = match &session {
-            Some(session) => HeldChoice::InSession(session.clone()),
-            None => HeldChoice::Alone(None),
+    pub(crate) fn session(&self) -> &Entity<Session> {
+        self.ties.reports.session()
+    }
+
+    /// Registers the profile with a joined clock as what it plays, or
+    /// withdraws it where no profile with a wall-clock origin is loaded, and
+    /// has the session of a joined document learn the profile's action
+    /// timings. A profile alone plays nothing and derives no timings: its
+    /// document plays back, and other files read what it reports, once
+    /// another file joins it.
+    fn place_on_clock(&mut self, cx: &mut Context<Self>) {
+        let joined = self.joined(cx);
+        let played = self
+            .profile()
+            .filter(|_| joined)
+            .and_then(|profile| clock_source(profile));
+        self.ties.on_clock.place(played, cx);
+        if joined {
+            self.report_timings(cx);
+        }
+    }
+
+    /// Has the loaded profile's action timings and attempts derived and
+    /// reported to the session, unless they are already on their way.
+    fn report_timings(&mut self, cx: &mut Context<Self>) {
+        let Some(loaded) = self.loaded_mut() else {
+            return;
         };
+        if loaded.reporting_timings.is_some() {
+            return;
+        }
+        let timed = loaded.profile().clone();
+        loaded.reporting_timings = Some(cx.spawn(async move |model, cx| {
+            let (timings, attempts) = cx
+                .background_executor()
+                .spawn(async move { (timed.timings(), timed.attempts()) })
+                .await;
+            model
+                .update(cx, |model, cx| {
+                    model.ties.reports.report(cx, |session, by, cx| {
+                        session.report_timings(by, timings);
+                        session.report_attempts(by, attempts.unwrap_or_default());
+                        cx.notify();
+                    });
+                })
+                .ok();
+        }));
+    }
+
+    /// Whether the profile's document joins it to other files.
+    fn joined(&self, cx: &App) -> bool {
+        self.clock().read(cx).alignment() == Alignment::Joined
+    }
+
+    /// The clock the views follow.
+    pub(crate) fn clock(&self) -> &Entity<Clock> {
+        self.ties.on_clock.clock()
+    }
+
+    /// The profile instant the clock's time stands at, `None` while the loaded
+    /// profile plays on no clock.
+    pub(crate) fn playhead_us(&self, cx: &App) -> Option<i64> {
+        let origin = self.profile()?.metadata().epoch_origin?;
+        let now = self.clock().read(cx).now()?;
+        Some(now.micros() - origin.micros())
+    }
+
+    /// Whether the loaded profile plays on no clock its document has, recording
+    /// no wall-clock time to stand beside the other files' times.
+    pub(crate) fn unaligned(&self, cx: &App) -> bool {
+        self.joined(cx)
+            && self
+                .profile()
+                .is_some_and(|profile| profile.metadata().epoch_origin.is_none())
+    }
+
+    /// Tells the session the steps of the traced path and the actions nearly
+    /// critical, which tracing the path again with other spawns mostly
+    /// leaves as they were, and lets the lane of what the session let go of
+    /// with them fall back to its group's sample.
+    fn report_critical_path(&mut self, cx: &mut Context<Self>) {
+        let steps = critical_steps(self.steps());
+        let nearly_critical = nearly_critical_actions(self.nearly_critical());
+        self.ties.reports.report(cx, |session, by, cx| {
+            if session.report_critical_path(by, steps, nearly_critical) {
+                cx.notify();
+            }
+        });
+        if self.held_choice(cx).is_none() && self.kept_in_sample.is_some() {
+            self.release_chosen_lane();
+            cx.emit(ChoiceChanged);
+        }
+    }
+
+    /// What the session holds chosen of the critical path.
+    fn held_choice(&self, cx: &App) -> Option<Chosen> {
+        self.session().read(cx).chosen()
+    }
+
+    /// Has the session hold `chosen` chosen of the critical path, for the
+    /// views of every output of the invocation to show.
+    fn hold_choice(&self, chosen: Option<Chosen>, cx: &mut App) {
+        self.session().update(cx, |session, cx| {
+            if session.choose(chosen) {
+                cx.notify();
+            }
+        });
+    }
+
+    /// What is chosen of the critical path, and the profile's record of it.
+    pub(crate) fn chosen(&self, cx: &App) -> Option<(Chosen, ChosenItem<'_>)> {
+        let chosen = self.held_choice(cx)?;
+        Some((chosen, self.item_of(chosen)?))
+    }
+
+    /// Chooses `chosen` of the critical path and has the timeline and the
+    /// views of the invocation's other outputs show it.
+    pub(crate) fn choose(&mut self, chosen: Chosen, cx: &mut Context<Self>) {
+        if self.adopt_chosen(chosen) {
+            self.hold_choice(Some(chosen), cx);
+            cx.emit(ChoiceChanged);
+            cx.notify();
+        }
+    }
+
+    /// Lets go of what is chosen of the critical path. Says whether anything
+    /// was.
+    pub(crate) fn unchoose(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.chosen(cx).is_none() {
+            return false;
+        }
+        self.hold_choice(None, cx);
+        self.release_chosen_lane();
+        cx.emit(ChoiceChanged);
+        cx.notify();
+        true
+    }
+
+    /// Restricts the aggregate to `selection`, reporting whether that differs
+    /// from the standing one. Keys a rebuild only for a set that actually
+    /// changed, so re-committing the same regions costs nothing.
+    pub(crate) fn set_time_selection(
+        &mut self,
+        selection: TimeSelection,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if selection == self.time_selection {
+            return false;
+        }
+        self.time_selection = selection;
+        self.aggregate_key += 1;
+        // The regions are drawn on the timeline and named by the panels the
+        // aggregate covers, each in a pane of its own, so the new window has to
+        // reach every observer rather than only the view the gesture landed in.
+        cx.notify();
+        self.ensure_aggregates(cx);
+        true
+    }
+
+    /// Replaces the loaded document, dropping the lane layouts (which depend only
+    /// on the profile), the aggregate built over the old document, and the time
+    /// selection (whose instants address the old profile's timeline) and, for a
+    /// loaded profile, seeding the default track selection.
+    pub(crate) fn set_source(&mut self, source: Source, cx: &mut Context<Self>) {
+        let session = self.session().clone();
+        session.update(cx, |session, cx| {
+            if self.state.replace_source(source, session) {
+                cx.notify();
+            }
+        });
+        cx.emit(SourceReplaced);
+        self.ensure_aggregates(cx);
+    }
+
+    /// Selects `track` for the flame graph and stats as `pick` asks. Picking
+    /// the one track moves the anchor to it; picking a run leaves the anchor,
+    /// so the run can be re-adjusted. Keys a rebuild only when the set
+    /// actually changes, so a repeat click is free.
+    pub(crate) fn select_track(&mut self, track: usize, pick: TrackPick, cx: &mut Context<Self>) {
+        let n = self.selected_tracks.len();
+        if track >= n {
+            return;
+        }
+        // The anchor run and the anchor's own selected state, read before any
+        // mutation so the range extends from the existing anchor.
+        let run = self.visible_run_to(track);
+        let anchor_state = self
+            .select_anchor
+            .and_then(|a| self.selected_tracks.get(a).copied());
+        let sel = match (pick, run) {
+            (TrackPick::Only, _) => {
+                let mut sel = vec![false; n];
+                sel[track] = true;
+                self.select_anchor = Some(track);
+                sel
+            }
+            (TrackPick::Flip, _) => {
+                let mut sel = self.selected_tracks.clone();
+                sel[track] = !sel[track];
+                self.select_anchor = Some(track);
+                sel
+            }
+            (TrackPick::Run, Some(run)) => {
+                let mut sel = vec![false; n];
+                for t in run {
+                    sel[t] = true;
+                }
+                sel
+            }
+            (TrackPick::SetRun, Some(run)) => {
+                let state = anchor_state.unwrap_or(true);
+                let mut sel = self.selected_tracks.clone();
+                for t in run {
+                    sel[t] = state;
+                }
+                sel
+            }
+            // A run with no anchor (or an anchor no longer visible) falls back
+            // to selecting the one track.
+            (TrackPick::Run | TrackPick::SetRun, None) => {
+                let mut sel = vec![false; n];
+                sel[track] = true;
+                self.select_anchor = Some(track);
+                sel
+            }
+        };
+        if sel != self.selected_tracks {
+            self.selected_tracks = sel;
+            self.aggregate_key += 1;
+        }
+        self.ensure_aggregates(cx);
+    }
+
+    /// Puts the flame graph under `mode` and kicks off the rebuild it needs.
+    /// Reports what [`Self::adopt_flame_mode`] did, so a caller can skip the work
+    /// that only a mode change calls for.
+    pub(crate) fn set_flame_mode(&mut self, mode: FlameMode, cx: &mut Context<Self>) -> bool {
+        if !self.adopt_flame_mode(mode) {
+            return false;
+        }
+        // The mode controls render from the mode itself, so their selected state
+        // must not wait for the rebuild to land.
+        cx.notify();
+        self.ensure_aggregates(cx);
+        true
+    }
+
+    /// Sets the selection to every visible track (the select-all gesture),
+    /// returning whether the set changed.
+    pub(crate) fn select_all_visible(&mut self, cx: &mut Context<Self>) -> bool {
+        let changed = if self.selected_tracks != self.visible_tracks {
+            self.selected_tracks = self.visible_tracks.clone();
+            self.aggregate_key += 1;
+            true
+        } else {
+            false
+        };
+        self.ensure_aggregates(cx);
+        changed
+    }
+
+    /// Makes the current selection's aggregate the shown one: built on demand
+    /// off the UI thread (walking every slice is far too costly for a paint) and
+    /// swapped in on completion, the previously built graph staying shown until
+    /// then. An in-flight build whose selection the inputs have moved past is
+    /// abandoned. Idempotent — a no-op once the right value is ready or being
+    /// computed. Emits [`AggregateBuildStarted`] when it spawns a build and
+    /// notifies when one lands, so a panel showing the rebuild in progress and a
+    /// panel holding state derived from the aggregate each hear only their own
+    /// step, exactly once per build.
+    pub(crate) fn ensure_aggregates(&mut self, cx: &mut Context<Self>) {
+        let Some(loaded) = self.loaded() else {
+            return;
+        };
+        let scan = loaded.flamer.clone();
+        let key = self.aggregate_key;
+        if self.agg.is_ready(key) {
+            // The shown value is already current; cancel a build for a key the
+            // inputs have since left so its late result can't clobber it.
+            self.agg.cancel_inflight();
+            return;
+        }
+        if self.agg.is_inflight(key) {
+            return;
+        }
+        let generation = self.agg.start(key);
+        cx.emit(AggregateBuildStarted);
+        let selected = self.selected_tracks.clone();
+        let time_window = self.time_selection.clone();
+        let mode = self.flame_mode;
+        let task = cx.spawn(async move |model, cx| {
+            let aggregate = cx
+                .background_executor()
+                .spawn(async move {
+                    let t = std::time::Instant::now();
+                    let aggregate =
+                        ScopeAggregate::build_for_tracks_reusing(&scan, mode, &time_window, |i| {
+                            selected.get(i).copied().unwrap_or(false)
+                        });
+                    if std::env::var_os("BVIZ_TRACE_TIMING").is_some() {
+                        eprintln!(
+                            "[timing] track_aggregate: {:.3}s",
+                            t.elapsed().as_secs_f64()
+                        );
+                    }
+                    aggregate
+                })
+                .await;
+            model
+                .update(cx, |m, cx| {
+                    // Discard a result the inputs have moved past since this spawn.
+                    if !m.agg.accept(generation, key) {
+                        return;
+                    }
+                    m.aggregates = Some(Arc::new(aggregate));
+                    cx.notify();
+                })
+                .ok();
+        });
+        self.agg.set_task(task);
+    }
+}
+
+impl TraceState {
+    /// The state of a document whose read has not finished.
+    fn new() -> Self {
         Self {
             source: Source::Loading,
-            session,
-            on_clock: clock.map(OnClock::new),
             lanes: RefCell::new(None),
             visible_tracks: Vec::new(),
             shared_track_names: Vec::new(),
             selected_tracks: Vec::new(),
             time_selection: TimeSelection::default(),
-            chosen,
             collapsed_groups: default_collapsed_groups(),
             group_show_all: [false; STACKED_GROUPS.len()],
             kept_in_sample: None,
@@ -621,48 +911,11 @@ impl TraceModel {
             group_chrome: RefCell::new(None),
             aggregates: None,
             agg: Rebuild::new(),
-            _load: load,
-            _session_changed: None,
         }
     }
 
     pub(crate) fn source(&self) -> &Source {
         &self.source
-    }
-
-    pub(crate) fn session(&self) -> Option<&Entity<Session>> {
-        self.session.as_ref()
-    }
-
-    /// Registers the profile with the clock as what it plays, or withdraws it
-    /// where no profile with a wall-clock origin is loaded.
-    fn place_on_clock(&mut self, cx: &mut Context<Self>) {
-        let played = self.profile().and_then(|profile| clock_source(profile));
-        if let Some(on_clock) = &mut self.on_clock {
-            on_clock.place(played, cx);
-        }
-    }
-
-    /// The clock the views follow, where the document plays back.
-    pub(crate) fn clock(&self) -> Option<&Entity<Clock>> {
-        self.on_clock.as_ref().map(OnClock::clock)
-    }
-
-    /// The profile instant the clock's time stands at, `None` while the loaded
-    /// profile plays on no clock.
-    pub(crate) fn playhead_us(&self, cx: &App) -> Option<i64> {
-        let origin = self.profile()?.metadata().epoch_origin?;
-        let now = self.clock()?.read(cx).now()?;
-        Some(now.micros() - origin.micros())
-    }
-
-    /// Whether the loaded profile plays on no clock its document has, recording
-    /// no wall-clock time to stand beside the other files' times.
-    pub(crate) fn unaligned(&self) -> bool {
-        self.on_clock.is_some()
-            && self
-                .profile()
-                .is_some_and(|profile| profile.metadata().epoch_origin.is_none())
     }
 
     fn loaded(&self) -> Option<&LoadedProfile> {
@@ -751,33 +1004,6 @@ impl TraceModel {
         }
     }
 
-    /// Tells the session the steps of the traced path and the actions nearly
-    /// critical, which tracing the path again with other spawns mostly
-    /// leaves as they were, and lets the lane of what the session let go of
-    /// with them fall back to its group's sample.
-    fn report_critical_path(&mut self, cx: &mut Context<Self>) {
-        let Some(session) = &self.session else {
-            return;
-        };
-        let steps = critical_steps(self.steps());
-        let nearly_critical = nearly_critical_actions(self.nearly_critical());
-        session.update(cx, |session, cx| {
-            if session.report_critical_path(steps, nearly_critical) {
-                cx.notify();
-            }
-        });
-        if self.chosen.get(cx).is_none() && self.kept_in_sample.is_some() {
-            self.release_chosen_lane();
-            cx.emit(ChoiceChanged);
-        }
-    }
-
-    /// What is chosen of the critical path, and the profile's record of it.
-    pub(crate) fn chosen(&self, cx: &App) -> Option<(Chosen, ChosenItem<'_>)> {
-        let chosen = self.chosen.get(cx)?;
-        Some((chosen, self.item_of(chosen)?))
-    }
-
     /// The profile's record of `chosen`, where the path holds it.
     fn item_of(&self, chosen: Chosen) -> Option<ChosenItem<'_>> {
         match chosen {
@@ -786,16 +1012,6 @@ impl TraceModel {
                 .nearly_critical()
                 .get(index)
                 .map(ChosenItem::NearlyCritical),
-        }
-    }
-
-    /// Chooses `chosen` of the critical path and has the timeline and the
-    /// views of the invocation's other outputs show it.
-    pub(crate) fn choose(&mut self, chosen: Chosen, cx: &mut Context<Self>) {
-        if self.adopt_chosen(chosen) {
-            self.chosen.set(Some(chosen), cx);
-            cx.emit(ChoiceChanged);
-            cx.notify();
         }
     }
 
@@ -842,19 +1058,6 @@ impl TraceModel {
         }
     }
 
-    /// Lets go of what is chosen of the critical path. Says whether anything
-    /// was.
-    pub(crate) fn unchoose(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.chosen(cx).is_none() {
-            return false;
-        }
-        self.chosen.set(None, cx);
-        self.release_chosen_lane();
-        cx.emit(ChoiceChanged);
-        cx.notify();
-        true
-    }
-
     /// Lets the lane what was let go of was shown on fall back to its
     /// group's sample.
     fn release_chosen_lane(&mut self) {
@@ -877,75 +1080,57 @@ impl TraceModel {
         &self.time_selection
     }
 
-    /// Restricts the aggregate to `selection`, reporting whether that differs
-    /// from the standing one. Keys a rebuild only for a set that actually
-    /// changed, so re-committing the same regions costs nothing.
-    pub(crate) fn set_time_selection(
-        &mut self,
-        selection: TimeSelection,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if selection == self.time_selection {
-            return false;
-        }
-        self.time_selection = selection;
-        self.aggregate_key += 1;
-        // The regions are drawn on the timeline and named by the panels the
-        // aggregate covers, each in a pane of its own, so the new window has to
-        // reach every observer rather than only the view the gesture landed in.
-        cx.notify();
-        self.ensure_aggregates(cx);
-        true
-    }
-
-    /// Replaces the loaded document, dropping the lane layouts (which depend only
-    /// on the profile), the aggregate built over the old document, and the time
-    /// selection (whose instants address the old profile's timeline) and, for a
-    /// loaded profile, seeding the default track selection.
-    pub(crate) fn set_source(&mut self, source: Source, cx: &mut Context<Self>) {
-        if self.chosen.get(cx).is_some() {
-            self.chosen.set(None, cx);
-        }
-        self.replace_source(source);
-        cx.emit(SourceReplaced);
-        if let Some(profile) = self.profile().cloned() {
-            self.init_tracks(&profile, cx);
-        }
-    }
-
     /// Takes `source` in place of the document, dropping what was derived
-    /// from the one it replaces and what was chosen in it, save what a
-    /// session holds chosen.
-    fn replace_source(&mut self, source: Source) {
-        self.lanes.borrow_mut().take();
-        self.visible_lanes.borrow_mut().take();
-        self.invalidate_aggregates();
-        self.time_selection.clear();
-        if let HeldChoice::Alone(chosen) = &mut self.chosen {
-            *chosen = None;
+    /// from the one it replaces and what was chosen in it, which `session`
+    /// holds, and for a loaded profile standing its tracks in their defaults:
+    /// every one visible, every one but the critical-path lane's selected.
+    /// The critical-path lane holds redirected copies of worker time, so
+    /// leaving it out of the default selection keeps the aggregate from
+    /// double-counting that time. Says whether `session` let go of a choice.
+    fn replace_source(&mut self, source: Source, session: &mut Session) -> bool {
+        let Self {
+            source: replaced,
+            lanes,
+            visible_tracks,
+            shared_track_names,
+            selected_tracks,
+            time_selection,
+            collapsed_groups,
+            group_show_all,
+            kept_in_sample,
+            track_sort,
+            flame_mode: _,
+            aggregate_key,
+            select_anchor,
+            visible_lanes,
+            group_chrome,
+            aggregates,
+            agg,
+        } = self;
+        lanes.get_mut().take();
+        visible_lanes.get_mut().take();
+        group_chrome.get_mut().take();
+        *aggregates = None;
+        agg.invalidate();
+        time_selection.clear();
+        *kept_in_sample = None;
+        *replaced = source;
+        if let Source::Loaded(loaded) = replaced {
+            let profile = loaded.get().profile();
+            *visible_tracks = vec![true; profile.threads().len()];
+            *shared_track_names = shared_names(profile);
+            *collapsed_groups = default_collapsed_groups();
+            *group_show_all = [false; STACKED_GROUPS.len()];
+            *track_sort = TrackSort::default();
+            *selected_tracks = profile
+                .threads()
+                .iter()
+                .map(|t| t.lane_class != LaneClass::CriticalPath)
+                .collect();
+            *select_anchor = None;
+            *aggregate_key += 1;
         }
-        self.kept_in_sample = None;
-        self.source = source;
-    }
-
-    /// The default track selection for a freshly loaded profile: every
-    /// non-critical-path lane selected. The critical-path lane holds redirected
-    /// copies of worker time, so leaving it out of the default selection keeps
-    /// the aggregate from double-counting that time.
-    pub(crate) fn init_tracks(&mut self, profile: &Profile, cx: &mut Context<Self>) {
-        self.visible_tracks = vec![true; profile.threads().len()];
-        self.shared_track_names = shared_names(profile);
-        self.collapsed_groups = default_collapsed_groups();
-        self.group_show_all = [false; STACKED_GROUPS.len()];
-        self.track_sort = TrackSort::default();
-        self.selected_tracks = profile
-            .threads()
-            .iter()
-            .map(|t| t.lane_class != LaneClass::CriticalPath)
-            .collect();
-        self.select_anchor = None;
-        self.aggregate_key += 1;
-        self.ensure_aggregates(cx);
+        session.chosen().is_some() && session.choose(None)
     }
 
     /// The full lane layout for the loaded profile, built on first use and reused
@@ -1089,81 +1274,8 @@ impl TraceModel {
         self.invalidate_visible_lanes();
     }
 
-    /// Selects `track` for the flame graph and stats as `pick` asks. Picking
-    /// the one track moves the anchor to it; picking a run leaves the anchor,
-    /// so the run can be re-adjusted. Keys a rebuild only when the set
-    /// actually changes, so a repeat click is free.
-    pub(crate) fn select_track(&mut self, track: usize, pick: TrackPick, cx: &mut Context<Self>) {
-        let n = self.selected_tracks.len();
-        if track >= n {
-            return;
-        }
-        // The anchor run and the anchor's own selected state, read before any
-        // mutation so the range extends from the existing anchor.
-        let run = self.visible_run_to(track);
-        let anchor_state = self
-            .select_anchor
-            .and_then(|a| self.selected_tracks.get(a).copied());
-        let sel = match (pick, run) {
-            (TrackPick::Only, _) => {
-                let mut sel = vec![false; n];
-                sel[track] = true;
-                self.select_anchor = Some(track);
-                sel
-            }
-            (TrackPick::Flip, _) => {
-                let mut sel = self.selected_tracks.clone();
-                sel[track] = !sel[track];
-                self.select_anchor = Some(track);
-                sel
-            }
-            (TrackPick::Run, Some(run)) => {
-                let mut sel = vec![false; n];
-                for t in run {
-                    sel[t] = true;
-                }
-                sel
-            }
-            (TrackPick::SetRun, Some(run)) => {
-                let state = anchor_state.unwrap_or(true);
-                let mut sel = self.selected_tracks.clone();
-                for t in run {
-                    sel[t] = state;
-                }
-                sel
-            }
-            // A run with no anchor (or an anchor no longer visible) falls back
-            // to selecting the one track.
-            (TrackPick::Run | TrackPick::SetRun, None) => {
-                let mut sel = vec![false; n];
-                sel[track] = true;
-                self.select_anchor = Some(track);
-                sel
-            }
-        };
-        if sel != self.selected_tracks {
-            self.selected_tracks = sel;
-            self.aggregate_key += 1;
-        }
-        self.ensure_aggregates(cx);
-    }
-
     pub(crate) fn flame_mode(&self) -> FlameMode {
         self.flame_mode
-    }
-
-    /// Puts the flame graph under `mode` and kicks off the rebuild it needs.
-    /// Reports what [`Self::adopt_flame_mode`] did, so a caller can skip the work
-    /// that only a mode change calls for.
-    pub(crate) fn set_flame_mode(&mut self, mode: FlameMode, cx: &mut Context<Self>) -> bool {
-        if !self.adopt_flame_mode(mode) {
-            return false;
-        }
-        // The mode controls render from the mode itself, so their selected state
-        // must not wait for the rebuild to land.
-        cx.notify();
-        self.ensure_aggregates(cx);
-        true
     }
 
     /// Adopts `mode` and keys a rebuild for it, or reports false when it is
@@ -1175,20 +1287,6 @@ impl TraceModel {
         self.flame_mode = mode;
         self.aggregate_key += 1;
         true
-    }
-
-    /// Sets the selection to every visible track (the select-all gesture),
-    /// returning whether the set changed.
-    pub(crate) fn select_all_visible(&mut self, cx: &mut Context<Self>) -> bool {
-        let changed = if self.selected_tracks != self.visible_tracks {
-            self.selected_tracks = self.visible_tracks.clone();
-            self.aggregate_key += 1;
-            true
-        } else {
-            false
-        };
-        self.ensure_aggregates(cx);
-        changed
     }
 
     /// The aggregated flame graph and stats for the current track selection, or
@@ -1208,75 +1306,6 @@ impl TraceModel {
     /// Whether a background aggregate build is currently running.
     pub(crate) fn aggregate_building(&self) -> bool {
         self.agg.is_building()
-    }
-
-    /// Makes the current selection's aggregate the shown one: built on demand
-    /// off the UI thread (walking every slice is far too costly for a paint) and
-    /// swapped in on completion, the previously built graph staying shown until
-    /// then. An in-flight build whose selection the inputs have moved past is
-    /// abandoned. Idempotent — a no-op once the right value is ready or being
-    /// computed. Emits [`AggregateBuildStarted`] when it spawns a build and
-    /// notifies when one lands, so a panel showing the rebuild in progress and a
-    /// panel holding state derived from the aggregate each hear only their own
-    /// step, exactly once per build.
-    pub(crate) fn ensure_aggregates(&mut self, cx: &mut Context<Self>) {
-        let Some(loaded) = self.loaded() else {
-            return;
-        };
-        let scan = loaded.flamer.clone();
-        let key = self.aggregate_key;
-        if self.agg.is_ready(key) {
-            // The shown value is already current; cancel a build for a key the
-            // inputs have since left so its late result can't clobber it.
-            self.agg.cancel_inflight();
-            return;
-        }
-        if self.agg.is_inflight(key) {
-            return;
-        }
-        let generation = self.agg.start(key);
-        cx.emit(AggregateBuildStarted);
-        let selected = self.selected_tracks.clone();
-        let time_window = self.time_selection.clone();
-        let mode = self.flame_mode;
-        let task = cx.spawn(async move |model, cx| {
-            let aggregate = cx
-                .background_executor()
-                .spawn(async move {
-                    let t = std::time::Instant::now();
-                    let aggregate =
-                        ScopeAggregate::build_for_tracks_reusing(&scan, mode, &time_window, |i| {
-                            selected.get(i).copied().unwrap_or(false)
-                        });
-                    if std::env::var_os("BVIZ_TRACE_TIMING").is_some() {
-                        eprintln!(
-                            "[timing] track_aggregate: {:.3}s",
-                            t.elapsed().as_secs_f64()
-                        );
-                    }
-                    aggregate
-                })
-                .await;
-            model
-                .update(cx, |m, cx| {
-                    // Discard a result the inputs have moved past since this spawn.
-                    if !m.agg.accept(generation, key) {
-                        return;
-                    }
-                    m.aggregates = Some(Arc::new(aggregate));
-                    cx.notify();
-                })
-                .ok();
-        });
-        self.agg.set_task(task);
-    }
-
-    /// Drops the cached flame graph and abandons any in-flight build, so the next
-    /// [`Self::ensure_aggregates`] rebuilds from scratch: unlike a mere selection
-    /// change, a replaced document leaves the old graph nothing to describe.
-    fn invalidate_aggregates(&mut self) {
-        self.aggregates = None;
-        self.agg.invalidate();
     }
 
     /// The visible-lane tracks from the selection anchor to `track` inclusive, in
@@ -1305,8 +1334,8 @@ fn clock_source(profile: &Profile) -> Option<bviz_ui_playback::Source> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Chosen, Derivations, HeldChoice, Joined, LoadedProfile, Recorded, RepoNames, TraceModel,
-        TracedPath, Tracing, clock_source, critical_steps, nearly_critical_actions, step_slices,
+        Chosen, Derivations, Joined, LoadedProfile, Recorded, RepoNames, TraceState, TracedPath,
+        Tracing, clock_source, critical_steps, nearly_critical_actions, step_slices,
     };
     use crate::groups::STACKED_GROUPS;
     use crate::track_order::TrackSort;
@@ -1324,8 +1353,8 @@ mod tests {
 
     /// A document whose read has not finished, for exercising the state a panel
     /// drives it through.
-    fn model() -> TraceModel {
-        TraceModel::new(None, None, Task::ready(()))
+    fn model() -> TraceState {
+        TraceState::new()
     }
 
     /// A profile of one slice over `[0, 100)` whose writer started at
@@ -1450,6 +1479,7 @@ mod tests {
     #[test]
     fn a_path_traced_before_spawns_were_logged_stands_until_it_is_traced_again_with_them() {
         let mut session = Session::default();
+        let by = session.reporter();
         let unlogged = Joined::of(&session);
         let mut model = model();
         let loaded = flamer();
@@ -1460,7 +1490,7 @@ mod tests {
         )));
         assert!(model.adopt_critical_path(loaded.profile(), unlogged, None));
 
-        session.report_logged_spawns(LoggedSpawns::default());
+        session.report_logged_spawns(by, LoggedSpawns::default());
         let logged = Joined::of(&session);
         let Some(loaded_profile) = model.loaded_mut() else {
             panic!("a loaded profile");
@@ -1502,6 +1532,7 @@ mod tests {
     #[test]
     fn a_path_traced_before_the_action_graph_was_reported_is_traced_again_with_it() {
         let mut session = Session::default();
+        let by = session.reporter();
         let ungraphed = Joined::of(&session);
         let mut model = model();
         let loaded = flamer();
@@ -1512,7 +1543,7 @@ mod tests {
         )));
         assert!(model.adopt_critical_path(loaded.profile(), ungraphed, None));
 
-        session.report_action_graph(ActionGraph::default());
+        session.report_action_graph(by, ActionGraph::default());
         let graphed = Joined::of(&session);
         assert_ne!(graphed, ungraphed);
         let Some(loaded_profile) = model.loaded_mut() else {
@@ -1535,7 +1566,8 @@ mod tests {
     #[test]
     fn a_path_traced_after_the_action_graph_was_reported_is_joined_to_it_already() {
         let mut session = Session::default();
-        session.report_action_graph(ActionGraph::default());
+        let by = session.reporter();
+        session.report_action_graph(by, ActionGraph::default());
         let graphed = Joined::of(&session);
         let mut model = model();
         let loaded = flamer();
@@ -1558,8 +1590,9 @@ mod tests {
     #[test]
     fn a_tracing_under_way_gives_way_to_one_joined_to_spawns_logged_since() {
         let mut session = Session::default();
+        let by = session.reporter();
         let unlogged = Joined::of(&session);
-        session.report_logged_spawns(LoggedSpawns::default());
+        session.report_logged_spawns(by, LoggedSpawns::default());
         let logged = Joined::of(&session);
         let mut model = model();
         let loaded = flamer();
@@ -1582,13 +1615,13 @@ mod tests {
     /// A loaded profile whose critical path is traced: a link of
     /// `[100, 1100)` run on [`IDLE_TID`], then a step of no length, every
     /// track shown.
-    fn traced() -> TraceModel {
+    fn traced() -> TraceState {
         traced_with(None)
     }
 
     /// [`traced`], and where `graph` models the build, one whose action
     /// writing `bazel-out/b.o` ran on [`IDLE_TID`] in `[0, 90)` off the path.
-    fn traced_with(graph: Option<&ActionGraph>) -> TraceModel {
+    fn traced_with(graph: Option<&ActionGraph>) -> TraceState {
         let mut events = vec![
             r#"{"name":"thread_name","ph":"M","tid":0,"args":{"name":"Critical Path"}}"#
                 .to_owned(),
@@ -1633,7 +1666,7 @@ mod tests {
     }
 
     /// Whether the chart draws a lane of `track`.
-    fn drawn(model: &TraceModel, track: usize) -> bool {
+    fn drawn(model: &TraceState, track: usize) -> bool {
         let chart = model.chart_lanes().expect("a laid-out chart");
         chart.lanes().any(|lane| lane.track == track)
     }
@@ -1673,11 +1706,23 @@ mod tests {
     #[test]
     fn a_replaced_document_holds_no_chosen_step() {
         let mut model = traced();
+        let mut session = Session::default();
+        let by = session.reporter();
+        let steps = critical_steps(model.steps());
+        session.report_critical_path(by, steps, Vec::new());
         assert!(model.adopt_chosen(Chosen::Step(0)));
-        model.chosen = HeldChoice::Alone(Some(Chosen::Step(0)));
-        model.replace_source(Source::Loading);
-        assert!(matches!(model.chosen, HeldChoice::Alone(None)));
+        assert!(session.choose(Some(Chosen::Step(0))));
+        assert!(model.replace_source(Source::Loading, &mut session));
+        assert_eq!(session.chosen(), None);
         assert_eq!(model.kept_in_sample, None);
+    }
+
+    #[test]
+    fn a_replaced_profile_leaves_no_group_headers() {
+        let mut model = traced();
+        assert!(model.group_chrome().is_some());
+        model.replace_source(Source::Loading, &mut Session::default());
+        assert!(model.group_chrome().is_none());
     }
 
     #[test]

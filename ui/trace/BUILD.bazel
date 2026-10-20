@@ -19,6 +19,7 @@ rust_library(
         "//ui/assets",
         "//ui/components",
         "//ui/playback",
+        "//ui/session",
         "//ui/spawn_phase",
         "//ui/theme",
         "//ui/trace/args",

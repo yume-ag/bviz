@@ -98,12 +98,12 @@ pub(crate) struct Timeline {
     _model_observer: Subscription,
     /// Repaints the overlay when the session learns something of the
     /// invocation, which the hover tooltip names a slice's configuration by.
-    _session_observer: Option<Subscription>,
+    _session_observer: Subscription,
     /// Redraws the counter plots once the working lanes are there to plot.
     _working_lanes_derived: Subscription,
     /// Repaints the overlay, which draws the playhead, as a gesture moves the
     /// document's clock, and follows the playhead again from there.
-    _clock_changed: Option<Subscription>,
+    _clock_changed: Subscription,
     _choice_changed: Subscription,
 }
 
@@ -117,14 +117,12 @@ impl Timeline {
         let parent = cx.entity().downgrade();
         let canvas = cx.new(|_| SliceCanvas { parent });
         let model_observer = cx.observe(&model, |_, _, cx| cx.notify());
-        let session = model.read(cx).session().cloned();
-        let session_observer = session.map(|session| cx.observe(&session, |_, _, cx| cx.notify()));
-        let clock = model.read(cx).clock().cloned();
-        let clock_changed = clock.map(|clock| {
-            cx.observe(&clock, |timeline, _, cx| {
-                timeline.follow = Follow::Playhead;
-                cx.notify();
-            })
+        let session = model.read(cx).session().clone();
+        let session_observer = cx.observe(&session, |_, _, cx| cx.notify());
+        let clock = model.read(cx).clock().clone();
+        let clock_changed = cx.observe(&clock, |timeline, _, cx| {
+            timeline.follow = Follow::Playhead;
+            cx.notify();
         });
         let working_lanes_derived = cx
             .subscribe(&model, |timeline, _, _: &WorkingLanesDerived, cx| {
@@ -208,12 +206,11 @@ impl Timeline {
         }
         let (span, at_us) = {
             let model = self.model.read(cx);
-            let playing = model.clock().is_some_and(|clock| {
-                clock
-                    .read(cx)
-                    .timeline()
-                    .is_some_and(|timeline| timeline.is_playing())
-            });
+            let playing = model
+                .clock()
+                .read(cx)
+                .timeline()
+                .is_some_and(|timeline| timeline.is_playing());
             if !playing {
                 return;
             }
@@ -389,7 +386,7 @@ impl Render for Timeline {
         self.follow_playhead(cx);
         let (profile, lanes) = {
             let model = self.model.read(cx);
-            Clock::keep_pace(model.clock(), window, cx);
+            Clock::keep_pace(Some(model.clock()), window, cx);
             let Some(profile) = model.profile() else {
                 return div().into_any_element();
             };
@@ -410,7 +407,7 @@ impl Render for Timeline {
                 return None;
             }
             let model = timeline.model.read(cx);
-            let session = model.session().map(|session| session.read(cx));
+            let session = Some(model.session().read(cx));
             let repos = model.repos()?;
             Some(ShownCard {
                 lines: slice_tooltip(&hovered, session, repos).into(),

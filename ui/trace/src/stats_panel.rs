@@ -670,6 +670,11 @@ impl Render for StatsPanel {
         // ~2M rows on the paint thread would freeze it.
         self.ensure_stats_order(cx);
         let palette = Palette::from_theme(&bviz_ui_theme::theme(window, cx));
+        let placeholder = self.model.read(cx).source().placeholder(&palette.colors);
+        let body = match placeholder {
+            Some(placeholder) => placeholder,
+            None => self.stats_table(&palette, cx),
+        };
         let toolbar =
             time_window_group(&self.model, palette, &self.focus, window, cx).map(|chip| {
                 OneRow::new("stats-controls")
@@ -710,7 +715,7 @@ impl Render for StatsPanel {
                         }),
                     )
                     .on_scroll_wheel(|_, _, cx: &mut App| cx.stop_propagation())
-                    .child(self.stats_table(&palette, cx)),
+                    .child(body),
             )
     }
 }

@@ -3,6 +3,7 @@
 //! of, the registry of what every window's panels show views of and the menu
 //! listing it, and [`run_panels`] for an app whose window frames them.
 
+mod app_actions;
 mod arrangement;
 mod carry;
 mod documents;
@@ -12,26 +13,31 @@ mod drop;
 mod gestures;
 mod group;
 mod layout;
+mod opener;
 mod pane;
 mod panel;
 mod panel_menu;
+mod path_prompt;
 mod regions;
 #[cfg(test)]
 mod testing;
 mod workspace;
 
+pub use app_actions::AppAction;
+pub(crate) use app_actions::AppActions;
 pub(crate) use arrangement::{Arrangement, Maximize};
-pub use documents::ViewSpec;
-pub(crate) use documents::{
-    DocumentId, Documents, OpenDocument, ViewId, ViewState, WindowsChanged,
-};
+pub use documents::{Closed, DocumentId, Documents, Joinable, ViewSpec};
+pub(crate) use documents::{OpenDocument, ViewId, ViewState, WindowsChanged};
 pub use gestures::chrome_gestures;
 pub(crate) use group::PanelGroup;
 pub use layout::{AtEdge, DividerId, Layout, Panes, Removal, Side, Split, SplitSide};
+pub use opener::PathOpener;
 pub(crate) use pane::Framing;
 pub use pane::{Pane, PaneEvent};
+pub(crate) use panel::DocumentOf;
 pub use panel::{
-    AnyPanel, Document, Member, Panel, PanelEvent, PanelKind, Titled, ViewKind, document_label,
+    AnyPanel, Document, Member, Panel, PanelEvent, PanelKind, Shared, Titled, ViewKind,
+    document_label, invocation_label,
 };
 pub(crate) use regions::Regions;
 pub use regions::Role;
@@ -73,27 +79,31 @@ pub fn run_viewer<C, I, T, F>(
     T: 'static,
     F: 'static + Fn(T, &mut Window, &mut App) -> Document,
 {
-    let mut documents = documents(C::parse()).into_iter();
-    let Some(first) = documents.next() else {
+    let documents: Vec<T> = documents(C::parse()).into_iter().collect();
+    if documents.is_empty() {
         C::command()
             .error(
                 ErrorKind::MissingRequiredArgument,
                 format!("{required} is required"),
             )
             .exit()
-    };
+    }
     run_panels(
         app_id,
         window_size,
-        first,
-        documents.collect(),
+        documents,
         open,
+        None,
+        Vec::new(),
         panel_keys,
     );
 }
 
 /// Runs an app whose one window frames the [`Document`]s `open` builds from
-/// `first` and then `rest`, their views laid out by [`Role`]. Each of
+/// `documents` in order, their views laid out by [`Role`], and frames no panel
+/// where `documents` is empty. Files the user names to a window while the app
+/// runs go to `opener`, where the app opens any, and each window's Documents
+/// menu lists `actions` after opening files. Each of
 /// `panel_keys` registers the bindings of one panel kind the app can show, and
 /// runs before the first window opens. Each runs exactly once per process:
 /// `cx.bind_keys` refreshes every window, which drops what each has cached of
@@ -101,9 +111,10 @@ pub fn run_viewer<C, I, T, F>(
 pub fn run_panels<T, F>(
     app_id: impl Into<String>,
     window_size: Size<Pixels>,
-    first: T,
-    rest: Vec<T>,
+    documents: Vec<T>,
     open: F,
+    opener: Option<PathOpener>,
+    actions: Vec<AppAction>,
     panel_keys: &'static [fn(&mut App)],
 ) where
     T: 'static,
@@ -112,18 +123,20 @@ pub fn run_panels<T, F>(
     let app_id = app_id.into();
     bviz_ui_shell::application().run(move |cx: &mut App| {
         bviz_ui_shell::setup(cx);
-        register_keys(cx);
+        register_keys(cx, opener.is_some());
+        if let Some(opener) = opener {
+            cx.set_global(opener);
+        }
+        cx.set_global(AppActions(actions));
         for register in panel_keys {
             register(cx);
         }
-        let (first, rest) = (first, rest);
         bviz_ui_shell::open_window(&app_id, window_size, cx, |window, cx| {
-            let first = open(first, window, cx);
-            let mut others = Vec::with_capacity(rest.len());
-            for document in rest {
-                others.push(open(document, window, cx));
+            let mut opened = Vec::with_capacity(documents.len());
+            for document in documents {
+                opened.push(open(document, window, cx));
             }
-            cx.new(|cx| Workspace::with_documents(app_id.clone(), first, others, window, cx))
+            cx.new(|cx| Workspace::with_documents(app_id.clone(), opened, window, cx))
         })
         .unwrap();
         cx.activate(true);

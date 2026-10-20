@@ -179,7 +179,7 @@ pub struct ConsolePanel {
     /// Redraws as the build is read.
     _changed: Subscription,
     /// Redraws as a gesture moves the document's playback time.
-    _clock_changed: Option<Subscription>,
+    _clock_changed: Subscription,
     /// The display terminal, built at the window size for the shown frame and
     /// rebuilt when the frame changes.
     terminal: Option<Terminal>,
@@ -235,11 +235,8 @@ impl ConsolePanel {
         // when it is open (its tab index is set on creation).
         let body_focus = cx.focus_handle().tab_index(0).tab_stop(true);
         let changed = cx.observe(&model, |_, _, cx| cx.notify());
-        let clock_changed = model
-            .read(cx)
-            .clock()
-            .cloned()
-            .map(|clock| cx.observe(&clock, |_, _, cx| cx.notify()));
+        let clock = model.read(cx).clock().clone();
+        let clock_changed = cx.observe(&clock, |_, _, cx| cx.notify());
         let mut view = Self {
             model,
             _changed: changed,
@@ -677,7 +674,7 @@ impl Panel for ConsolePanel {
 
 impl Render for ConsolePanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        Clock::keep_pace(self.model.read(cx).clock(), window, cx);
+        Clock::keep_pace(Some(self.model.read(cx).clock()), window, cx);
         self.autoscroll_selection(window, cx);
         let theme = bviz_ui_theme::theme(window, cx);
         let colors = &theme.colors;
@@ -711,7 +708,7 @@ impl Render for ConsolePanel {
                 let unaligned = self
                     .model
                     .read(cx)
-                    .unaligned()
+                    .unaligned(cx)
                     .then(|| unaligned_note("build event stream", colors));
                 let cut_off = self
                     .model

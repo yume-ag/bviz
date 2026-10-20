@@ -680,14 +680,17 @@ name = "bviz"
 version = "0.1.0"
 dependencies = [
  "bviz_alloc",
+ "bviz_bazel_flags_args",
  "bviz_cli",
  "bviz_input",
  "bviz_invocation",
+ "bviz_sniff",
  "bviz_ui_components",
  "bviz_ui_console",
  "bviz_ui_execlog",
  "bviz_ui_graph",
- "bviz_ui_playback",
+ "bviz_ui_graph_args",
+ "bviz_ui_session",
  "bviz_ui_trace",
  "bviz_ui_workspace",
  "clap",
@@ -901,6 +904,7 @@ dependencies = [
  "bviz_ui_components",
  "bviz_ui_console_args",
  "bviz_ui_playback",
+ "bviz_ui_session",
  "bviz_ui_theme",
  "bviz_ui_workspace",
  "clap",
@@ -927,6 +931,8 @@ dependencies = [
  "bviz_ui_assets",
  "bviz_ui_components",
  "bviz_ui_execlog_args",
+ "bviz_ui_playback",
+ "bviz_ui_session",
  "bviz_ui_spawn_phase",
  "bviz_ui_theme",
  "bviz_ui_workspace",
@@ -955,6 +961,7 @@ dependencies = [
  "bviz_ui_components",
  "bviz_ui_graph_args",
  "bviz_ui_playback",
+ "bviz_ui_session",
  "bviz_ui_theme",
  "bviz_ui_workspace",
  "clap",
@@ -981,6 +988,14 @@ dependencies = [
  "bviz_ui_assets",
  "bviz_ui_components",
  "bviz_ui_theme",
+ "gpui",
+]
+
+[[package]]
+name = "bviz_ui_session"
+version = "0.1.0"
+dependencies = [
+ "bviz_invocation",
  "gpui",
 ]
 
@@ -1027,6 +1042,7 @@ dependencies = [
  "bviz_ui_assets",
  "bviz_ui_components",
  "bviz_ui_playback",
+ "bviz_ui_session",
  "bviz_ui_spawn_phase",
  "bviz_ui_theme",
  "bviz_ui_trace_args",
@@ -1046,6 +1062,7 @@ dependencies = [
 name = "bviz_ui_workspace"
 version = "0.1.0"
 dependencies = [
+ "bviz_invocation",
  "bviz_ui_assets",
  "bviz_ui_components",
  "bviz_ui_playback",
@@ -1053,6 +1070,7 @@ dependencies = [
  "bviz_ui_theme",
  "clap",
  "gpui",
+ "shlex",
 ]
 
 [[package]]
