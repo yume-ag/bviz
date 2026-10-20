@@ -61,3 +61,37 @@ platform(
     ],
     visibility = ["//dist:__pkg__"],
 )
+
+# The browser's WebAssembly target. Both web platforms assume a browser with the
+# 2023 baseline features: fixed-width SIMD and exception handling, the latter
+# for unwinding panics.
+platform(
+    name = "wasm32_web",
+    constraint_values = [
+        "@platforms//cpu:wasm32",
+        "@platforms//os:none",
+    ],
+    flags = [
+        "--copt=-msimd128",
+        "--@rules_rs_rules_rust//rust/settings:extra_rustc_flag=-Ctarget-feature=+simd128,+exception-handling",
+        "--@rules_rs_rules_rust//rust/settings:extra_rustc_flag=-Cpanic=unwind",
+    ],
+)
+
+WASM32_ADDRESS_SPACE = 1 << 32
+
+# The web build with threads, for a page served cross-origin isolated. Its
+# memory, which may grow to the whole 32-bit address space, is shared between
+# the workers and imported, so that wasm-bindgen can hand it to each one; the
+# exports are the symbols wasm-bindgen's threads transform reads.
+platform(
+    name = "wasm32_web_threads",
+    constraint_values = ["@rules_rs//rs/platforms/constraints:wasm_threads_on"],
+    flags = [
+        "--@rules_rs_rules_rust//rust/settings:extra_rustc_flag=-Ctarget-feature=+atomics,+bulk-memory,+mutable-globals",
+        "--@rules_rs_rules_rust//rust/settings:extra_rustc_flag=-Clink-args=--shared-memory --max-memory=%d --import-memory --export=__heap_base --export=__wasm_init_tls --export=__tls_size --export=__tls_align --export=__tls_base" % WASM32_ADDRESS_SPACE,
+        "--copt=-matomics",
+        "--copt=-mbulk-memory",
+    ],
+    parents = [":wasm32_web"],
+)
