@@ -1,5 +1,6 @@
 exports_files([
     "rules_rs-git-crate-archive.patch",
     "rules_rs-inherit-default-features.patch",
+    "rules_rs-source-stdlib-libtest.patch",
     "rules_rs-source-stdlib-triples.patch",
 ])

@@ -50,6 +50,7 @@ single_version_override(
         "//patches/rules_rs:rules_rs-git-crate-archive.patch",
         "//patches/rules_rs:rules_rs-inherit-default-features.patch",
         "//patches/rules_rs:rules_rs-source-stdlib-triples.patch",
+        "//patches/rules_rs:rules_rs-source-stdlib-libtest.patch",
     ],
 )
 
