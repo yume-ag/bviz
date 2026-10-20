@@ -62,7 +62,8 @@ register_toolchains("@default_rust_toolchains//...")
 
 # Link Rust binaries with llvm/lld rather than the autodetected system cc. Each
 # supported development host executes the toolchain and targets itself, which
-# also covers every platform the release archives target.
+# also covers every platform the release archives target. The browser is a
+# target of its own.
 llvm_toolchain = use_extension("@llvm//extensions:toolchain.bzl", "toolchain")
 llvm_toolchain.exec(
     arch = "aarch64",
@@ -95,6 +96,10 @@ llvm_toolchain.target(
 llvm_toolchain.target(
     arch = "x86_64",
     os = "macos",
+)
+llvm_toolchain.target(
+    arch = "wasm32",
+    os = "none",
 )
 use_repo(llvm_toolchain, "llvm_toolchains")
 
