@@ -51,6 +51,7 @@ single_version_override(
         "//patches/rules_rs:rules_rs-inherit-default-features.patch",
         "//patches/rules_rs:rules_rs-source-stdlib-triples.patch",
         "//patches/rules_rs:rules_rs-source-stdlib-libtest.patch",
+        "//patches/rules_rs:rules_rs-select-annotation-deps.patch",
     ],
 )
 
@@ -291,6 +292,21 @@ crate.annotation(
     crate = "alacritty_terminal",
     patch_args = ["-p1"],
     patches = ["//patches/alacritty_terminal:alacritty_terminal-cfg-tty.patch"],
+)
+
+# These crates bind JavaScript through js-sys only where WebAssembly has
+# atomics, a cfg the resolver evaluates per triple, where the threaded web
+# build shares its triple with the build without threads.
+crate.annotation_select(
+    crate = "getrandom",
+    triples = WEB_TRIPLES,
+    version = "0.3.4",
+    deps = ["@crates//:js-sys"],
+)
+crate.annotation_select(
+    crate = "uuid",
+    triples = WEB_TRIPLES,
+    deps = ["@crates//:js-sys"],
 )
 
 # gpui_apple's build script generates the C header its Metal shaders share with
