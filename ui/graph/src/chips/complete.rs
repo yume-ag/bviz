@@ -894,7 +894,7 @@ mod tests {
     /// committing the field as typed, and Enter accepts a row aimed at.
     #[test]
     fn the_keys_named_for_accepting_follow_the_aim() {
-        let mut bindings = crate::bindings();
+        let mut bindings = crate::bindings(bviz_ui_components::Host::Desktop);
         bindings.extend(text_input::bindings());
         let keymap = Keymap::new(bindings);
         for holder in Holder::ALL {

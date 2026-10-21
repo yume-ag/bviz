@@ -195,8 +195,15 @@ fn bindings(opens_files: bool, host: Host) -> Vec<KeyBinding> {
         KeyBinding::new("f1", ShowKeysAndGestures, workspace),
         KeyBinding::new("ctrl-tab", NextTab, workspace),
         KeyBinding::new("ctrl-shift-tab", PreviousTab, workspace),
-        KeyBinding::new("secondary-w", ClosePanel, workspace),
     ];
+    match host {
+        Host::Desktop => bindings.push(KeyBinding::new("secondary-w", ClosePanel, workspace)),
+        Host::Browser => bindings.extend([
+            KeyBinding::new("secondary-k tab", NextTab, workspace),
+            KeyBinding::new("secondary-k shift-tab", PreviousTab, workspace),
+            KeyBinding::new("secondary-k w", ClosePanel, workspace),
+        ]),
+    }
     if host.opens_windows() {
         bindings.push(KeyBinding::new("secondary-shift-n", DetachPanel, workspace));
     }
@@ -3617,20 +3624,45 @@ mod tests {
             dispatched(bindings(true, Host::Desktop), "secondary-w", &in_a_panel()),
             ClosePanel
         ));
-        for keys in [
-            "secondary-w",
-            "secondary-alt-w",
-            "secondary-o",
-            "ctrl-tab",
-            "secondary-shift-n",
-        ] {
-            let mut window_keys = bindings(true, Host::Desktop);
-            window_keys.extend(bviz_ui_shell::bindings());
-            assert!(
-                dispatched(window_keys, keys, &in_the_dialog).is_none(),
-                "{keys}"
-            );
+        for host in [Host::Desktop, Host::Browser] {
+            for keys in [
+                "secondary-w",
+                "secondary-alt-w",
+                "secondary-o",
+                "ctrl-tab",
+                "secondary-shift-n",
+                "secondary-k w",
+                "secondary-k tab",
+            ] {
+                let mut window_keys = bindings(true, host);
+                window_keys.extend(bviz_ui_shell::bindings(host));
+                assert!(
+                    dispatched(window_keys, keys, &in_the_dialog).is_none(),
+                    "{host:?} {keys}"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn a_browser_closes_and_cycles_panels_by_chords() {
+        let browser = || bindings(true, Host::Browser);
+        assert!(dispatched(browser(), "secondary-w", &in_a_panel()).is_none());
+        assert!(is(
+            dispatched(browser(), "secondary-k w", &in_a_panel()),
+            ClosePanel
+        ));
+        assert!(is(
+            dispatched(browser(), "secondary-k tab", &in_a_panel()),
+            NextTab
+        ));
+        assert!(is(
+            dispatched(browser(), "secondary-k shift-tab", &in_a_panel()),
+            PreviousTab
+        ));
+        let desktop = || bindings(true, Host::Desktop);
+        assert!(dispatched(desktop(), "secondary-k w", &in_a_panel()).is_none());
+        assert!(dispatched(desktop(), "secondary-k tab", &in_a_panel()).is_none());
     }
 
     /// The keys help of a panel the last frame's path to focus left out still
@@ -3638,7 +3670,7 @@ mod tests {
     #[test]
     fn the_stack_around_a_panel_reaches_the_window_frames_keys() {
         const PANEL: KeyScope = KeyScope::new("Panel", "Panel");
-        let keymap = gpui::Keymap::new(bviz_ui_shell::bindings());
+        let keymap = gpui::Keymap::new(bviz_ui_shell::bindings(Host::Desktop));
         let groups = keys_in_effect(
             &keymap,
             &[KEY_CONTEXT, bviz_ui_shell::KEY_CONTEXT, PANEL],

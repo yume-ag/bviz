@@ -6,7 +6,10 @@
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Host {
     Desktop,
-    /// A page of a web browser, which holds one window.
+    /// A page of a web browser, which holds one window and has no application
+    /// to quit. The browser keeps from the page the keys that close and cycle
+    /// its own windows and tabs, and may take Alt-← and Alt-→ for its history,
+    /// so bviz binds chords for those actions there.
     Browser,
 }
 

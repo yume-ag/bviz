@@ -814,7 +814,7 @@ mod tests {
     /// in every view holding one, so no hint drops out of it.
     #[test]
     fn every_footer_hint_names_keys() {
-        let mut bindings = crate::bindings();
+        let mut bindings = crate::bindings(bviz_ui_components::Host::Desktop);
         bindings.extend(text_input::bindings());
         let keymap = Keymap::new(bindings);
         for holder in Holder::ALL {
