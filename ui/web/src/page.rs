@@ -12,6 +12,11 @@ pub fn failed(why: &str) {
     dispatch("bviz:failed", Some(why));
 }
 
+/// Tells the page that bviz's window has closed.
+pub fn closed() {
+    dispatch("bviz:closed", None);
+}
+
 /// Dispatches the event `name`, carrying `message` as its property of that
 /// name where there is one.
 pub(crate) fn dispatch(name: &str, message: Option<&str>) {

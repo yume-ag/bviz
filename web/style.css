@@ -46,7 +46,7 @@ body {
   padding: 0.5rem 1rem;
 }
 
-.crashed {
+.ended {
   align-items: center;
   background: color-mix(in srgb, Canvas 85%, transparent);
   display: flex;
@@ -57,7 +57,7 @@ body {
   position: fixed;
 }
 
-.crashed p {
+.ended p {
   max-width: 42rem;
   white-space: pre-wrap;
 }

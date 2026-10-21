@@ -23,4 +23,5 @@ gpui_platform = { workspace = true, features = ["wayland"] }
 gpui_platform = { workspace = true, features = ["font-kit"] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
+bviz_ui_web = { path = "../web" }
 gpui_web = { workspace = true }

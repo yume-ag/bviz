@@ -1073,6 +1073,7 @@ dependencies = [
  "bviz_ui_assets",
  "bviz_ui_components",
  "bviz_ui_theme",
+ "bviz_ui_web",
  "gpui",
  "gpui_platform",
  "gpui_web",

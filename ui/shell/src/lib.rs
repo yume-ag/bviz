@@ -50,14 +50,17 @@ pub fn application() -> Application {
 }
 
 /// gpui's web platform as `gpui_platform::application` builds it, logging and
-/// reporting panics to the browser console.
+/// reporting panics to the browser console, and leaving the end of the
+/// application to [`last_window_closed`].
 #[cfg(target_family = "wasm")]
 fn web_application() -> Application {
     gpui_web::init_logging();
     let allow_multi_threading = true;
     let platform = std::rc::Rc::new(gpui_web::WebPlatform::new(allow_multi_threading));
     let http_client = std::sync::Arc::new(platform.fetch_http_client());
-    Application::with_platform(platform).with_http_client(http_client)
+    Application::with_platform(platform)
+        .with_http_client(http_client)
+        .with_quit_mode(gpui::QuitMode::Explicit)
 }
 
 /// gpui's Linux platform is built for Wayland alone, and without a Wayland
@@ -75,8 +78,9 @@ fn exit_without_wayland() {
     std::process::exit(1);
 }
 
-/// Register fonts, the themes, global key bindings, and quit-on-last-window-close.
-/// Call once at startup before opening windows.
+/// Register fonts, the themes, global key bindings, and the end of the
+/// application with its last window. Call once at startup before opening
+/// windows.
 pub fn setup(cx: &mut App) {
     bviz_ui_assets::load_fonts(cx);
     bviz_ui_theme::init(cx).expect("the built-in themes load");
@@ -86,10 +90,22 @@ pub fn setup(cx: &mut App) {
     bviz_ui_components::place_tooltips(cx);
     cx.on_window_closed(|cx, _| {
         if cx.windows().is_empty() {
-            cx.quit();
+            last_window_closed(cx);
         }
     })
     .detach();
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn last_window_closed(cx: &mut App) {
+    cx.quit();
+}
+
+/// A page cannot end the script running in it, so it is told the window is
+/// gone instead.
+#[cfg(target_family = "wasm")]
+fn last_window_closed(_: &mut App) {
+    bviz_ui_web::closed();
 }
 
 pub fn bindings() -> Vec<KeyBinding> {

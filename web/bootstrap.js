@@ -60,24 +60,29 @@ function help(reason, detail) {
   location.replace(`help.html#${given}`);
 }
 
-// Covers the page with what crashed bviz and a way to reload it: the panic or
-// fault `error` that escaped it, or, where an abort left none, the panic it
-// last recorded.
-function crashed(error) {
-  if (document.querySelector(".crashed")) {
+// Covers the page with `message` and a way to reload bviz, once bviz has
+// ended for good.
+function ended(message) {
+  if (document.querySelector(".ended")) {
     return;
   }
-  const what = error ? error.message : globalThis.bvizLastPanic;
-  const message = document.createElement("p");
-  message.textContent = what ? `bviz crashed: ${what}` : "bviz crashed.";
+  const text = document.createElement("p");
+  text.textContent = message;
   const reload = document.createElement("button");
   reload.textContent = "Reload";
   reload.addEventListener("click", () => location.reload());
   const overlay = document.createElement("div");
-  overlay.className = "crashed";
-  overlay.append(message, reload);
+  overlay.className = "ended";
+  overlay.append(text, reload);
   document.body.append(overlay);
   reload.focus();
+}
+
+// Tells what crashed bviz: the panic or fault `error` that escaped it, or,
+// where an abort left none, the panic it last recorded.
+function crashed(error) {
+  const what = error ? error.message : globalThis.bvizLastPanic;
+  ended(what ? `bviz crashed: ${what}` : "bviz crashed.");
 }
 
 // Says that bviz cannot use more than one thread, the page not being served
@@ -108,6 +113,7 @@ if (reason) {
   addEventListener("gpui:graphicsunavailable", (event) => help("graphics", event.message));
   addEventListener("bviz:failed", (event) => help("failed", event.message));
   addEventListener("bviz:crashed", () => crashed());
+  addEventListener("bviz:closed", () => ended("bviz closed."));
   addEventListener("error", (event) => escaped(event.error) && crashed(event.error));
   addEventListener("unhandledrejection", (event) => escaped(event.reason) && crashed(event.reason));
 
