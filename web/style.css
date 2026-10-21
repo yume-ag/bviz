@@ -24,6 +24,28 @@ body {
   position: fixed;
 }
 
+.app body {
+  display: flex;
+  flex-direction: column;
+}
+
+/* gpui sizes its canvas to fill the body, which the banner shares. */
+.app body > canvas {
+  flex: 1 1 0;
+  height: auto !important;
+  min-height: 0;
+}
+
+.banner {
+  align-items: center;
+  border-top: 1px solid GrayText;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  order: 1;
+  padding: 0.5rem 1rem;
+}
+
 .crashed {
   align-items: center;
   background: color-mix(in srgb, Canvas 85%, transparent);

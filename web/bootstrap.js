@@ -80,6 +80,22 @@ function crashed(error) {
   reload.focus();
 }
 
+// Says that bviz cannot use more than one thread, the page not being served
+// with the headers that let it share memory between threads.
+function warnNotIsolated() {
+  const message = document.createElement("span");
+  message.textContent = "This page is not cross-origin isolated, so bviz cannot use more "
+    + "than one thread.";
+  const dismiss = document.createElement("button");
+  dismiss.textContent = "Dismiss";
+  const banner = document.createElement("div");
+  banner.className = "banner";
+  banner.setAttribute("role", "status");
+  banner.append(message, dismiss);
+  dismiss.addEventListener("click", () => banner.remove());
+  document.body.append(banner);
+}
+
 // Whether `error` is a panic that escaped bviz, or the module failing.
 function escaped(error) {
   return error?.name === "PanicError" || error instanceof WebAssembly.RuntimeError;
@@ -100,6 +116,9 @@ if (reason) {
   status.textContent = "Loading bviz…";
   document.body.append(status);
   addEventListener("bviz:ready", () => status.remove(), { once: true });
+  if (!crossOriginIsolated) {
+    warnNotIsolated();
+  }
 
   try {
     const { default: init } = await import("./bviz.js");

@@ -58,7 +58,8 @@ What it serves is `//web:site`, the directory a static host would serve. It
 sends the headers the page needs: the wasm media type, cross-origin isolation,
 which lets the page share memory between threads, and a content security policy
 that admits no inline script or style. `--port` picks another port, and
-`--no-isolation` leaves out the cross-origin isolation headers.
+`--no-isolation` leaves out the cross-origin isolation headers, and the page
+then shows a banner saying bviz cannot use more than one thread.
 
 ### Measuring performance
 
