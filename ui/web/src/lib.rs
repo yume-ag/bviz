@@ -4,4 +4,4 @@
 
 mod page;
 
-pub use page::ready;
+pub use page::{failed, ready};

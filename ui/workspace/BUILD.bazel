@@ -22,7 +22,10 @@ rust_library(
         "@crates//:clap",
         "@crates//:gpui",
         "@crates//:shlex",
-    ],
+    ] + select({
+        "@platforms//cpu:wasm32": ["//ui/web"],
+        "//conditions:default": [],
+    }),
 )
 
 rust_test(

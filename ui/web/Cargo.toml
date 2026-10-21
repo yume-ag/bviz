@@ -11,4 +11,5 @@ name = "bviz_ui_web"
 path = "src/lib.rs"
 
 [target.'cfg(target_family = "wasm")'.dependencies]
+js-sys = { workspace = true }
 web-sys = { workspace = true, features = ["Event", "EventTarget", "Window"] }

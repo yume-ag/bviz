@@ -157,11 +157,17 @@ fn run(
         for register in panel_keys {
             register(cx);
         }
-        let window = bviz_ui_shell::open_window(&app_id, window_size, cx, |window, cx| {
+        let opening = bviz_ui_shell::open_window(&app_id, window_size, cx, |window, cx| {
             let opened = opened(window, cx);
             cx.new(|cx| Workspace::with_documents(app_id.clone(), opened, window, cx))
-        })
-        .unwrap();
+        });
+        #[cfg(not(target_family = "wasm"))]
+        let window = opening.unwrap();
+        #[cfg(target_family = "wasm")]
+        let Ok(window) = opening.inspect_err(|error| bviz_ui_web::failed(&format!("{error:#}")))
+        else {
+            return;
+        };
         window
             .update(cx, |_, window, cx| arriving(cx.weak_entity(), window, cx))
             .unwrap();

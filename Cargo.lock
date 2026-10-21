@@ -1131,6 +1131,7 @@ dependencies = [
 name = "bviz_ui_web"
 version = "0.1.0"
 dependencies = [
+ "js-sys",
  "web-sys",
 ]
 
@@ -1144,6 +1145,7 @@ dependencies = [
  "bviz_ui_playback",
  "bviz_ui_shell",
  "bviz_ui_theme",
+ "bviz_ui_web",
  "clap",
  "gpui",
  "shlex 2.0.1",

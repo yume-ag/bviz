@@ -65,6 +65,7 @@ if (reason) {
   help(reason);
 } else {
   addEventListener("gpui:graphicsunavailable", (event) => help("graphics", event.message));
+  addEventListener("bviz:failed", (event) => help("failed", event.message));
 
   const status = document.createElement("p");
   status.className = "status";
