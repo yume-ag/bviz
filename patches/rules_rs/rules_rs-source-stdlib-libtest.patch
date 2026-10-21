@@ -1,0 +1,58 @@
+Give a standard library built from source the test harness
+
+A prebuilt standard library ships libtest, which every rust_test links, but
+one built from source for a source_stdlib_triples triple carried only std and
+its dependencies, so no test for such a triple could build. Those triples
+get a standard library of their own that adds libtest, leaving tier 3
+triples and the rustc source repository unchanged.
+
+Written to be offered upstream on top of the source_stdlib_triples patch.
+
+License: Apache-2.0 (rules_rs 0.0.112)
+
+diff --git a/rs/toolchains/declare_rustc_toolchains.bzl b/rs/toolchains/declare_rustc_toolchains.bzl
+--- a/rs/toolchains/declare_rustc_toolchains.bzl
++++ b/rs/toolchains/declare_rustc_toolchains.bzl
+@@ -5,6 +5,7 @@
+ load("@rust_toolchain_labels//:defs.bzl", "rust_toolchain_component_label")
+ load("//rs/platforms:triples.bzl", "ALL_TARGET_TRIPLES", "SUPPORTED_EXEC_TRIPLES", "SUPPORTED_TIER_3_TRIPLES")
+ load("//rs/private:bpf_linker_repository.bzl", "bpf_linker_binary_name", "bpf_linker_repository_name")
++load("//rs/private:source_stdlib.bzl", "source_stdlib")
+ load("//rs/toolchains:toolchain_utils.bzl", "sanitize_triple", "sanitize_version")
+ 
+ def _channel(version):
+@@ -88,6 +89,23 @@
+     channel = _channel(version)
+ 
+     rust_std_label = name + "_rust_std"
++
++    # A prebuilt standard library ships libtest, so one built from source in
++    # its place carries it too.
++    source_rust_std_label = name + "_source_rust_std"
++    if source_stdlib_triples:
++        source_stdlib(
++            name = source_rust_std_label,
++            crates = ["@rustc_src_%s//src:%s" % (version_key, crate) for crate in [
++                "alloc",
++                "compiler_builtins",
++                "core",
++                "panic_abort",
++                "std",
++                "test",
++            ]],
++        )
++
+     rust_std_select = {}
+     source_stdlib_select = {}
+     target_triple_select = {}
+@@ -98,7 +116,9 @@
+         if std_from_source:
+             source_stdlib_select[config_label] = "@rules_rs//rs/private:empty_stdlib"
+         stdlib_repo = "rust_stdlib_%s_%s" % (target_key, version_key)
+-        if std_from_source:
++        if target_triple in source_stdlib_triples:
++            default_rust_std = native.package_relative_label(":" + source_rust_std_label)
++        elif std_from_source:
+             default_rust_std = "@rustc_src_" + version_key + "//src:rust_std"
+         else:
+             default_rust_std = "@%s//:rust_std-%s" % (stdlib_repo, target_triple)

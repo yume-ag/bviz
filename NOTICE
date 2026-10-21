@@ -111,8 +111,10 @@ The patches against the Zed crates carry Apache-2.0 lines from the Zed tree
 they patch (tag v1.24.3), under //LICENSES:gpui_patches. The patch against
 nucleo, patches/nucleo/nucleo-try-tick.patch, carries and modifies Mozilla
 Public License 2.0 lines of nucleo 0.5.0, under //LICENSES:nucleo_patches, and
-is itself available under that licence. Every other patch reshapes too little
-of what it applies to for attribution, and carries no declaration.
+is itself available under that licence. The patch against wgpu 29.0.4,
+patches/wgpu/wgpu-assert-unwind-safe-callbacks.patch, carries Apache-2.0 lines
+of that release, under //LICENSES:wgpu_patches. Every other patch reshapes too
+little of what it applies to for attribution, and carries no declaration.
 
 ## Colour values
 

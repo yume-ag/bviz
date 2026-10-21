@@ -10,4 +10,6 @@ pub use model::{
     TIME_RESOLUTION_US, ThreadTrack, TimeSpan, Workload, encloses, fetch_side, lane_class,
     occupied_span, parks_thread, span_role, track_family,
 };
-pub use parse::{LoadError, gzip_size_hint, pipeline_chunk_bytes, probe_invocation_id};
+#[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+pub use parse::pipeline_chunk_bytes;
+pub use parse::{LoadError, gzip_size_hint, probe_invocation_id};

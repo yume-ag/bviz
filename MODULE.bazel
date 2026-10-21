@@ -8,6 +8,7 @@ bazel_dep(name = "llvm", version = "0.8.24")
 bazel_dep(name = "package_metadata", version = "0.0.13")
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "protobuf", version = "35.0", repo_name = "com_google_protobuf")
+bazel_dep(name = "rules_cc", version = "0.2.25")
 bazel_dep(name = "rules_proto", version = "7.1.0")
 bazel_dep(name = "rules_rs", version = "0.0.112")
 bazel_dep(name = "tar.bzl", version = "0.10.4")
@@ -30,7 +31,10 @@ single_version_override(
 single_version_override(
     module_name = "zstd",
     patch_strip = 1,
-    patches = ["//patches/zstd:zstd-export-license.patch"],
+    patches = [
+        "//patches/zstd:zstd-export-license.patch",
+        "//patches/zstd:zstd-export-headers.patch",
+    ],
 )
 
 single_version_override(
@@ -45,12 +49,18 @@ single_version_override(
     patches = [
         "//patches/rules_rs:rules_rs-git-crate-archive.patch",
         "//patches/rules_rs:rules_rs-inherit-default-features.patch",
+        "//patches/rules_rs:rules_rs-source-stdlib-triples.patch",
+        "//patches/rules_rs:rules_rs-source-stdlib-libtest.patch",
+        "//patches/rules_rs:rules_rs-select-annotation-deps.patch",
+        "//patches/rules_rs:rules_rs-select-annotation-rustc-env.patch",
     ],
 )
 
 rs_toolchains = use_extension("@rules_rs//rs/toolchains:module_extension.bzl", "toolchains")
 rs_toolchains.toolchain(
     edition = "2024",
+    # The web build's panic strategy and target features must reach std.
+    source_stdlib_triples = ["wasm32-unknown-unknown"],
     version = "1.95.0",
 )
 use_repo(rs_toolchains, "default_rust_toolchains")
@@ -59,7 +69,8 @@ register_toolchains("@default_rust_toolchains//...")
 
 # Link Rust binaries with llvm/lld rather than the autodetected system cc. Each
 # supported development host executes the toolchain and targets itself, which
-# also covers every platform the release archives target.
+# also covers every platform the release archives target. The browser is a
+# target of its own.
 llvm_toolchain = use_extension("@llvm//extensions:toolchain.bzl", "toolchain")
 llvm_toolchain.exec(
     arch = "aarch64",
@@ -92,6 +103,10 @@ llvm_toolchain.target(
 llvm_toolchain.target(
     arch = "x86_64",
     os = "macos",
+)
+llvm_toolchain.target(
+    arch = "wasm32",
+    os = "none",
 )
 use_repo(llvm_toolchain, "llvm_toolchains")
 
@@ -141,7 +156,9 @@ LINUX_TRIPLES = [
     "x86_64-unknown-linux-gnu",
 ]
 
-PLATFORM_TRIPLES = DARWIN_TRIPLES + LINUX_TRIPLES
+WEB_TRIPLES = ["wasm32-unknown-unknown"]
+
+PLATFORM_TRIPLES = DARWIN_TRIPLES + LINUX_TRIPLES + WEB_TRIPLES
 
 crate = use_extension("@rules_rs//rs:extensions.bzl", "crate")
 crate.from_cargo(
@@ -160,12 +177,6 @@ crate.annotation(
     git_archive_sha256 = "a1cb2c23824aea36fab919d39284dfe2eb48e5aeb4bcca5c76e777e0b00330ae",
     git_archive_strip_prefix = "elk-rs-{commit}",
     git_archive_url = "https://github.com/openedges/elk-rs/archive/{commit}.tar.gz",
-)
-crate.annotation(
-    crate = "wasm_thread",
-    git_archive_sha256 = "4dc9b3324038ed7f761f8b32811c27eb8e5234a940fa741a6d5214eb88a7abb6",
-    git_archive_strip_prefix = "wasm_thread-{commit}",
-    git_archive_url = "https://github.com/zed-industries/wasm_thread/archive/{commit}.tar.gz",
 )
 crate.annotation(
     crate = "zed-font-kit",
@@ -229,6 +240,11 @@ crate.annotation(
     ],
 )
 crate.annotation(
+    crate = "gpui_web",
+    patch_args = ["-p1"],
+    patches = ["//patches/gpui_web:gpui_web-assert-unwind-safe-callbacks.patch"],
+)
+crate.annotation(
     crate = "gpui_wgpu",
     patch_args = ["-p1"],
     patches = ["//patches/gpui_wgpu:gpui_wgpu-reserve-path-vertices.patch"],
@@ -243,6 +259,80 @@ crate.annotation(
     extra_aliased_targets = {"nucleo_licence": "licence"},
     patch_args = ["-p1"],
     patches = ["//patches/nucleo:nucleo-try-tick.patch"],
+)
+crate.annotation(
+    additive_build_file_content = """filegroup(
+    name = "licence",
+    srcs = ["LICENSE.APACHE"],
+    visibility = ["//visibility:public"],
+)""",
+    crate = "wgpu",
+    extra_aliased_targets = {"wgpu_licence": "licence"},
+    patch_args = ["-p1"],
+    patches = ["//patches/wgpu:wgpu-assert-unwind-safe-callbacks.patch"],
+)
+crate.annotation(
+    crate = "polling",
+    patch_args = ["-p1"],
+    patches = ["//patches/polling:polling-empty-on-wasm.patch"],
+)
+crate.annotation(
+    crate = "home",
+    patch_args = ["-p1"],
+    patches = ["//patches/home:home-empty-on-wasm.patch"],
+)
+crate.annotation(
+    crate = "alacritty_terminal",
+    patch_args = ["-p1"],
+    patches = ["//patches/alacritty_terminal:alacritty_terminal-cfg-tty.patch"],
+)
+
+# These crates enable unstable features where they are built for WebAssembly:
+# atomic waits and thread locals on shared memory, and for wasm_thread on any
+# WebAssembly. A stable compiler grants unstable features only to a
+# bootstrapping build.
+crate.annotation_select(
+    crate = "js-sys",
+    rustc_env = {"RUSTC_BOOTSTRAP": "1"},
+    triples = WEB_TRIPLES,
+)
+crate.annotation_select(
+    crate = "parking_lot_core",
+    rustc_env = {"RUSTC_BOOTSTRAP": "1"},
+    triples = WEB_TRIPLES,
+)
+crate.annotation_select(
+    crate = "wasm-bindgen",
+    rustc_env = {"RUSTC_BOOTSTRAP": "1"},
+    triples = WEB_TRIPLES,
+)
+crate.annotation_select(
+    crate = "wasm_thread",
+    rustc_env = {"RUSTC_BOOTSTRAP": "1"},
+    triples = WEB_TRIPLES,
+)
+crate.annotation(
+    crate = "wasm_thread",
+    git_archive_sha256 = "4dc9b3324038ed7f761f8b32811c27eb8e5234a940fa741a6d5214eb88a7abb6",
+    git_archive_strip_prefix = "wasm_thread-{commit}",
+    git_archive_url = "https://github.com/zed-industries/wasm_thread/archive/{commit}.tar.gz",
+    patch_args = ["-p1"],
+    patches = ["//patches/wasm_thread:wasm_thread-assert-unwind-safe-handler.patch"],
+)
+
+# These crates bind JavaScript through js-sys only where WebAssembly has
+# atomics, a cfg the resolver evaluates per triple, where the threaded web
+# build shares its triple with the build without threads.
+crate.annotation_select(
+    crate = "getrandom",
+    triples = WEB_TRIPLES,
+    version = "0.3.4",
+    deps = ["@crates//:js-sys"],
+)
+crate.annotation_select(
+    crate = "uuid",
+    triples = WEB_TRIPLES,
+    deps = ["@crates//:js-sys"],
 )
 
 # gpui_apple's build script generates the C header its Metal shaders share with
@@ -325,7 +415,31 @@ crate.annotation(
     ],
 )
 crate.annotation(
+    additive_build_file_content = """load("@package_metadata//licenses/rules:license.bzl", "license")
+load("@package_metadata//rules:package_metadata.bzl", "package_metadata")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
+cc_library(
+    name = "wasm_shim",
+    hdrs = glob(["wasm-shim/*.h"]),
+    includes = ["wasm-shim"],
+    package_metadata = [":wasm_shim_package_metadata"],
+    visibility = ["//visibility:public"],
+)
+
+package_metadata(
+    name = "wasm_shim_package_metadata",
+    attributes = [":wasm_shim_license"],
+    purl = "pkg:cargo/zstd-sys@2.1.0+zstd.1.5.7",
+)
+
+license(
+    name = "wasm_shim_license",
+    kind = "@package_metadata//licenses/spdx:BSD-3-Clause",
+    text = "LICENSE",
+)""",
     crate = "zstd-sys",
+    extra_aliased_targets = {"zstd-sys_wasm_shim": "wasm_shim"},
     gen_build_script = "off",  # otherwise it compiles the zstd it bundles
     deps = ["//third_party:zstd"],
 )
@@ -380,6 +494,8 @@ register_toolchains(
     "@//proto_toolchain:prost_toolchain",
     "@//proto_toolchain:proto_toolchain",
 )
+
+register_toolchains("//tools/wasm_test:wasm32_test_toolchain")
 
 http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 

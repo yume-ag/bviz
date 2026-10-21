@@ -2,7 +2,6 @@
 //! followed by that many bytes, into its messages.
 
 use std::io::{ErrorKind, Read};
-use std::sync::mpsc;
 
 use bviz_invocation::Recorded;
 
@@ -165,18 +164,20 @@ pub(crate) fn for_each_message(
 
 /// Chunks [`for_each_message_pipelined`] reads ahead of the messages being
 /// visited.
+#[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
 const CHUNKS_IN_FLIGHT: usize = 4;
 
 /// [`for_each_message`] with `stream` read on a thread of its own, so reading
 /// it, decompression included, overlaps the visits.
+#[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
 pub(crate) fn for_each_message_pipelined(
     mut stream: impl Read + Send,
     chunk_bytes: usize,
     mut visit: impl FnMut(&[u8]) -> Result<(), LoadError>,
 ) -> Result<Recorded<()>, LoadError> {
     type Chunk = Result<(Vec<u8>, Filled), LoadError>;
-    let (filled_tx, filled_rx) = mpsc::sync_channel::<Chunk>(CHUNKS_IN_FLIGHT);
-    let (empty_tx, empty_rx) = mpsc::sync_channel::<Vec<u8>>(CHUNKS_IN_FLIGHT);
+    let (filled_tx, filled_rx) = std::sync::mpsc::sync_channel::<Chunk>(CHUNKS_IN_FLIGHT);
+    let (empty_tx, empty_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(CHUNKS_IN_FLIGHT);
     // Owning the ring's ends, the visiting side drops them on returning, which
     // stops the reader even when a visit fails part way.
     bviz_parallel::scope(move |scope| {
@@ -231,25 +232,33 @@ mod tests {
         stream
     }
 
-    /// The messages of `stream` read `chunk_bytes` at a time, serially and
-    /// pipelined.
+    /// The messages of `stream` read `chunk_bytes` at a time, serially and,
+    /// where there are threads to read ahead on, pipelined.
     fn collect(
         stream: &[u8],
         chunk_bytes: usize,
-    ) -> [Result<Recorded<Vec<Vec<u8>>>, LoadError>; 2] {
+    ) -> Vec<Result<Recorded<Vec<Vec<u8>>>, LoadError>> {
+        let mut reads = Vec::with_capacity(2);
         let mut serial = Vec::new();
-        let serial = for_each_message(stream, chunk_bytes, |message| {
-            serial.push(message.to_vec());
-            Ok(())
-        })
-        .map(|read| read.map(|()| serial));
-        let mut pipelined = Vec::new();
-        let pipelined = for_each_message_pipelined(stream, chunk_bytes, |message| {
-            pipelined.push(message.to_vec());
-            Ok(())
-        })
-        .map(|read| read.map(|()| pipelined));
-        [serial, pipelined]
+        reads.push(
+            for_each_message(stream, chunk_bytes, |message| {
+                serial.push(message.to_vec());
+                Ok(())
+            })
+            .map(|read| read.map(|()| serial)),
+        );
+        #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+        {
+            let mut pipelined = Vec::new();
+            reads.push(
+                for_each_message_pipelined(stream, chunk_bytes, |message| {
+                    pipelined.push(message.to_vec());
+                    Ok(())
+                })
+                .map(|read| read.map(|()| pipelined)),
+            );
+        }
+        reads
     }
 
     #[test]
@@ -292,16 +301,17 @@ mod tests {
                 Ok(())
             });
             assert!(matches!(read, Ok(Recorded::CutOff(()))));
-            let mut pipelined = Vec::new();
-            let read = for_each_message_pipelined(CutAfter(cut), chunk_bytes, |message| {
-                pipelined.push(message.to_vec());
-                Ok(())
-            });
-            assert!(matches!(read, Ok(Recorded::CutOff(()))));
-            assert_eq!(
-                [serial, pipelined],
-                [[b"whole".to_vec()], [b"whole".to_vec()]]
-            );
+            assert_eq!(serial, [b"whole".to_vec()]);
+            #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+            {
+                let mut pipelined = Vec::new();
+                let read = for_each_message_pipelined(CutAfter(cut), chunk_bytes, |message| {
+                    pipelined.push(message.to_vec());
+                    Ok(())
+                });
+                assert!(matches!(read, Ok(Recorded::CutOff(()))));
+                assert_eq!(pipelined, [b"whole".to_vec()]);
+            }
         }
     }
 
@@ -325,20 +335,24 @@ mod tests {
                 matches!(read, Ok(Recorded::CutOff(()))),
                 "chunk of {chunk_bytes}"
             );
-            let mut seen = 0;
-            let read = for_each_message_pipelined(CutAfter(&stream), chunk_bytes, |_| {
-                seen += 1;
-                Ok(())
-            });
-            assert!(
-                matches!(read, Ok(Recorded::CutOff(()))),
-                "chunk of {chunk_bytes}"
-            );
-            assert_eq!(seen, 2, "chunk of {chunk_bytes}");
+            #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+            {
+                let mut seen = 0;
+                let read = for_each_message_pipelined(CutAfter(&stream), chunk_bytes, |_| {
+                    seen += 1;
+                    Ok(())
+                });
+                assert!(
+                    matches!(read, Ok(Recorded::CutOff(()))),
+                    "chunk of {chunk_bytes}"
+                );
+                assert_eq!(seen, 2, "chunk of {chunk_bytes}");
+            }
         }
     }
 
     #[test]
+    #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
     fn a_failed_visit_stops_the_pipeline() {
         let stream = delimited(&[b"one", b"two", b"three"]);
         let mut visits = 0;

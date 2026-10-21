@@ -3,7 +3,7 @@
 //! `BVIZ_TRACE_TIMING=1` for the per-stage breakdown.
 
 #[global_allocator]
-static GLOBAL: bviz_alloc::MiMalloc = bviz_alloc::MiMalloc;
+static GLOBAL: bviz_alloc::Allocator = bviz_alloc::Allocator;
 
 fn main() {
     // SAFETY: the first statement of main, before any other thread starts.

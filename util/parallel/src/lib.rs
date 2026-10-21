@@ -1,73 +1,58 @@
-//! bviz's threads, and how wide to fan work out across the machine. Every OS
-//! thread bviz starts goes through [`spawn`] or [`scope`].
+//! bviz's threads, and how wide to fan work out across the machine. The threads
+//! bviz starts itself go through [`spawn`] or [`scope`]; those of its pools,
+//! through rayon's own pool builder.
+//!
+//! On wasm32-unknown-unknown the standard library cannot start a thread, even
+//! with the atomics feature: that takes a spawn backed by a Web Worker, which
+//! this crate does not provide. Built without atomics, the crate has neither
+//! `spawn` nor `scope`, and runs its fan-outs and pools on the calling thread.
+//! Built with them, it compiles the threaded paths, and `spawn`, `scope`,
+//! `fan_out` and building either pool panic when called.
 
-use std::sync::OnceLock;
-use std::thread::{JoinHandle, Scope};
+#[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+mod threads;
+#[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+pub use threads::{Pool, background_workers, fan_out, scope, spawn, workers};
 
-/// Runs `work` on a new OS thread.
-pub fn spawn<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> JoinHandle<T> {
-    #[expect(clippy::disallowed_methods, reason = "the one start of an OS thread")]
-    std::thread::spawn(work)
-}
-
-/// Runs `work` with a scope whose threads may borrow from the caller, returning
-/// once every thread spawned in it has finished.
-pub fn scope<'env, T>(work: impl for<'scope> FnOnce(&'scope Scope<'scope, 'env>) -> T) -> T {
-    #[expect(clippy::disallowed_methods, reason = "the one start of a thread scope")]
-    std::thread::scope(work)
-}
+#[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
+mod one_thread;
+#[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
+pub use one_thread::{Pool, background_workers, fan_out, workers};
 
 /// Worker count for a parallel pass over bulk data: the machine's physical core
 /// count rather than its logical (SMT) thread count, because such a pass is
 /// memory-bandwidth bound, so threads past the cores that own the memory
 /// channels mostly stall on bandwidth, burning CPU for a wall-time gain that has
-/// flattened. Clamped to the parallelism the process is actually granted, so a
-/// CPU quota or affinity mask is honored, and to at least one worker, so a
-/// caller may size, multiply or divide by it unguarded.
+/// flattened. At least one worker, so a caller may size, multiply or divide by
+/// it unguarded.
 pub fn worker_count() -> usize {
+    physical_cores().max(1)
+}
+
+/// The physical cores, clamped to the parallelism the process is actually
+/// granted, so a CPU quota or affinity mask is honored.
+#[cfg(not(target_family = "wasm"))]
+fn physical_cores() -> usize {
     let granted = std::thread::available_parallelism().map_or(1, |n| n.get());
-    num_cpus::get_physical().min(granted).max(1)
+    num_cpus::get_physical().min(granted)
 }
 
-/// Stack for a worker running the graph layout engine over a whole graph: the
-/// engine recurses over the frame it is given, so the depth follows the frame's
-/// size, and placing a whole graph hands it far larger frames than laying out
-/// one view does. Sized well clear of what the largest frames of a
-/// whole-repository build graph reach.
-const LAYOUT_RECURSION_STACK: usize = 8 << 20;
-
-/// The process's one pool for parallel passes over bulk data that the reader
-/// waits on, [`worker_count`] wide. Every such rayon entry point runs inside an
-/// `install` or `scope` on it, so however many are in flight they fan out that
-/// wide and no wider: a parallel iterator left outside runs instead on rayon's
-/// implicit global pool, a second set of workers sized by logical threads.
-pub fn workers() -> &'static rayon::ThreadPool {
-    static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
-    POOL.get_or_init(|| {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(worker_count())
-            .build()
-            .expect("build the worker pool")
-    })
+/// Half the logical processors the browser reports: a heuristic estimate of the
+/// physical cores, which no browser exposes, that takes every core to run two
+/// threads. On a machine without SMT it counts half the cores.
+#[cfg(all(target_family = "wasm", target_feature = "atomics"))]
+fn physical_cores() -> usize {
+    let global = js_sys::global();
+    let logical = js_sys::Reflect::get(&global, &"navigator".into())
+        .and_then(|navigator| js_sys::Reflect::get(&navigator, &"hardwareConcurrency".into()))
+        .ok()
+        .and_then(|count| count.as_f64())
+        .map_or(1, |count| count as usize);
+    logical / 2
 }
 
-/// The pool for a long pass that runs while the reader goes on working, one
-/// worker narrower than [`workers`].
-///
-/// A worker takes up the jobs its own pool's passes queue before a pass
-/// entering from outside, so on [`workers`] a pass the reader waits on would
-/// wait out every job such a pass had queued there. A pool of its own keeps
-/// that pass's latency to its own work, at the cost of fanning out past the
-/// physical cores while both run. The reader may be waiting on the long pass
-/// too, as a map is drawn only once placed, so the pool gives up a single
-/// worker: that bounds the oversubscription at little cost to the pass.
-pub fn background_workers() -> &'static rayon::ThreadPool {
-    static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
-    POOL.get_or_init(|| {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(worker_count().saturating_sub(1).max(1))
-            .stack_size(LAYOUT_RECURSION_STACK)
-            .build()
-            .expect("build the background worker pool")
-    })
+/// The one thread a build without threads has.
+#[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
+fn physical_cores() -> usize {
+    1
 }

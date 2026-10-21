@@ -1,0 +1,22 @@
+Assert unwind safety of the worker's message handler
+
+When panics unwind, wasm-bindgen catches a panic in a closure handed to
+JavaScript and turns it into a JavaScript exception, but only for a closure
+whose captures are unwind safe. The handler a spawning thread installs on
+each worker's messages is a boxed FnMut, which is not, so the crate fails to
+compile. Asserting it gives it the handling every other closure handed to
+the browser has.
+
+License: Apache-2.0 (wasm_thread 0cf96c7708dfb97ccf3da50347e25edcf75d6937)
+
+--- a/src/wasm32/mod.rs
++++ b/src/wasm32/mod.rs
+@@ -311,7 +311,7 @@
+         // Make copy and keep a reference in callback handler so that GC does not despawn worker
+         let mut their_worker = Some(worker.clone());
+ 
+-        let callback = Closure::wrap(Box::new(move |x: &web_sys::MessageEvent| {
++        let callback = Closure::wrap_assert_unwind_safe(Box::new(move |x: &web_sys::MessageEvent| {
+             // All u32 bits map to f64 mantisa so it's safe to cast like that
+             let req = Box::from_raw(x.data().as_f64().unwrap() as u32 as *mut WorkerMessage);
+ 

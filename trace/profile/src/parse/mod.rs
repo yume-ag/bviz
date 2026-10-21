@@ -1,5 +1,5 @@
 use std::fmt;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, Read};
 use std::path::Path;
 
 use bviz_input::Input;
@@ -13,21 +13,23 @@ use crate::model::Profile;
 
 mod build;
 mod decode;
+#[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+mod gz_stream;
 mod pipeline;
 mod scanner;
 mod serde_events;
 
 use build::{Builder, Merge, seal};
-use decode::{decode, gzip_size_hint_at, latin1_cow};
-use pipeline::{
-    TraceEventsArray, find_trace_events_array, find_trace_events_key, parse_gz_pipelined,
-    parse_gz_pipelined_reader, parse_parallel,
-};
+use decode::{decode, latin1_cow};
+#[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+use gz_stream::{parse_gz_pipelined, parse_gz_pipelined_input};
+use pipeline::{TraceEventsArray, find_trace_events_array, find_trace_events_key, parse_parallel};
 use scanner::object_end;
 use serde_events::{ArgEntry, ProfileVisitor, RawEventSeed};
 
 pub use decode::gzip_size_hint;
-pub use pipeline::pipeline_chunk_bytes;
+#[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+pub use gz_stream::pipeline_chunk_bytes;
 
 /// Estimated distinct-string density of a Bazel profile — about one interned
 /// string per this many decoded bytes — used to pre-size the shared interner's
@@ -67,10 +69,6 @@ fn intern_prefault_bytes(total_bytes: usize) -> usize {
 }
 
 const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
-
-/// Read-buffer capacity for the compressed input, sized to amortize read
-/// syscalls over the streamed inflate of a large profile.
-const GZIP_READ_BUFFER_BYTES: usize = 1 << 20;
 
 #[derive(Debug)]
 pub enum LoadError {
@@ -154,19 +152,20 @@ impl Profile {
         Profile::from_input(Input::open(path).map_err(LoadError::Io)?)
     }
 
-    /// Loads a profile, streaming the pipelined gzip decode of a seekable input
-    /// so the read overlaps decompression and parsing (see
-    /// [`parse_gz_pipelined`]). The pipeline is sized from [`gzip_size_hint`],
-    /// read from the input's trailer without pulling the whole input in.
-    /// Anything the pipeline declines — plain JSON, a small or oddly shaped
-    /// stream, a decode or parse failure — reads the whole input and goes
-    /// through [`from_whole_buffer`]; a stream, which cannot be read twice, is
-    /// read whole and goes through [`from_bytes`](Self::from_bytes).
+    /// Loads a profile. Built with threads, it streams a seekable input through
+    /// the pipelined gzip decode, so the read overlaps decompression and
+    /// parsing, sized from [`gzip_size_hint`] read from the input's trailer
+    /// without pulling the whole input in. A seekable input it does not stream
+    /// — on a build without threads, or one the pipeline declines: plain JSON, a
+    /// small or oddly shaped stream, a decode or parse failure — is read whole
+    /// and goes through [`from_whole_buffer`]; a stream, which cannot be read
+    /// twice, is read whole and goes through [`from_bytes`](Self::from_bytes).
     pub fn from_input(input: Input) -> Result<Recorded<Profile>, LoadError> {
         if input.seekable().is_none() {
             let bytes = timed("read input", || input.read_all().map_err(LoadError::Io))?;
             return Profile::from_bytes(&bytes);
         }
+        #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
         if let Some(profile) = parse_gz_pipelined_input(&input) {
             return Ok(Recorded::Complete(profile));
         }
@@ -174,12 +173,13 @@ impl Profile {
         from_whole_buffer(&bytes)
     }
 
-    /// Parses a profile, preferring the pipelined gzip path (see
-    /// [`parse_gz_pipelined`]) that overlaps decompression with the parallel
-    /// parse. Anything the pipeline declines — plain JSON, a small or oddly
-    /// shaped stream, a decode or parse failure — goes through
+    /// Parses a profile. Built with threads, it prefers the pipelined gzip
+    /// decode, which overlaps decompression with the parallel parse. Built
+    /// without, and for anything the pipeline declines — plain JSON, a small or
+    /// oddly shaped stream, a decode or parse failure — it goes through
     /// [`from_whole_buffer`].
     pub fn from_bytes(bytes: &[u8]) -> Result<Recorded<Profile>, LoadError> {
+        #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
         if bytes.starts_with(&GZIP_MAGIC)
             && let Some(profile) = timed("decode+parse (pipelined)", || parse_gz_pipelined(bytes))
         {
@@ -187,19 +187,6 @@ impl Profile {
         }
         from_whole_buffer(bytes)
     }
-}
-
-/// The pipelined decode streamed from a seekable gzipped `input`, sized from
-/// its trailer. `None` for an input the pipeline declines.
-fn parse_gz_pipelined_input(input: &Input) -> Option<Profile> {
-    if !input.head()?.starts_with(&GZIP_MAGIC) {
-        return None;
-    }
-    let decoded_size = gzip_size_hint_at(input.seekable()?, input.size()?)?;
-    let reader = BufReader::with_capacity(GZIP_READ_BUFFER_BYTES, input.reader()?);
-    timed("decode+parse (pipelined, streamed)", || {
-        parse_gz_pipelined_reader(reader, decoded_size)
-    })
 }
 
 /// Decodes a profile whole into memory and parses that text: the parser works
@@ -420,13 +407,16 @@ pub(crate) fn build_for_test(
 #[cfg(test)]
 mod tests {
     use super::decode::{MAX_PLAUSIBLE_GZIP_RATIO, latin1_to_utf8};
-    use super::pipeline::{parse_chunks, parse_gz_stream, parse_gz_stream_into};
+    #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+    use super::gz_stream::{parse_gz_stream, parse_gz_stream_into};
+    use super::pipeline::parse_chunks;
     use super::scanner::{find_special, scan_event};
     use super::serde_events::{arg_i64, arg_str};
     use super::*;
     use bviz_invocation::EpochMicros;
     use std::io::Write;
 
+    #[cfg(any(unix, windows))]
     fn test_dir() -> std::path::PathBuf {
         std::env::var_os("TEST_TMPDIR")
             .map(std::path::PathBuf::from)
@@ -713,18 +703,16 @@ mod tests {
                 + "{\"cat\":\"c\",\"name\":\"b\",\"ph\":\"X\",\"ts\":1,\"dur\":1,\"tid\":1}\n"
                 + &format!("],\"otherData\":{{\"build_id\":\"{build_id}\"}}}}")
         };
-        let gzipped = |json: &str| {
-            let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-            enc.write_all(json.as_bytes()).unwrap();
-            enc.finish().unwrap()
-        };
         // The same profile with a bracket-free value clears every gate ahead of
         // the parse, leaving only the bracket to decline the other.
         assert!(parse_chunks(&profile("abc"), 4, 0).is_some());
-        assert!(parse_gz_stream(&gzipped(&profile("abc")), 2, 64).is_some());
         let json = profile("a]b");
         assert!(parse_chunks(&json, 4, 0).is_none());
-        assert!(parse_gz_stream(&gzipped(&json), 2, 64).is_none());
+        #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+        {
+            assert!(parse_gz_stream(&gzip(&profile("abc")), 2, 64).is_some());
+            assert!(parse_gz_stream(&gzip(&json), 2, 64).is_none());
+        }
 
         // Read whole, the profile parses intact — events and the
         // bracket-bearing metadata alike.
@@ -861,6 +849,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
     fn pipelined_matches_serial() {
         let json = chunkable_profile_json();
         let serial = parse_streaming(&json).expect("serial");
@@ -877,6 +866,7 @@ mod tests {
     /// them to outnumber the ring, so the producer has to wait on a buffer a
     /// worker has finished with instead of always finding a fresh one.
     #[test]
+    #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
     fn pipelined_recycles_ring_buffers() {
         let mut json = String::from("{\"traceEvents\":[\n");
         for i in 0..24 {
@@ -930,14 +920,15 @@ mod tests {
         // Chunking at newlines splits the ties across several builders.
         let parallel = parse_chunks(&json, 4, 0).expect("parallel");
         assert_eq!(semantic(&serial), semantic(&parallel));
-        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        enc.write_all(json.as_bytes()).unwrap();
-        let gz = enc.finish().unwrap();
-        let pipelined = parse_gz_stream(&gz, 4, 64).expect("pipelined");
-        assert_eq!(semantic(&serial), semantic(&pipelined));
+        #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+        {
+            let pipelined = parse_gz_stream(&gzip(&json), 4, 64).expect("pipelined");
+            assert_eq!(semantic(&serial), semantic(&pipelined));
+        }
     }
 
     #[test]
+    #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
     fn pipelined_reads_trailing_other_data() {
         let json = "{\"traceEvents\":[\n".to_string()
             + "{\"name\":\"thread_name\",\"ph\":\"M\",\"tid\":1,\"args\":{\"name\":\"L\"}},\n"
@@ -968,10 +959,8 @@ mod tests {
         };
         check(&parse_streaming(&json).expect("serial"));
         check(&parse_chunks(&json, 4, 0).expect("parallel"));
-        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        enc.write_all(json.as_bytes()).unwrap();
-        let gz = enc.finish().unwrap();
-        check(&parse_gz_stream(&gz, 2, 64).expect("pipelined"));
+        #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+        check(&parse_gz_stream(&gzip(&json), 2, 64).expect("pipelined"));
     }
 
     #[test]
@@ -1019,6 +1008,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(unix, windows))]
     fn probe_reads_a_gzipped_profile_from_disk() {
         let json = r#"{"otherData":{"build_id":"abc"},"traceEvents":[]}"#;
         let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
@@ -1122,10 +1112,8 @@ mod tests {
         };
         check(&parse_streaming(&json).expect("serial"));
         check(&parse_chunks(&json, 4, 0).expect("parallel"));
-        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        enc.write_all(json.as_bytes()).unwrap();
-        let gz = enc.finish().unwrap();
-        check(&parse_gz_stream(&gz, 4, 64).expect("pipelined"));
+        #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+        check(&parse_gz_stream(&gzip(&json), 4, 64).expect("pipelined"));
     }
 
     #[test]
@@ -1400,6 +1388,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(unix, windows))]
     fn from_path_reads_gzipped_profile() {
         let json = r#"{
             "otherData": {"bazel_version":"7.0.0"},
@@ -1440,6 +1429,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(unix, windows))]
     fn from_path_rejects_sub_frame_gzip() {
         // A gzip-magic file shorter than a full frame: its last four bytes
         // overlap the header, so read as a trailer they decode to a ~4 GiB bogus
@@ -1484,7 +1474,6 @@ mod tests {
 
     #[test]
     fn a_stream_its_trailer_understates_loads_through_the_fallback() {
-        const PAGE: usize = 16;
         let json = chunkable_profile_json();
         let serial = semantic(&parse_streaming(&json).expect("serial"));
         // Two members, so the trailer declares only the short last one.
@@ -1493,8 +1482,12 @@ mod tests {
         gz.extend(gzip(&json[last_member_at..]));
         assert_eq!(gzip_size_hint(&gz), Some(json.len() - last_member_at));
         // A pool as short as that hint runs out mid-parse.
-        let pool = ConcurrentInterner::with_exact_pool(4 * PAGE, PAGE);
-        assert!(parse_gz_stream_into(&gz[..], pool, 2, 64, 0).is_none());
+        #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+        {
+            const PAGE: usize = 16;
+            let pool = ConcurrentInterner::with_exact_pool(4 * PAGE, PAGE);
+            assert!(parse_gz_stream_into(&gz[..], pool, 2, 64, 0).is_none());
+        }
         let loaded = Profile::from_bytes(&gz)
             .expect("the fallback loads it")
             .into_inner();
@@ -1514,6 +1507,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(unix, windows))]
     fn a_truncated_gzip_file_loads_by_recovery() {
         let json = chunkable_profile_json();
         let gz = gzip(&json);

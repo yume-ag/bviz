@@ -21,23 +21,43 @@ where
     })
 }
 
-/// Work started before the view that shows its result exists — from process
-/// entry, say, where reading and parsing a document overlaps the application
-/// shell's own startup (font-database scan, window and GPU-surface setup)
-/// instead of following it. [`load_in_background`] takes the result from here,
-/// so the UI thread waits on it only once it has a frame to draw.
-pub struct Pending<T>(std::thread::JoinHandle<Result<T, String>>);
+/// Work started before the view that shows its result exists, such as reading
+/// and parsing a document from process entry; [`load_in_background`] takes the
+/// result from here. Built with threads, the work runs on a thread of its own,
+/// overlapping the application shell's own startup (font-database scan, window
+/// and GPU-surface setup), so the UI thread waits on it only once it has a
+/// frame to draw. Built without, it runs to its end as it starts.
+pub struct Pending<T>(Started<T>);
+
+#[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+type Started<T> = std::thread::JoinHandle<Result<T, String>>;
+
+/// Boxed, so a `Pending` stays pointer-sized however large its outcome.
+#[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
+type Started<T> = Box<std::thread::Result<Result<T, String>>>;
 
 impl<T: Send + 'static> Pending<T> {
+    #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
     pub fn start(work: impl FnOnce() -> Result<T, String> + Send + 'static) -> Self {
         Self(bviz_parallel::spawn(work))
+    }
+
+    /// The work's panic is caught as a thread's would be, so a caller sees it
+    /// the same way where the work ran on a thread of its own.
+    #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
+    pub fn start(work: impl FnOnce() -> Result<T, String> + Send + 'static) -> Self {
+        Self(Box::new(std::panic::catch_unwind(
+            std::panic::AssertUnwindSafe(work),
+        )))
     }
 
     /// Blocks until the work finishes, reporting a panic in it the way the work
     /// reports a failure of its own.
     pub fn join(self) -> Result<T, String> {
-        self.0
-            .join()
-            .unwrap_or_else(|_| Err("the loader thread panicked".into()))
+        #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+        let finished = self.0.join();
+        #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
+        let finished = *self.0;
+        finished.unwrap_or_else(|_| Err("the loader thread panicked".into()))
     }
 }

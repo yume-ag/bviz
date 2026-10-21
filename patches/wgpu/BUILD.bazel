@@ -1,0 +1,10 @@
+# The patch carries lines of wgpu it modifies, under its terms.
+package(default_package_metadata = [
+    "//:package_metadata",
+    "//LICENSES:wgpu_patches",
+])
+
+exports_files(
+    ["wgpu-assert-unwind-safe-callbacks.patch"],
+    visibility = ["//visibility:public"],
+)

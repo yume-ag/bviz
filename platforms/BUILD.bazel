@@ -61,3 +61,55 @@ platform(
     ],
     visibility = ["//dist:__pkg__"],
 )
+
+# The web build's main thread stack. Where no thread can start, the main thread
+# runs the graph layout engine, whose recursion on a large graph runs deeper
+# than the stack rustc gives WebAssembly.
+WEB_MAIN_THREAD_STACK = 8 << 20
+
+# The browser's WebAssembly target. Both web platforms assume a browser with the
+# 2023 baseline features: fixed-width SIMD and exception handling, the latter
+# for unwinding panics.
+platform(
+    name = "wasm32_web",
+    constraint_values = [
+        "@platforms//cpu:wasm32",
+        "@platforms//os:none",
+    ],
+    flags = [
+        "--copt=-msimd128",
+        "--@rules_rs_rules_rust//rust/settings:extra_rustc_flag=-Ctarget-feature=+simd128,+exception-handling",
+        "--@rules_rs_rules_rust//rust/settings:extra_rustc_flag=-Cpanic=unwind",
+        "--@rules_rs_rules_rust//rust/settings:extra_rustc_flag=-Clink-arg=-zstack-size=%d" % WEB_MAIN_THREAD_STACK,
+    ],
+    visibility = ["//bviz:__pkg__"],
+)
+
+WASM32_ADDRESS_SPACE = 1 << 32
+
+# The web build with threads, for a page served cross-origin isolated. Its
+# memory, which may grow to the whole 32-bit address space, is shared between
+# the workers and imported, so that wasm-bindgen can hand it to each one; the
+# exports are the symbols wasm-bindgen's threads transform reads.
+platform(
+    name = "wasm32_web_threads",
+    constraint_values = ["@rules_rs//rs/platforms/constraints:wasm_threads_on"],
+    flags = [
+        "--@rules_rs_rules_rust//rust/settings:extra_rustc_flag=-Ctarget-feature=+atomics,+bulk-memory,+mutable-globals",
+        "--@rules_rs_rules_rust//rust/settings:extra_rustc_flag=-Clink-args=--shared-memory --max-memory=%d --import-memory --export=__heap_base --export=__wasm_init_tls --export=__tls_size --export=__tls_align --export=__tls_base" % WASM32_ADDRESS_SPACE,
+        "--copt=-matomics",
+        "--copt=-mbulk-memory",
+    ],
+    parents = [":wasm32_web"],
+    visibility = ["//bviz:__pkg__"],
+)
+
+# The web build as wasmtime runs its tests. wasmtime runs only the exnref form
+# of exception handling, so the tests encode unwinding in that form, where the
+# shipped web build keeps the legacy one.
+platform(
+    name = "wasm32_web_test",
+    flags = ["--@rules_rs_rules_rust//rust/settings:extra_rustc_flag=-Cllvm-args=-wasm-use-legacy-eh=false"],
+    parents = [":wasm32_web"],
+    visibility = ["//tools/wasm_test:__pkg__"],
+)

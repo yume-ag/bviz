@@ -15,10 +15,13 @@ rust_library(
         "//ui/execlog:__pkg__",
         "//ui/trace:__pkg__",
     ],
-    deps = [
-        "@crates//:libmimalloc-sys",
-        "@crates//:mimalloc",
-    ],
+    deps = select({
+        "@platforms//cpu:wasm32": [],
+        "//conditions:default": [
+            "@crates//:libmimalloc-sys",
+            "@crates//:mimalloc",
+        ],
+    }),
 )
 
 rust_test(

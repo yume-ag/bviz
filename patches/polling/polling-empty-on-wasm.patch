@@ -1,0 +1,18 @@
+Compile to an empty crate on WebAssembly
+
+polling has no backend for WebAssembly and fails the build with a
+compile_error! there. A crate that depends on it only for code it leaves
+out on WebAssembly can then still build for it.
+
+License: Apache-2.0 (polling 3.11.0)
+
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -53,6 +53,7 @@
+ //! # std::io::Result::Ok(())
+ //! ```
+ 
++#![cfg(not(target_family = "wasm"))]
+ #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
+ #![allow(clippy::useless_conversion, clippy::unnecessary_cast, unused_unsafe)]
+ #![cfg_attr(docsrs, feature(doc_cfg))]

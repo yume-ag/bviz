@@ -10,6 +10,6 @@ repository.workspace = true
 name = "bviz_alloc"
 path = "src/lib.rs"
 
-[dependencies]
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
 libmimalloc-sys = { workspace = true }
 mimalloc = { workspace = true }

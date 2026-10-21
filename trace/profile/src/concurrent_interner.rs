@@ -204,13 +204,14 @@ impl ConcurrentInterner {
         // One byte for the placeholder, the bound itself, a small fraction for
         // within-page slack, and a page per worker the host can run, which is
         // what a parse sized to the host spends on final-page tails.
-        let cap = 1 + text_bytes + text_bytes / 16 + (worker_count() + 2) * PAGE_SIZE;
         // The sealed pool indexes handles with u32, so every reserved offset
         // must fit u32; refusing a larger pool here means `off as u32` in
         // `alloc` can never silently truncate a handle.
-        if cap > u32::MAX as usize {
-            return Err(PoolOverflow::TooLarge);
-        }
+        let cap = text_bytes
+            .checked_add(text_bytes / 16)
+            .and_then(|cap| cap.checked_add(1 + (worker_count() + 2) * PAGE_SIZE))
+            .filter(|&cap| u32::try_from(cap).is_ok())
+            .ok_or(PoolOverflow::TooLarge)?;
         Ok(Self::with_pool(cap, distinct))
     }
 
@@ -554,25 +555,16 @@ mod tests {
             }
         };
         let interner = ConcurrentInterner::new(DISTINCT * 64, DISTINCT).expect("a small pool");
-        let produced: Vec<Vec<(String, Str)>> = bviz_parallel::scope(|scope| {
-            let handles: Vec<_> = (0..threads)
-                .map(|t| {
-                    let interner = &interner;
-                    let key = &key;
-                    scope.spawn(move || {
-                        let mut w = interner.writer();
-                        let mut out = Vec::new();
-                        // Overlapping strides so every thread sees a shared set.
-                        for i in (t..DISTINCT).chain(0..DISTINCT).step_by(1) {
-                            let s = key(i % DISTINCT);
-                            let h = w.intern(&s);
-                            out.push((s, h));
-                        }
-                        out
-                    })
-                })
-                .collect();
-            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        let produced: Vec<Vec<(String, Str)>> = bviz_parallel::fan_out(threads, |t| {
+            let mut w = interner.writer();
+            let mut out = Vec::new();
+            // Overlapping strides so every thread sees a shared set.
+            for i in (t..DISTINCT).chain(0..DISTINCT).step_by(1) {
+                let s = key(i % DISTINCT);
+                let h = w.intern(&s);
+                out.push((s, h));
+            }
+            out
         });
         let text = interner.into_text().expect("the pool holds its text");
 

@@ -1,0 +1,1 @@
+exports_files(["wasm_thread-assert-unwind-safe-handler.patch"])

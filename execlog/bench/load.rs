@@ -2,7 +2,7 @@
 //! with no UI so the read can be measured in isolation and repeatedly.
 
 #[global_allocator]
-static GLOBAL: bviz_alloc::MiMalloc = bviz_alloc::MiMalloc;
+static GLOBAL: bviz_alloc::Allocator = bviz_alloc::Allocator;
 
 fn main() {
     let path = std::env::args()

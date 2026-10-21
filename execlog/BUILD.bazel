@@ -2,6 +2,7 @@ load("@bazel_lib//lib:run_binary.bzl", "run_binary")
 load("@rules_rs//rs:rust_binary.bzl", "rust_binary")
 load("@rules_rs//rs:rust_library.bzl", "rust_library")
 load("@rules_rs//rs:rust_test.bzl", "rust_test")
+load("//tools/wasm_test:wasm_test.bzl", "wasm_test")
 
 run_binary(
     name = "spawn_fields",
@@ -46,4 +47,9 @@ rust_binary(
         "//alloc",
         "//util/time",
     ],
+)
+
+wasm_test(
+    name = "execlog_wasm_test",
+    test = ":execlog_test",
 )

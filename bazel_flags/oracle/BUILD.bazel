@@ -1,5 +1,6 @@
 load("@rules_java//java:java_binary.bzl", "java_binary")
 load("@rules_rs//rs:rust_test.bzl", "rust_test")
+load("//platforms:web.bzl", "NOT_WEB")
 
 java_binary(
     name = "bazelrc_oracle",
@@ -9,6 +10,7 @@ java_binary(
     # Bazel server is permitted to.
     jvm_flags = ["--add-opens=java.base/java.lang=ALL-UNNAMED"],
     main_class = "bviz.oracle.BazelrcOracle",
+    target_compatible_with = NOT_WEB,
     deps = ["@bazel_server_jar//:server"],
 )
 

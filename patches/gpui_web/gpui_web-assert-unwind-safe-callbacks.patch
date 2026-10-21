@@ -1,0 +1,156 @@
+Assert unwind safety of the callbacks handed to the browser
+
+When panics unwind, wasm-bindgen catches a panic in a closure handed to
+JavaScript and turns it into a JavaScript exception, but only for a closure
+whose captures are unwind safe. The dispatcher's main-thread tasks, the DOM
+event listeners and the window's observers capture boxed callbacks or the
+window's shared state, which are not, so the crate fails to compile.
+Asserting it gives them the handling every other closure of the crate has.
+
+License: Apache-2.0 (Zed v1.24.3)
+
+diff --git a/crates/gpui_web/src/dispatcher.rs b/crates/gpui_web/src/dispatcher.rs
+index 721ce6f..31fc2a4 100644
+--- a/crates/gpui_web/src/dispatcher.rs
++++ b/crates/gpui_web/src/dispatcher.rs
+@@ -232,7 +232,8 @@ impl WebDispatcher {
+         function: impl FnOnce() + Send + 'static,
+     ) {
+         if self.on_main_thread() {
+-            let callback = Closure::once_into_js(function);
++            let callback =
++                Closure::<dyn FnMut()>::once_assert_unwind_safe(function).into_js_value();
+             browser_window().queue_microtask(callback.unchecked_ref());
+         } else {
+             self.main_thread_mailbox
+@@ -292,9 +293,10 @@ impl PlatformDispatcher for WebDispatcher {
+ 
+     fn spawn_realtime(&self, function: Box<dyn FnOnce() + Send>) {
+         if self.on_main_thread() {
+-            let callback = Closure::once_into_js(move || {
++            let callback = Closure::<dyn FnMut()>::once_assert_unwind_safe(move || {
+                 function();
+-            });
++            })
++            .into_js_value();
+             browser_window().queue_microtask(callback.unchecked_ref());
+         } else {
+             self.main_thread_mailbox
+diff --git a/crates/gpui_web/src/events.rs b/crates/gpui_web/src/events.rs
+index 9908b42..4af96b9 100644
+--- a/crates/gpui_web/src/events.rs
++++ b/crates/gpui_web/src/events.rs
+@@ -34,7 +34,7 @@ impl EventListenerHandle {
+         event_name: &'static str,
+         handler: impl FnMut(JsValue) + 'static,
+     ) -> Self {
+-        let closure = Closure::<dyn FnMut(JsValue)>::new(handler);
++        let closure = Closure::<dyn FnMut(JsValue)>::own_assert_unwind_safe(handler);
+         target
+             .add_event_listener_with_callback(event_name, closure.as_ref().unchecked_ref())
+             .ok();
+@@ -54,7 +54,7 @@ impl EventListenerHandle {
+         event_name: &'static str,
+         handler: impl FnMut(JsValue) + 'static,
+     ) -> Self {
+-        let closure = Closure::<dyn FnMut(JsValue)>::new(handler);
++        let closure = Closure::<dyn FnMut(JsValue)>::own_assert_unwind_safe(handler);
+         let target_js: &JsValue = target.as_ref();
+         let callback_js: &JsValue = closure.as_ref();
+         let options = js_sys::Object::new();
+@@ -524,12 +524,13 @@ impl WebWindowInner {
+         self.ime_mirror.focus();
+         self.suppress_focus_status_events.set(false);
+ 
+-        let callback = wasm_bindgen::closure::Closure::once_into_js({
++        let callback = wasm_bindgen::closure::Closure::<dyn FnMut()>::once_assert_unwind_safe({
+             let this = Rc::clone(self);
+             move || {
+                 this.refresh_active_status();
+             }
+-        });
++        })
++        .into_js_value();
+         if let Err(error) = self
+             .browser_window
+             .set_timeout_with_callback(callback.unchecked_ref())
+diff --git a/crates/gpui_web/src/ime_mirror.rs b/crates/gpui_web/src/ime_mirror.rs
+index 5cb08b5..0157c9f 100644
+--- a/crates/gpui_web/src/ime_mirror.rs
++++ b/crates/gpui_web/src/ime_mirror.rs
+@@ -292,13 +292,14 @@ impl ImeMirror {
+         if window.ime_mirror.sync_scheduled.replace(true) {
+             return;
+         }
+-        let closure = wasm_bindgen::closure::Closure::once_into_js({
++        let closure = wasm_bindgen::closure::Closure::<dyn FnMut()>::once_assert_unwind_safe({
+             let window = Rc::clone(window);
+             move || {
+                 window.ime_mirror.sync_scheduled.set(false);
+                 sync(&window);
+             }
+-        });
++        })
++        .into_js_value();
+         window
+             .browser_window
+             .set_timeout_with_callback(closure.unchecked_ref())
+diff --git a/crates/gpui_web/src/window.rs b/crates/gpui_web/src/window.rs
+index ce91830..ed4d1be 100644
+--- a/crates/gpui_web/src/window.rs
++++ b/crates/gpui_web/src/window.rs
+@@ -243,7 +243,7 @@ impl WebWindow {
+         }
+ 
+         let event_listeners = inner.register_event_listeners();
+-        let safe_area_observer_closure = Closure::wrap(Box::new({
++        let safe_area_observer_closure = Closure::wrap_assert_unwind_safe(Box::new({
+             let inner = Rc::downgrade(&inner);
+             move |_: js_sys::Array| {
+                 if let Some(inner) = inner.upgrade() {
+@@ -281,7 +281,7 @@ impl WebWindow {
+     fn create_resize_observer_closure(
+         inner: Rc<WebWindowInner>,
+     ) -> Closure<dyn FnMut(js_sys::Array)> {
+-        Closure::new(move |entries: js_sys::Array| {
++        Closure::own_assert_unwind_safe(move |entries: js_sys::Array| {
+             let entry: web_sys::ResizeObserverEntry = match entries.get(0).dyn_into().ok() {
+                 Some(entry) => entry,
+                 None => return,
+@@ -449,7 +449,7 @@ impl WebWindowInner {
+ 
+     fn create_raf_closure(self: &Rc<Self>) -> Closure<dyn FnMut()> {
+         let this = Rc::clone(self);
+-        let closure = Closure::new(move || {
++        let closure = Closure::own_assert_unwind_safe(move || {
+             // The request that fired is no longer pending; clear it before
+             // running the frame so wakeups issued while the frame executes
+             // (e.g. views invalidated during draw) schedule the next request
+@@ -508,7 +508,7 @@ impl WebWindowInner {
+         let this = Rc::clone(self);
+         let observer = observer.clone();
+ 
+-        let closure = Closure::<dyn FnMut(JsValue)>::new(move |_event: JsValue| {
++        let closure = Closure::<dyn FnMut(JsValue)>::own_assert_unwind_safe(move |_event: JsValue| {
+             this.notify_scale.set(true);
+             this.observe_canvas(&observer);
+             this.watch_dpr_changes(&observer);
+@@ -799,7 +799,7 @@ impl PlatformWindow for WebWindow {
+         self.inner.suppress_focus_status_events.set(false);
+         // Chrome can coalesce a same-task blur/focus and leave the keyboard
+         // visible. Restore the hardware-key receiver after this task instead.
+-        let callback = Closure::once_into_js({
++        let callback = Closure::<dyn FnMut()>::once_assert_unwind_safe({
+             let inner = Rc::downgrade(&self.inner);
+             move || {
+                 if let Some(inner) = inner.upgrade()
+@@ -811,7 +811,8 @@ impl PlatformWindow for WebWindow {
+                     inner.suppress_focus_status_events.set(false);
+                 }
+             }
+-        });
++        })
++        .into_js_value();
+         if let Err(error) = self
+             .inner
+             .browser_window

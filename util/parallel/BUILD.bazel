@@ -14,8 +14,8 @@ rust_library(
         "//ui/graph:__pkg__",
         "//util/input:__pkg__",
     ],
-    deps = [
-        "@crates//:num_cpus",
-        "@crates//:rayon",
-    ],
+    deps = ["@crates//:rayon"] + select({
+        "@platforms//cpu:wasm32": ["@crates//:js-sys"],
+        "//conditions:default": ["@crates//:num_cpus"],
+    }),
 )

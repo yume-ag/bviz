@@ -1,0 +1,145 @@
+Let crate.annotation_select add dependencies for chosen triples
+
+A crate can depend on another under a cfg the resolver cannot evaluate per
+triple, such as a target feature that one build of a triple enables and
+another does not. Taking deps among the selectable attributes lets such a
+dependency be added for the triples that need it, alongside the ones
+resolved from the lockfile, without adding it to every other triple.
+
+License: Apache-2.0 (rules_rs 0.0.112)
+
+diff --git a/rs/extensions.bzl b/rs/extensions.bzl
+index da676b5..82a13b3 100644
+--- a/rs/extensions.bzl
++++ b/rs/extensions.bzl
+@@ -105,6 +105,12 @@ def _additive_build_file_content(mctx, annotation):
+     content += annotation.additive_build_file_content
+     return content
+ 
++def _merge_selects(resolved, annotated):
++    merged = dict(resolved)
++    for triple, items in annotated.items():
++        merged[triple] = sorted({item: None for item in merged.get(triple, []) + items}.keys())
++    return merged
++
+ def _generate_hub_and_spokes(
+         mctx,
+         hub_name,
+@@ -359,7 +365,7 @@ crate.annotation(
+             data = annotation.data,
+             deps = annotation.deps,
+             crate_tags = annotation.tags,
+-            deps_select = _select(feature_resolutions.deps),
++            deps_select = _merge_selects(_select(feature_resolutions.deps), annotation.deps_select),
+             link_deps = annotation.link_deps,
+             aliases = feature_resolutions.aliases,
+             crate_features = annotation.crate_features,
+@@ -1009,6 +1015,9 @@ _ANNOTATION_SELECTABLE_ATTRS = {
+     "crate_features": attr.string_list(
+         doc = "Features to add to a crate's `rust_library::crate_features` attribute.",
+     ),
++    "deps": attr.label_list(
++        doc = "A list of labels to add to a crate's `rust_library::deps` attribute.",
++    ),
+     "rustc_flags": attr.string_list(
+         doc = "Flags to add to a crate's `rust_library::rustc_flags` attribute.",
+     ),
+@@ -1070,9 +1079,6 @@ _annotation = tag_class(
+         # "data_glob": attr.string_list(
+         #     doc = "A list of glob patterns to add to a crate's `rust_library::data` attribute.",
+         # ),
+-        "deps": attr.label_list(
+-            doc = "A list of labels to add to a crate's `rust_library::deps` attribute.",
+-        ),
+         "link_deps": attr.string_list(
+             doc = "Labels to add to a crate's `rust_library::link_deps` attribute.",
+         ),
+diff --git a/rs/private/annotations.bzl b/rs/private/annotations.bzl
+index 826c5ce..ba70d12 100644
+--- a/rs/private/annotations.bzl
++++ b/rs/private/annotations.bzl
+@@ -16,6 +16,7 @@ def _crate_annotation(
+         build_script_tags = [],
+         data = [],
+         deps = [],
++        deps_select = {},
+         link_deps = [],
+         tags = [],
+         crate_features = [],
+@@ -49,6 +50,7 @@ def _crate_annotation(
+         build_script_tags = build_script_tags,
+         data = data,
+         deps = deps,
++        deps_select = deps_select,
+         link_deps = link_deps,
+         tags = tags,
+         crate_features = crate_features,
+@@ -132,6 +134,7 @@ _SELECTABLE_ANNOTATION_FIELDS = {
+     "build_script_env": "build_script_env_select",
+     "build_script_tools": "build_script_tools_select",
+     "crate_features": "crate_features_select",
++    "deps": "deps_select",
+     "rustc_flags": "rustc_flags_select",
+ }
+ 
+diff --git a/rs/private/annotations_test.bzl b/rs/private/annotations_test.bzl
+index 58fb1c1..539f398 100644
+--- a/rs/private/annotations_test.bzl
++++ b/rs/private/annotations_test.bzl
+@@ -46,6 +46,7 @@ _ANNOTATION_SELECT_DEFAULTS = {
+     "build_script_env": {},
+     "build_script_tools": [],
+     "crate_features": [],
++    "deps": [],
+     "rustc_flags": [],
+ }
+ 
+@@ -201,10 +202,42 @@ def _selected_windows_gnullvm_annotation_keeps_implicit_values_impl(ctx):
+ 
+     return unittest.end(env)
+ 
++def _select_adds_deps_impl(ctx):
++    env = unittest.begin(ctx)
++    annotations = build_annotation_map(
++        _mod(
++            annotations = [
++                _annotation(
++                    "example",
++                    deps = ["//:dep"],
++                ),
++            ],
++            annotation_selects = [
++                _annotation_select(
++                    "example",
++                    ["x86_64-unknown-linux-gnu"],
++                    deps = ["//:selected_dep"],
++                ),
++            ],
++        ),
++        "repo",
++        _TRIPLES,
++    )
++
++    annotation = annotation_for(annotations, "example", "1.0.0", "repo")
++    asserts.equals(env, ["//:dep"], annotation.deps)
++    asserts.equals(env, {
++        "aarch64-apple-darwin": [],
++        "x86_64-unknown-linux-gnu": ["//:selected_dep"],
++    }, annotation.deps_select)
++
++    return unittest.end(env)
++
+ exact_annotation_replaces_wildcard_and_composes_with_select_test = unittest.make(_exact_annotation_replaces_wildcard_and_composes_with_select_impl)
+ wildcard_and_exact_select_payloads_compose_test = unittest.make(_wildcard_and_exact_select_payloads_compose_impl)
+ wildcard_select_composes_with_exact_annotation_test = unittest.make(_wildcard_select_composes_with_exact_annotation_impl)
+ selected_windows_gnullvm_annotation_keeps_implicit_values_test = unittest.make(_selected_windows_gnullvm_annotation_keeps_implicit_values_impl)
++select_adds_deps_test = unittest.make(_select_adds_deps_impl)
+ 
+ def annotations_tests():
+     return unittest.suite(
+@@ -213,4 +246,5 @@ def annotations_tests():
+         wildcard_and_exact_select_payloads_compose_test,
+         wildcard_select_composes_with_exact_annotation_test,
+         selected_windows_gnullvm_annotation_keeps_implicit_values_test,
++        select_adds_deps_test,
+     )

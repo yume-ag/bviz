@@ -1,6 +1,7 @@
 load("@rules_rs//rs:rust_binary.bzl", "rust_binary")
 load("@rules_rs//rs:rust_library.bzl", "rust_library")
 load("@rules_rs//rs:rust_test.bzl", "rust_test")
+load("//tools/wasm_test:wasm_test.bzl", "wasm_test")
 
 # The query-language test cases taken from Bazel's own tests.
 filegroup(
@@ -68,4 +69,10 @@ rust_binary(
         "//util/input",
         "//util/time",
     ],
+)
+
+wasm_test(
+    name = "layout_wasm_test",
+    size = "medium",
+    test = ":layout_test",
 )

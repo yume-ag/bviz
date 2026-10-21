@@ -1,5 +1,6 @@
 load("@rules_rs//rs:rust_library.bzl", "rust_library")
 load("@rules_rs//rs:rust_test.bzl", "rust_test")
+load("//tools/wasm_test:wasm_test.bzl", "wasm_test")
 
 rust_library(
     name = "invocation",
@@ -27,4 +28,9 @@ rust_test(
     name = "invocation_test",
     size = "small",
     crate = ":invocation",
+)
+
+wasm_test(
+    name = "invocation_wasm_test",
+    test = ":invocation_test",
 )

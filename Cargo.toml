@@ -60,6 +60,7 @@ fixedbitset = "0.5"
 flate2 = { version = "1", features = ["zlib-rs"] }
 hashbrown = { version = "0.16", default-features = false }
 heck = "0.5"
+js-sys = "0.3"
 libmimalloc-sys = "0.1"
 lyon_tessellation = "1.0"
 mimalloc = "0.1"
@@ -85,4 +86,5 @@ prost-types = "0.13"
 protoc-gen-prost = "0.4"
 gpui = { git = "https://github.com/zed-industries/zed", tag = "v1.24.3" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", tag = "v1.24.3" }
+gpui_web = { git = "https://github.com/zed-industries/zed", tag = "v1.24.3" }
 
