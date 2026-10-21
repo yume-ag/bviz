@@ -6,7 +6,7 @@ use std::time::Duration;
 use bazel_spawn_proto::duration_proto::google::protobuf::Duration as ProtoDuration;
 use bazel_spawn_proto::tools::protos::SpawnMetrics;
 use bazel_spawn_proto::tools::protos::exec_log_entry::Invocation;
-use bviz_input::Input;
+use bviz_input::{Input, reserved, reserved_text};
 use bviz_invocation::spawn::{
     self, Bytes, InputBytes, Logged, MeasuredInputs, PhaseTiming, REPORTED_PHASES,
 };
@@ -113,7 +113,7 @@ struct Slots {
 impl Slots {
     fn with_capacity(entries: usize) -> Slots {
         Slots {
-            dense: Vec::with_capacity(entries),
+            dense: reserved(entries),
             sparse: FxHashMap::default(),
         }
     }
@@ -180,12 +180,12 @@ impl Entries {
     fn with_capacity(entries: usize, text_bytes: usize, held: usize) -> Entries {
         Entries {
             slots: Slots::with_capacity(entries),
-            kinds: Vec::with_capacity(entries),
-            text: String::with_capacity(text_bytes),
-            path_ends: Vec::with_capacity(entries),
-            bytes: Vec::with_capacity(entries),
-            held_ends: Vec::with_capacity(entries),
-            held: Vec::with_capacity(held),
+            kinds: reserved(entries),
+            text: reserved_text(text_bytes),
+            path_ends: reserved(entries),
+            bytes: reserved(entries),
+            held_ends: reserved(entries),
+            held: reserved(held),
             widest_set: 0,
         }
     }
@@ -478,7 +478,7 @@ impl Builder {
                 usize::try_from(path_bytes).unwrap_or(usize::MAX),
                 usize::try_from(held).unwrap_or(usize::MAX),
             ),
-            roots: Vec::with_capacity(estimate(compressed, COMPRESSED_BYTES_PER_SPAWN)),
+            roots: reserved(estimate(compressed, COMPRESSED_BYTES_PER_SPAWN)),
             spawns: spawn::Builder::with_capacity(
                 estimate(compressed, COMPRESSED_BYTES_PER_SPAWN),
                 estimate(compressed, COMPRESSED_BYTES_PER_OUTPUT),

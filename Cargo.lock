@@ -787,6 +787,9 @@ dependencies = [
 [[package]]
 name = "bviz_invocation"
 version = "0.1.0"
+dependencies = [
+ "bviz_input",
+]
 
 [[package]]
 name = "bviz_label"

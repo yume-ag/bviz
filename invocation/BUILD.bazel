@@ -21,6 +21,7 @@ rust_library(
         "//ui/trace:__pkg__",
         "//ui/workspace:__pkg__",
     ],
+    deps = ["//util/input"],
 )
 
 rust_test(

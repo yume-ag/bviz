@@ -9,3 +9,6 @@ repository.workspace = true
 [lib]
 name = "bviz_invocation"
 path = "src/lib.rs"
+
+[dependencies]
+bviz_input = { workspace = true }

@@ -217,6 +217,13 @@ pub fn reserved<T>(capacity: usize) -> Vec<T> {
     items
 }
 
+/// An empty string with room for `capacity` bytes, as [`reserved`] reserves.
+pub fn reserved_text(capacity: usize) -> String {
+    let mut text = String::new();
+    let _ = text.try_reserve_exact(capacity);
+    text
+}
+
 /// Reserves room in `buf` for `additional` more bytes, failing with
 /// [`io::ErrorKind::OutOfMemory`] where that much memory cannot be had.
 fn reserve_exact(buf: &mut Vec<u8>, additional: u64) -> io::Result<()> {

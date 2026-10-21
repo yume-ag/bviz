@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
+use bviz_input::{reserved, reserved_text};
+
 use super::{Bytes, InputBytes, PhaseTiming};
 
 /// The runner name Bazel logs for a spawn sent to a remote executor.
@@ -120,8 +122,8 @@ struct Paths {
 impl Paths {
     fn with_capacity(paths: usize, text_bytes: usize) -> Paths {
         Paths {
-            text: String::with_capacity(text_bytes),
-            ends: Vec::with_capacity(paths),
+            text: reserved_text(text_bytes),
+            ends: reserved(paths),
         }
     }
 
@@ -302,7 +304,7 @@ impl Builder {
             runners: Names::default(),
             mnemonics: Names::default(),
             targets: Names::default(),
-            records: Vec::with_capacity(spawns),
+            records: reserved(spawns),
             outputs: Paths::with_capacity(outputs, output_bytes),
             next_outputs: 0,
             next_output_bytes: Bytes::ZERO,

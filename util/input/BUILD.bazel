@@ -9,6 +9,7 @@ rust_library(
         "//bviz:__pkg__",
         "//execlog:__pkg__",
         "//graph/layout:__pkg__",
+        "//invocation:__pkg__",
         "//terminal:__pkg__",
         "//trace/profile:__pkg__",
         "//ui/console:__pkg__",
