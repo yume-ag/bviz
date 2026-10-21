@@ -2,17 +2,17 @@
   color-scheme: light dark;
 }
 
-html,
-body {
-  height: 100%;
-  margin: 0;
-  overflow: hidden;
-}
-
 body {
   background: Canvas;
   color: CanvasText;
   font-family: system-ui, sans-serif;
+  margin: 0;
+}
+
+.app,
+.app body {
+  height: 100%;
+  overflow: hidden;
 }
 
 .status {
@@ -22,4 +22,20 @@ body {
   place-items: center;
   pointer-events: none;
   position: fixed;
+}
+
+.help {
+  line-height: 1.5;
+  margin: 2rem auto;
+  max-width: 42rem;
+  padding: 0 1rem;
+}
+
+.help pre {
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+.help [data-browser] code {
+  white-space: nowrap;
 }
