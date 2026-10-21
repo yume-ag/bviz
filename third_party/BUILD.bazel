@@ -14,15 +14,27 @@ alias(
     visibility = ["//visibility:public"],
 )
 
+# Stands in for a library of the desktop that the browser does not have.
+filegroup(
+    name = "not_on_the_web",
+    target_compatible_with = ["@platforms//:incompatible"],
+)
+
 alias(
     name = "wayland_client",
-    actual = "@wayland//:wayland_client",
+    actual = select({
+        "@platforms//cpu:wasm32": ":not_on_the_web",
+        "//conditions:default": "@wayland//:wayland_client",
+    }),
     visibility = ["//visibility:public"],
 )
 
 alias(
     name = "wayland_cursor",
-    actual = "@wayland//:wayland_cursor",
+    actual = select({
+        "@platforms//cpu:wasm32": ":not_on_the_web",
+        "//conditions:default": "@wayland//:wayland_cursor",
+    }),
     visibility = ["//visibility:public"],
 )
 
