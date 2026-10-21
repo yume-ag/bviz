@@ -1,7 +1,6 @@
 use std::borrow::Cow;
 use std::io::{ErrorKind, Read};
 
-use bviz_input::ReadAt;
 use bviz_invocation::Recorded;
 use flate2::read::MultiGzDecoder;
 
@@ -77,7 +76,11 @@ pub fn gzip_size_hint(bytes: &[u8]) -> Option<usize> {
 
 /// [`gzip_size_hint`] of a gzip stream of `compressed_len` bytes, read from
 /// `source` without pulling the whole stream into memory.
-pub(crate) fn gzip_size_hint_at(source: &dyn ReadAt, compressed_len: u64) -> Option<usize> {
+#[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+pub(crate) fn gzip_size_hint_at(
+    source: &dyn bviz_input::ReadAt,
+    compressed_len: u64,
+) -> Option<usize> {
     if compressed_len < GZIP_FRAMING_MIN as u64 {
         return None;
     }

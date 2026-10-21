@@ -2,7 +2,6 @@
 //! followed by that many bytes, into its messages.
 
 use std::io::{ErrorKind, Read};
-use std::sync::mpsc;
 
 use bviz_invocation::Recorded;
 
@@ -165,18 +164,20 @@ pub(crate) fn for_each_message(
 
 /// Chunks [`for_each_message_pipelined`] reads ahead of the messages being
 /// visited.
+#[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
 const CHUNKS_IN_FLIGHT: usize = 4;
 
 /// [`for_each_message`] with `stream` read on a thread of its own, so reading
 /// it, decompression included, overlaps the visits.
+#[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
 pub(crate) fn for_each_message_pipelined(
     mut stream: impl Read + Send,
     chunk_bytes: usize,
     mut visit: impl FnMut(&[u8]) -> Result<(), LoadError>,
 ) -> Result<Recorded<()>, LoadError> {
     type Chunk = Result<(Vec<u8>, Filled), LoadError>;
-    let (filled_tx, filled_rx) = mpsc::sync_channel::<Chunk>(CHUNKS_IN_FLIGHT);
-    let (empty_tx, empty_rx) = mpsc::sync_channel::<Vec<u8>>(CHUNKS_IN_FLIGHT);
+    let (filled_tx, filled_rx) = std::sync::mpsc::sync_channel::<Chunk>(CHUNKS_IN_FLIGHT);
+    let (empty_tx, empty_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(CHUNKS_IN_FLIGHT);
     // Owning the ring's ends, the visiting side drops them on returning, which
     // stops the reader even when a visit fails part way.
     bviz_parallel::scope(move |scope| {

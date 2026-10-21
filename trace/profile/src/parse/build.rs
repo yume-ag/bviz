@@ -427,7 +427,9 @@ fn finish_merge(
     );
 
     // The folded runs' teardown (per-chunk payload and index buffers) is pure
-    // page-return work; detached so the load doesn't wait on it.
+    // page-return work; where the build has threads, detached so the load
+    // doesn't wait on it.
+    #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
     bviz_parallel::spawn(move || drop(runs));
     parts
 }

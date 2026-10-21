@@ -8,11 +8,10 @@ use bazel_spawn_proto::tools::protos::exec_log_entry::Invocation;
 use bviz_input::Input;
 use bviz_invocation::spawn::{self, Logged, PhaseTiming, REPORTED_PHASES};
 use bviz_invocation::{InvocationId, Recorded};
-use bviz_parallel::worker_count;
 use prost::{DecodeError, Message};
 use rustc_hash::FxHashMap;
 
-use crate::frame::{first_message, for_each_message, for_each_message_pipelined};
+use crate::frame::{first_message, for_each_message};
 use crate::spawn_fields::exec_log_entry;
 use crate::wire::{Value, next_field, text};
 use crate::{ExecLog, LoadError};
@@ -69,10 +68,13 @@ pub(crate) fn read_compressed(
         any_entry = true;
         Ok(builder.add(entry)?)
     };
-    let read = match worker_count() > 1 {
-        true => for_each_message_pipelined(decoder, READ_CHUNK_BYTES, add)?,
+    #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+    let read = match bviz_parallel::worker_count() > 1 {
+        true => crate::frame::for_each_message_pipelined(decoder, READ_CHUNK_BYTES, add)?,
         false => for_each_message(decoder, READ_CHUNK_BYTES, add)?,
     };
+    #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
+    let read = for_each_message(decoder, READ_CHUNK_BYTES, add)?;
     if !any_entry {
         return Err(LoadError::NotALog);
     }

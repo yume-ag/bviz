@@ -13,6 +13,7 @@ use crate::model::Profile;
 
 mod build;
 mod decode;
+#[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
 mod gz_stream;
 mod pipeline;
 mod scanner;
@@ -20,12 +21,14 @@ mod serde_events;
 
 use build::{Builder, Merge, seal};
 use decode::{decode, latin1_cow};
+#[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
 use gz_stream::{parse_gz_pipelined, parse_gz_pipelined_input};
 use pipeline::{TraceEventsArray, find_trace_events_array, find_trace_events_key, parse_parallel};
 use scanner::object_end;
 use serde_events::{ArgEntry, ProfileVisitor, RawEventSeed};
 
 pub use decode::gzip_size_hint;
+#[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
 pub use gz_stream::pipeline_chunk_bytes;
 
 /// Estimated distinct-string density of a Bazel profile — about one interned
@@ -149,19 +152,20 @@ impl Profile {
         Profile::from_input(Input::open(path).map_err(LoadError::Io)?)
     }
 
-    /// Loads a profile, streaming the pipelined gzip decode of a seekable input
-    /// so the read overlaps decompression and parsing (see
-    /// [`parse_gz_pipelined`]). The pipeline is sized from [`gzip_size_hint`],
-    /// read from the input's trailer without pulling the whole input in.
-    /// Anything the pipeline declines — plain JSON, a small or oddly shaped
-    /// stream, a decode or parse failure — reads the whole input and goes
-    /// through [`from_whole_buffer`]; a stream, which cannot be read twice, is
-    /// read whole and goes through [`from_bytes`](Self::from_bytes).
+    /// Loads a profile. Built with threads, it streams a seekable input through
+    /// the pipelined gzip decode, so the read overlaps decompression and
+    /// parsing, sized from [`gzip_size_hint`] read from the input's trailer
+    /// without pulling the whole input in. A seekable input it does not stream
+    /// — on a build without threads, or one the pipeline declines: plain JSON, a
+    /// small or oddly shaped stream, a decode or parse failure — is read whole
+    /// and goes through [`from_whole_buffer`]; a stream, which cannot be read
+    /// twice, is read whole and goes through [`from_bytes`](Self::from_bytes).
     pub fn from_input(input: Input) -> Result<Recorded<Profile>, LoadError> {
         if input.seekable().is_none() {
             let bytes = timed("read input", || input.read_all().map_err(LoadError::Io))?;
             return Profile::from_bytes(&bytes);
         }
+        #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
         if let Some(profile) = parse_gz_pipelined_input(&input) {
             return Ok(Recorded::Complete(profile));
         }
@@ -169,12 +173,13 @@ impl Profile {
         from_whole_buffer(&bytes)
     }
 
-    /// Parses a profile, preferring the pipelined gzip path (see
-    /// [`parse_gz_pipelined`]) that overlaps decompression with the parallel
-    /// parse. Anything the pipeline declines — plain JSON, a small or oddly
-    /// shaped stream, a decode or parse failure — goes through
+    /// Parses a profile. Built with threads, it prefers the pipelined gzip
+    /// decode, which overlaps decompression with the parallel parse. Built
+    /// without, and for anything the pipeline declines — plain JSON, a small or
+    /// oddly shaped stream, a decode or parse failure — it goes through
     /// [`from_whole_buffer`].
     pub fn from_bytes(bytes: &[u8]) -> Result<Recorded<Profile>, LoadError> {
+        #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
         if bytes.starts_with(&GZIP_MAGIC)
             && let Some(profile) = timed("decode+parse (pipelined)", || parse_gz_pipelined(bytes))
         {

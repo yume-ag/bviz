@@ -1,0 +1,73 @@
+use std::sync::OnceLock;
+use std::thread::{JoinHandle, Scope};
+
+use crate::worker_count;
+
+/// Runs `work` on a new OS thread.
+pub fn spawn<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> JoinHandle<T> {
+    #[expect(clippy::disallowed_methods, reason = "the one start of an OS thread")]
+    std::thread::spawn(work)
+}
+
+/// Runs `work` with a scope whose threads may borrow from the caller, returning
+/// once every thread spawned in it has finished.
+pub fn scope<'env, T>(work: impl for<'scope> FnOnce(&'scope Scope<'scope, 'env>) -> T) -> T {
+    #[expect(clippy::disallowed_methods, reason = "the one start of a thread scope")]
+    std::thread::scope(work)
+}
+
+/// Runs `work(0)` to `work(workers - 1)` on a thread each, returning their
+/// results in that order.
+pub fn fan_out<T: Send>(workers: usize, work: impl Fn(usize) -> T + Sync) -> Vec<T> {
+    scope(|scope| {
+        let work = &work;
+        let handles: Vec<_> = (0..workers).map(|i| scope.spawn(move || work(i))).collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    })
+}
+
+/// Stack for a worker running the graph layout engine over a whole graph: the
+/// engine recurses over the frame it is given, so the depth follows the frame's
+/// size, and placing a whole graph hands it far larger frames than laying out
+/// one view does. Sized well clear of what the largest frames of a
+/// whole-repository build graph reach.
+const LAYOUT_RECURSION_STACK: usize = 8 << 20;
+
+/// A pool of threads of its own.
+pub type Pool = rayon::ThreadPool;
+
+/// The process's one pool for parallel passes over bulk data that the reader
+/// waits on, [`worker_count`] wide. Every such rayon entry point runs inside an
+/// `install` or `scope` on it, so however many are in flight they fan out that
+/// wide and no wider: a parallel iterator left outside runs instead on rayon's
+/// implicit global pool, a second set of workers sized by logical threads.
+pub fn workers() -> &'static Pool {
+    static POOL: OnceLock<Pool> = OnceLock::new();
+    POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(worker_count())
+            .build()
+            .expect("build the worker pool")
+    })
+}
+
+/// The pool for a long pass that runs while the reader goes on working, one
+/// worker narrower than [`workers`].
+///
+/// A worker takes up the jobs its own pool's passes queue before a pass
+/// entering from outside, so on [`workers`] a pass the reader waits on would
+/// wait out every job such a pass had queued there. A pool of its own keeps
+/// that pass's latency to its own work, at the cost of fanning out past the
+/// physical cores while both run. The reader may be waiting on the long pass
+/// too, as a map is drawn only once placed, so the pool gives up a single
+/// worker: that bounds the oversubscription at little cost to the pass.
+pub fn background_workers() -> &'static Pool {
+    static POOL: OnceLock<Pool> = OnceLock::new();
+    POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(worker_count().saturating_sub(1).max(1))
+            .stack_size(LAYOUT_RECURSION_STACK)
+            .build()
+            .expect("build the background worker pool")
+    })
+}
