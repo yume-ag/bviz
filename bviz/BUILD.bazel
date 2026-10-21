@@ -76,6 +76,7 @@ platform_transition_filegroup(
         name = "bviz_" + platform,
         executable = ":bviz",
         platform = "//platforms:" + platform,
+        visibility = ["//web:__pkg__"],
     )
     for platform in [
         "wasm32_web",
