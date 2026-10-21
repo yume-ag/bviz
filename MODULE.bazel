@@ -246,6 +246,7 @@ crate.annotation(
         "//patches/gpui_web:gpui_web-assert-unwind-safe-callbacks.patch",
         "//patches/gpui_web:gpui_web-safe-area-probe-cssom.patch",
         "//patches/gpui_web:gpui_web-graphics-unavailable-event.patch",
+        "//patches/gpui_web:gpui_web-shifted-symbol-keystroke.patch",
     ],
 )
 crate.annotation(

@@ -1,0 +1,47 @@
+Name a shifted symbol's keystroke without shift
+
+A browser reports a shifted symbol key by the symbol it types, `?` for shift
+and `/`, with shift still held, so the keystroke reads shift-? and a binding of
+`?` never matches it. gpui's Linux platform names such a keystroke without
+shift, keeping shift only on a key whose character has case; naming the
+browser's keystrokes the same way lets one keymap serve both.
+
+License: Apache-2.0 (Zed v1.24.3)
+
+--- a/crates/gpui_web/src/events.rs
++++ b/crates/gpui_web/src/events.rs
+@@ -739,7 +739,7 @@
+             }
+ 
+             let keystroke = Keystroke {
+-                modifiers,
++                modifiers: keystroke_modifiers(&key, modifiers),
+                 key,
+                 key_char: key_char.clone(),
+             };
+@@ -803,7 +803,7 @@
+             let key_char = compute_key_char(&event, &key, &modifiers);
+ 
+             let keystroke = Keystroke {
+-                modifiers,
++                modifiers: keystroke_modifiers(&key, modifiers),
+                 key,
+                 key_char,
+             };
+@@ -1318,6 +1318,16 @@
+     false
+ }
+ 
++/// The modifiers a keystroke of `key` names: shift only on a key whose
++/// character has case, since the key a browser reports for a shifted symbol
++/// is already the symbol shift typed, as `?` for shift and `/`.
++fn keystroke_modifiers(key: &str, mut modifiers: Modifiers) -> Modifiers {
++    if modifiers.shift && key.chars().count() == 1 && key.to_lowercase() == key.to_uppercase() {
++        modifiers.shift = false;
++    }
++    modifiers
++}
++
+ fn is_modifier_only_key(key: &str) -> bool {
+     matches!(
+         key,
