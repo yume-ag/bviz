@@ -15,7 +15,7 @@ use crate::{
 use bviz_ui_components::dialog;
 use bviz_ui_components::gesture::Pointer;
 use bviz_ui_components::{
-    Button, Divider, DragEnd, GestureGroup, KeyScope, KeyStyle, KeysHelp, Menu, MenuEvent,
+    Button, Divider, DragEnd, GestureGroup, Host, KeyScope, KeyStyle, KeysHelp, Menu, MenuEvent,
     action_label, declare_scopes, declared_scopes, keys_in_effect, note_strip, overlay_canvas,
     text_input, track_drag,
 };
@@ -181,10 +181,10 @@ pub(crate) fn register_keys(cx: &mut App, opens_files: bool) {
             documents_menu::KEY_CONTEXT,
         ],
     );
-    cx.bind_keys(bindings(opens_files));
+    cx.bind_keys(bindings(opens_files, Host::CURRENT));
 }
 
-fn bindings(opens_files: bool) -> Vec<KeyBinding> {
+fn bindings(opens_files: bool, host: Host) -> Vec<KeyBinding> {
     let workspace = Some(KEY_CONTEXT.id());
     let unless_typing = text_input::unless_typing(KEY_CONTEXT);
     let unless_typing = Some(unless_typing.as_str());
@@ -196,7 +196,11 @@ fn bindings(opens_files: bool) -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-tab", NextTab, workspace),
         KeyBinding::new("ctrl-shift-tab", PreviousTab, workspace),
         KeyBinding::new("secondary-w", ClosePanel, workspace),
-        KeyBinding::new("secondary-shift-n", DetachPanel, workspace),
+    ];
+    if host.opens_windows() {
+        bindings.push(KeyBinding::new("secondary-shift-n", DetachPanel, workspace));
+    }
+    bindings.extend([
         KeyBinding::new("secondary-shift-d", ToggleDocuments, workspace),
         KeyBinding::new(
             "escape",
@@ -225,7 +229,7 @@ fn bindings(opens_files: bool) -> Vec<KeyBinding> {
         KeyBinding::new("end", SeekEnd, playback),
         KeyBinding::new("]", SpeedUp, playback),
         KeyBinding::new("[", SpeedDown, playback),
-    ];
+    ]);
     if opens_files {
         bindings.push(KeyBinding::new("secondary-o", OpenFiles, workspace));
         bindings.push(KeyBinding::new("secondary-alt-w", CloseDocument, workspace));
@@ -1219,7 +1223,7 @@ impl Workspace {
             return false;
         };
         let alone = from.is_some_and(|pane| pane.read(cx).tab_count() == 1);
-        re_homes(to, from, alone, frame.arrangement.layout())
+        re_homes(to, from, alone, frame.arrangement.layout(), Host::CURRENT)
     }
 
     /// Takes `panel` out of `from` for a caller re-homing it, and takes `from`
@@ -2408,12 +2412,14 @@ fn framed_panes(
 /// that one stands — `from` itself, or an edge of the window `from` already
 /// spans — is refused: the move would take that pane out and build an equivalent
 /// one at an even share of its split, putting the dividers around it back where
-/// a drag had moved them from.
+/// a drag had moved them from. A window of its own is a destination only where
+/// `host` opens windows.
 pub(crate) fn re_homes<P: Clone + PartialEq>(
     to: &Destination<P>,
     from: Option<&P>,
     alone: bool,
     layout: &Layout<P>,
+    host: Host,
 ) -> bool {
     match to {
         Destination::Tab { pane, .. } | Destination::Beside { pane, .. } => {
@@ -2422,7 +2428,7 @@ pub(crate) fn re_homes<P: Clone + PartialEq>(
         Destination::WindowEdge(side) => {
             !(alone && from.is_some_and(|from| layout.spans_edge(from, *side)))
         }
-        Destination::NewWindow => true,
+        Destination::NewWindow => host.opens_windows(),
     }
 }
 
@@ -3486,10 +3492,39 @@ mod tests {
             bounds,
             &[lone],
             Some(&"lone"),
-            |to| re_homes(to, Some(&"lone"), true, &layout),
+            |to| re_homes(to, Some(&"lone"), true, &layout, Host::Desktop),
         );
         assert_eq!(to, None);
         assert_eq!(joined_pane(to.as_ref()), None);
+    }
+
+    /// A drag past the tear-out margin asks for a window of its own on the
+    /// desktop, and marks nowhere in a browser, which opens none.
+    #[test]
+    fn a_drag_past_the_tear_out_margin_asks_for_a_window_only_where_one_opens() {
+        let bounds = at(0.0, 40.0, 1200.0, 720.0);
+        let pane = PaneGeometry {
+            pane: "pane",
+            bounds,
+            tab_count: 2,
+            band: Some(Band {
+                bounds: at(0.0, 40.0, 1200.0, 24.0),
+                tabs: vec![at(0.0, 40.0, 120.0, 23.0), at(120.0, 40.0, 120.0, 23.0)],
+            }),
+        };
+        let layout = Layout::Pane("pane");
+        let dropped = |host| {
+            drop::dropped_at(
+                point(px(-40.), px(300.)),
+                at(0.0, 0.0, 1200.0, 800.0),
+                bounds,
+                std::slice::from_ref(&pane),
+                Some(&"pane"),
+                |to| re_homes(to, Some(&"pane"), false, &layout, host),
+            )
+        };
+        assert_eq!(dropped(Host::Desktop), Some(Destination::NewWindow));
+        assert_eq!(dropped(Host::Browser), None);
     }
 
     /// A row of a menu names the window a move would put the panel in, so two
@@ -3510,10 +3545,41 @@ mod tests {
     #[test]
     fn a_window_closes_the_document_of_the_panel_with_focus_only_where_the_app_opens_files() {
         assert!(is(
-            dispatched(bindings(true), "secondary-alt-w", &in_a_panel()),
+            dispatched(
+                bindings(true, Host::Desktop),
+                "secondary-alt-w",
+                &in_a_panel()
+            ),
             CloseDocument
         ));
-        assert!(dispatched(bindings(false), "secondary-alt-w", &in_a_panel()).is_none());
+        assert!(
+            dispatched(
+                bindings(false, Host::Desktop),
+                "secondary-alt-w",
+                &in_a_panel()
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn a_window_moves_its_panel_to_a_new_window_only_where_the_host_opens_windows() {
+        assert!(is(
+            dispatched(
+                bindings(true, Host::Desktop),
+                "secondary-shift-n",
+                &in_a_panel()
+            ),
+            DetachPanel
+        ));
+        assert!(
+            dispatched(
+                bindings(true, Host::Browser),
+                "secondary-shift-n",
+                &in_a_panel()
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -3533,10 +3599,10 @@ mod tests {
     #[test]
     fn a_window_binds_its_open_files_key_only_where_the_app_opens_files() {
         assert!(is(
-            dispatched(bindings(true), "secondary-o", &in_a_panel()),
+            dispatched(bindings(true, Host::Desktop), "secondary-o", &in_a_panel()),
             OpenFiles
         ));
-        assert!(dispatched(bindings(false), "secondary-o", &in_a_panel()).is_none());
+        assert!(dispatched(bindings(false, Host::Desktop), "secondary-o", &in_a_panel()).is_none());
     }
 
     /// The path dialog is drawn outside the workspace's key context, so with
@@ -3548,7 +3614,7 @@ mod tests {
             bviz_ui_components::text_input::KEY_CONTEXT.id(),
         ];
         assert!(is(
-            dispatched(bindings(true), "secondary-w", &in_a_panel()),
+            dispatched(bindings(true, Host::Desktop), "secondary-w", &in_a_panel()),
             ClosePanel
         ));
         for keys in [
@@ -3558,7 +3624,7 @@ mod tests {
             "ctrl-tab",
             "secondary-shift-n",
         ] {
-            let mut window_keys = bindings(true);
+            let mut window_keys = bindings(true, Host::Desktop);
             window_keys.extend(bviz_ui_shell::bindings());
             assert!(
                 dispatched(window_keys, keys, &in_the_dialog).is_none(),

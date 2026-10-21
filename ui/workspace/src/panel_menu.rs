@@ -8,7 +8,7 @@ use crate::workspace::{
     SplitRight, SplitUp, ToggleMaximize, Workspace, re_homes,
 };
 use crate::{Arrangement, Pane, Side};
-use bviz_ui_components::{MenuItem, SubmenuItem};
+use bviz_ui_components::{Host, MenuItem, SubmenuItem};
 use gpui::{Action, App, Entity, EntityId, FocusHandle, SharedString, WeakEntity, Window};
 
 /// The sides a panel can be split off towards or moved to, in the order a menu
@@ -84,13 +84,15 @@ pub(crate) enum Deed<P = Entity<Pane>, W = WeakEntity<Workspace>> {
     Close,
 }
 
-/// What the menu of a panel standing at `standing` offers, `windows` naming the
-/// session's other open windows. A rearrangement that would leave the window
-/// laid out as it already is ([`re_homes`]) is left out rather than offered and
-/// refused, as is one there is nothing in this window to carry out.
+/// What the menu of a panel standing at `standing` offers in an application
+/// running in `host`, `windows` naming the session's other open windows. A
+/// rearrangement that would leave the window laid out as it already is
+/// ([`re_homes`]) is left out rather than offered and refused, as is one there
+/// is nothing in this window to carry out.
 pub(crate) fn offered<P: Clone + PartialEq, W: Clone>(
     standing: &Standing<'_, P>,
     windows: &[(W, SharedString)],
+    host: Host,
 ) -> Vec<Row<W>> {
     let Standing {
         arrangement,
@@ -104,13 +106,21 @@ pub(crate) fn offered<P: Clone + PartialEq, W: Clone>(
             pane: pane.clone(),
             side,
         };
-        if re_homes(&to, Some(pane), alone, layout) {
+        if re_homes(&to, Some(pane), alone, layout, host) {
             rows.push(Row::Offer(Offer::Split(side)));
         }
     }
     let edges: Vec<Under<W>> = SIDES
         .into_iter()
-        .filter(|&side| re_homes(&Destination::WindowEdge(side), Some(pane), alone, layout))
+        .filter(|&side| {
+            re_homes(
+                &Destination::WindowEdge(side),
+                Some(pane),
+                alone,
+                layout,
+                host,
+            )
+        })
         .map(|side| Under {
             label: edge_name(side).into(),
             place: Place::Edge(side),
@@ -122,7 +132,9 @@ pub(crate) fn offered<P: Clone + PartialEq, W: Clone>(
             under: edges,
         });
     }
-    rows.push(Row::Offer(Offer::NewWindow));
+    if re_homes(&Destination::NewWindow, Some(pane), alone, layout, host) {
+        rows.push(Row::Offer(Offer::NewWindow));
+    }
     if !windows.is_empty() {
         rows.push(Row::Submenu {
             label: "Move to window".into(),
@@ -161,7 +173,7 @@ pub(crate) fn items(
     window: &Window,
     cx: &App,
 ) -> Vec<MenuItem> {
-    let offered = offered(standing, windows);
+    let offered = offered(standing, windows, Host::CURRENT);
     let mut items = Vec::with_capacity(offered.len());
     for row in offered {
         items.push(match row {
@@ -269,10 +281,10 @@ mod tests {
     }
 
     /// What the menu of a panel held by `pane` offers, that pane holding it
-    /// `alone` or among others, out of an arrangement of plain panes and with
-    /// no other window open.
+    /// `alone` or among others, out of an arrangement of plain panes, on the
+    /// desktop and with no other window open.
     fn offers(arrangement: &Arrangement<char>, pane: char, alone: bool) -> Vec<Row<Window>> {
-        offered(&standing(arrangement, &pane, alone), &[])
+        offered(&standing(arrangement, &pane, alone), &[], Host::Desktop)
     }
 
     fn standing<'a>(
@@ -451,27 +463,36 @@ mod tests {
     fn every_offer_is_one_the_move_would_carry_out() {
         for arrangement in [Arrangement::new(Layout::Pane('a')), split(), nested()] {
             for pane in ['a', 'b', 'c'] {
-                for alone in [true, false] {
+                for (alone, host) in [true, false]
+                    .into_iter()
+                    .flat_map(|alone| [(alone, Host::Desktop), (alone, Host::Browser)])
+                {
                     let layout = arrangement.layout();
                     if !layout.contains(&pane) {
                         continue;
                     }
-                    let offered = offers(&arrangement, pane, alone);
+                    let standing = standing(&arrangement, &pane, alone);
+                    let offered = offered::<char, Window>(&standing, &[], host);
                     let read = labels(&offered);
+                    let re_homes = |to| re_homes(&to, Some(&pane), alone, layout, host);
                     for side in SIDES {
-                        let beside = Destination::Beside { pane, side };
                         assert_eq!(
                             read.contains(&format!("Split({side:?})")),
-                            re_homes(&beside, Some(&pane), alone, layout),
-                            "{pane} {alone} split {side:?}"
+                            re_homes(Destination::Beside { pane, side }),
+                            "{pane} {alone} {host:?} split {side:?}"
                         );
                         let edge = read.contains(&format!("  {}", edge_name(side)));
                         assert_eq!(
                             edge,
-                            re_homes(&Destination::WindowEdge(side), Some(&pane), alone, layout),
-                            "{pane} {alone} edge {side:?}"
+                            re_homes(Destination::WindowEdge(side)),
+                            "{pane} {alone} {host:?} edge {side:?}"
                         );
                     }
+                    assert_eq!(
+                        read.contains(&"NewWindow".to_string()),
+                        re_homes(Destination::NewWindow),
+                        "{pane} {alone} {host:?} new window"
+                    );
                 }
             }
         }
@@ -484,7 +505,11 @@ mod tests {
         let arrangement = Arrangement::new(Layout::Pane('a'));
         let standing = standing(&arrangement, &'a', true);
         assert_eq!(
-            labels(&offered(&standing, &windows(["1. b.profile.gz"]))),
+            labels(&offered(
+                &standing,
+                &windows(["1. b.profile.gz"]),
+                Host::Desktop
+            )),
             [
                 "NewWindow",
                 "Move to window",
@@ -494,8 +519,20 @@ mod tests {
             ]
         );
         assert_eq!(
-            labels(&offered::<char, Window>(&standing, &[])),
+            labels(&offered::<char, Window>(&standing, &[], Host::Desktop)),
             ["NewWindow", "KeysHelp", "Close"]
+        );
+    }
+
+    /// A browser page holds one window, so a panel there offers no window of
+    /// its own.
+    #[test]
+    fn a_browser_offers_no_new_window() {
+        let arrangement = Arrangement::new(Layout::Pane('a'));
+        let standing = standing(&arrangement, &'a', true);
+        assert_eq!(
+            labels(&offered::<char, Window>(&standing, &[], Host::Browser)),
+            ["KeysHelp", "Close"]
         );
     }
 
@@ -506,7 +543,11 @@ mod tests {
     fn a_move_to_a_window_names_that_window() {
         let arrangement = Arrangement::new(Layout::Pane('a'));
         let standing = standing(&arrangement, &'a', true);
-        let offered = offered(&standing, &windows(["second", "third", "fourth"]));
+        let offered = offered(
+            &standing,
+            &windows(["second", "third", "fourth"]),
+            Host::Desktop,
+        );
         let listed = under(&offered, "Move to window");
         let named: Vec<&Place<Window>> = listed.iter().map(|under| &under.place).collect();
         assert_eq!(
