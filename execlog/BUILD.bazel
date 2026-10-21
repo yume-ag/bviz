@@ -49,3 +49,14 @@ rust_binary(
         "//util/time",
     ],
 )
+
+rust_binary(
+    name = "bench_synth",
+    srcs = ["bench/synth.rs"],
+    crate_name = "bench_synth",
+    deps = [
+        "@bazel_spawn_proto//:bazel_spawn_rust_proto",
+        "@crates//:prost",
+        "@crates//:zstd",
+    ],
+)
