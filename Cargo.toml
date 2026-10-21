@@ -32,6 +32,7 @@ members = [
     "ui/theme",
     "ui/trace",
     "ui/trace/args",
+    "ui/web",
     "ui/workspace",
     "util/input",
     "util/parallel",
@@ -82,6 +83,7 @@ tiny_http = { version = "0.12", default-features = false }
 # Locked so Bazel can build wasm-bindgen's CLI at the version bviz links; no
 # crate links it.
 wasm-bindgen-cli = { version = "0.2", default-features = false }
+web-sys = "0.3"
 web-time = "1"
 zstd = { version = "0.14", default-features = false }
 org-eclipse-elk-alg-layered = { git = "https://github.com/openedges/elk-rs", tag = "v0.11.0+rs.2" }

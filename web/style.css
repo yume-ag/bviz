@@ -14,3 +14,12 @@ body {
   color: CanvasText;
   font-family: system-ui, sans-serif;
 }
+
+.status {
+  display: grid;
+  inset: 0;
+  margin: 0;
+  place-items: center;
+  pointer-events: none;
+  position: fixed;
+}

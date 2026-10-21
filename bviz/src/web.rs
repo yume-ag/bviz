@@ -1,0 +1,6 @@
+//! bviz in the browser, where there is no command line to name documents: the
+//! window opens empty, and tells the page once it stands.
+
+pub fn main() {
+    crate::open_window(|_, _, _| bviz_ui_web::ready());
+}

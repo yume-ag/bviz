@@ -29,7 +29,10 @@ rust_binary(
         "//util/input",
         "@crates//:clap",
         "@crates//:gpui",
-    ],
+    ] + select({
+        "@platforms//cpu:wasm32": ["//ui/web"],
+        "//conditions:default": [],
+    }),
 )
 
 rust_test(

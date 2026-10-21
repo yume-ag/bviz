@@ -3,18 +3,24 @@
 
 mod classify;
 mod group;
+#[cfg(target_family = "wasm")]
+mod web;
 
 use bviz_bazel_flags_args::BazelrcArgs;
+#[cfg(not(target_family = "wasm"))]
 use bviz_cli::{Cli, Request, Source, Sources};
 use bviz_input::Input;
 use bviz_invocation::InvocationId;
-use bviz_ui_components::{ChoiceDialog, ChoiceDialogEvent, ChoiceItem, Pending};
+#[cfg(not(target_family = "wasm"))]
+use bviz_ui_components::Pending;
+use bviz_ui_components::{ChoiceDialog, ChoiceDialogEvent, ChoiceItem};
 use bviz_ui_graph_args::{GraphArgs, GraphSource};
 use bviz_ui_session::Sharing;
 use bviz_ui_workspace::{
     AppAction, Document, Documents, Joinable, Member, Panel, PathOpener, Shared, ViewKind,
     Workspace, document_label,
 };
+#[cfg(not(target_family = "wasm"))]
 use clap::Parser;
 use classify::Classified;
 use gpui::{App, AppContext, ClipboardItem, Context, SharedString, WeakEntity, Window, actions};
@@ -36,6 +42,7 @@ enum Load {
 impl Load {
     /// Starts reading `source`, having first asked its head which invocation
     /// wrote it.
+    #[cfg(not(target_family = "wasm"))]
     fn start(source: Source) -> File<Self> {
         match source {
             Source::Trace(source) => Self::read(
@@ -65,6 +72,7 @@ impl Load {
     /// [`start`](Self::start) of `source`, through `opened`, the file it names
     /// opened once for both the probe and the read. A source that did not open
     /// names no invocation, and is left to its viewer's loader to report why.
+    #[cfg(not(target_family = "wasm"))]
     fn read<S, L: From<S> + From<Input>>(
         kind: Kind,
         opened: std::io::Result<Input>,
@@ -95,6 +103,7 @@ impl Load {
         }
     }
 
+    #[cfg(not(target_family = "wasm"))]
     fn start_all(sources: Sources) -> Given<Self> {
         let start_each = |files: Vec<Source>| files.into_iter().map(Self::start).collect();
         match sources {
@@ -185,6 +194,7 @@ fn open_classified(
 
 /// Opens the files named on the command line, once `pending` has told what
 /// each holds, into the window `into` frames.
+#[cfg(not(target_family = "wasm"))]
 fn open_named(
     pending: Pending<Given<Load>>,
     into: WeakEntity<Workspace>,
@@ -196,6 +206,7 @@ fn open_named(
 
 /// Opens what `named` tells of the files named on the command line into
 /// `workspace`, telling the user where it tells nothing.
+#[cfg(not(target_family = "wasm"))]
 fn place_named(
     named: Result<Given<Load>, String>,
     workspace: &mut Workspace,
@@ -426,6 +437,7 @@ fn copy_bazelrc(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Work
     workspace.tell_briefly("Copied the bazelrc snippet to the clipboard.", cx);
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn main() {
     // SAFETY: the first statement of main, before any other thread starts.
     unsafe { bviz_alloc::retain_freed_memory_across_load() };
@@ -438,6 +450,9 @@ fn main() {
         Request::Empty => open_window(|_, _, _| {}),
     }
 }
+
+#[cfg(target_family = "wasm")]
+use web::main;
 
 fn open_window(arriving: impl FnOnce(WeakEntity<Workspace>, &mut Window, &mut App) + 'static) {
     bviz_ui_workspace::run_panels(
