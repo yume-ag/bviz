@@ -895,7 +895,7 @@ mod tests {
     #[test]
     fn the_keys_named_for_accepting_follow_the_aim() {
         let mut bindings = crate::bindings(bviz_ui_components::Host::Desktop);
-        bindings.extend(text_input::bindings());
+        bindings.extend(text_input::bindings(bviz_ui_components::Host::Desktop));
         let keymap = Keymap::new(bindings);
         for holder in Holder::ALL {
             let keys = |accepts: Accepts| {

@@ -4,7 +4,7 @@
 //!
 //! Modified from source in the Zed editor; NOTICE names it.
 
-use crate::{KeyScope, track_drag};
+use crate::{Host, KeyScope, track_drag};
 use gpui::{
     App, Bounds, ClipboardItem, ContentMask, Context, CursorStyle, Element, ElementInputHandler,
     Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, Font, GlobalElementId, Hsla,
@@ -74,7 +74,7 @@ pub fn unless_typing(scope: KeyScope) -> String {
 
 /// Register the text field's key bindings.
 pub fn bind_keys(cx: &mut App) {
-    cx.bind_keys(bindings());
+    cx.bind_keys(bindings(Host::CURRENT));
 }
 
 /// The modifier that turns a character key into its word key, by the
@@ -85,8 +85,8 @@ pub const WORD_MODIFIER: &str = if cfg!(target_os = "macos") {
     "ctrl"
 };
 
-/// The text field's key bindings.
-pub fn bindings() -> Vec<KeyBinding> {
+/// The text field's key bindings in an application running in `host`.
+pub fn bindings(host: Host) -> Vec<KeyBinding> {
     let ctx = Some(KEY_CONTEXT.id());
     let word = |key: &str| format!("{WORD_MODIFIER}-{key}");
     let mut bindings = vec![
@@ -109,9 +109,14 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("shift-end", SelectEnd, ctx),
         KeyBinding::new("secondary-c", Copy, ctx),
         KeyBinding::new("secondary-x", Cut, ctx),
-        KeyBinding::new("secondary-v", Paste, ctx),
         KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, ctx),
     ];
+    // A browser reads its clipboard to the page only once the visitor permits
+    // it, except for the paste event its own paste key fires, which a field
+    // takes through its input handler.
+    if host == Host::Desktop {
+        bindings.push(KeyBinding::new("secondary-v", Paste, ctx));
+    }
     if cfg!(target_os = "macos") {
         bindings.extend([
             KeyBinding::new("secondary-left", Home, ctx),
@@ -323,9 +328,8 @@ impl TextInput {
     }
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            // Single-line field: flatten any newlines.
-            self.replace_text_in_range(None, &text.replace('\n', " "), window, cx);
+        if let Some(item) = cx.read_from_clipboard() {
+            EntityInputHandler::paste(self, item, window, cx);
         }
     }
 
@@ -539,6 +543,13 @@ impl EntityInputHandler for TextInput {
     ) {
         let range = self.replacement_range(range_utf16);
         self.replace(range, new_text, cx);
+    }
+
+    fn paste(&mut self, item: ClipboardItem, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(text) = item.text() {
+            // Single-line field: flatten any newlines.
+            self.replace_text_in_range(None, &text.replace('\n', " "), window, cx);
+        }
     }
 
     fn replace_and_mark_text_in_range(
@@ -925,6 +936,15 @@ impl Render for TextInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keymap_probe;
+
+    #[test]
+    fn a_browser_leaves_its_paste_key_to_the_page() {
+        let in_field = &[KEY_CONTEXT.id()];
+        let pasted = |host| keymap_probe::dispatched(bindings(host), "secondary-v", in_field);
+        assert!(pasted(Host::Desktop).is_some_and(|action| action.as_any().is::<Paste>()));
+        assert!(pasted(Host::Browser).is_none());
+    }
 
     const VISIBLE: Pixels = px(100.);
 

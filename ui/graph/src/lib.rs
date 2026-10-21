@@ -1685,7 +1685,7 @@ mod tests {
         contexts: &[&str],
     ) -> Option<std::boxed::Box<dyn gpui::Action>> {
         let mut bindings = bindings(host);
-        bindings.extend(text_input::bindings());
+        bindings.extend(text_input::bindings(host));
         keymap_probe::dispatched(bindings, keys, contexts)
     }
 
@@ -1922,7 +1922,7 @@ mod tests {
     /// completion's list stands open, with a row `aimed` at or not.
     fn completing(keys: &str, aimed: bool) -> Option<std::boxed::Box<dyn gpui::Action>> {
         let mut bindings = bindings(Host::Desktop);
-        bindings.extend(text_input::bindings());
+        bindings.extend(text_input::bindings(Host::Desktop));
         keymap_probe::dispatched_within(
             bindings,
             keys,

@@ -815,7 +815,7 @@ mod tests {
     #[test]
     fn every_footer_hint_names_keys() {
         let mut bindings = crate::bindings(bviz_ui_components::Host::Desktop);
-        bindings.extend(text_input::bindings());
+        bindings.extend(text_input::bindings(bviz_ui_components::Host::Desktop));
         let keymap = Keymap::new(bindings);
         for holder in Holder::ALL {
             for (actions, does) in KEY_HINTS.into_iter().flatten() {
