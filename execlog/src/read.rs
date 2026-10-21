@@ -11,7 +11,7 @@ use bviz_invocation::spawn::{
     self, Bytes, InputBytes, Logged, MeasuredInputs, PhaseTiming, REPORTED_PHASES,
 };
 use bviz_invocation::{InvocationId, Recorded};
-use bviz_parallel::{worker_count, workers};
+use bviz_parallel::{StopSignal, background_workers, worker_count};
 use prost::{DecodeError, Message};
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
@@ -19,7 +19,7 @@ use rustc_hash::FxHashMap;
 use crate::frame::{first_message, for_each_message, for_each_message_pipelined};
 use crate::spawn_fields::{digest, exec_log_entry};
 use crate::wire::{Value, next_field, text, varint};
-use crate::{ExecLog, LoadError};
+use crate::{ExecLog, LoadError, UnmeasuredLog};
 
 /// Compressed log bytes per spawn, rounded down from the densest logs measured
 /// so the spawn list is reserved at or above its final length.
@@ -50,7 +50,7 @@ const HELD_PER_COMPRESSED_KIB: u64 = 80;
 /// Decoded bytes read from the log at a time.
 const READ_CHUNK_BYTES: usize = 256 << 10;
 
-pub(crate) fn read_input(input: Input) -> Result<Recorded<ExecLog>, LoadError> {
+pub(crate) fn read_input(input: Input) -> Result<Recorded<UnmeasuredLog>, LoadError> {
     let compressed = input.size().unwrap_or(0);
     read_compressed(input.into_reader(), compressed)
 }
@@ -62,7 +62,7 @@ const ZSTD_MAGIC: [u8; 4] = zstd::zstd_safe::MAGICNUMBER.to_le_bytes();
 pub(crate) fn read_compressed(
     mut log: impl Read + Send,
     compressed: u64,
-) -> Result<Recorded<ExecLog>, LoadError> {
+) -> Result<Recorded<UnmeasuredLog>, LoadError> {
     let mut magic = [0u8; ZSTD_MAGIC.len()];
     match log.read_exact(&mut magic) {
         Ok(()) if magic == ZSTD_MAGIC => {}
@@ -250,7 +250,7 @@ impl Entries {
 /// The entries a log's spawns read and how the sets among them nest, kept
 /// apart from what only reading the log needs, to measure the bytes each
 /// spawn read.
-struct InputGraph {
+pub(crate) struct InputGraph {
     bytes: Vec<Bytes>,
     /// As [`Entries`] holds them.
     held_ends: Vec<usize>,
@@ -283,23 +283,34 @@ impl InputGraph {
         &self.held[start..self.held_ends[slot]]
     }
 
-    /// The bytes each spawn read, walked on the worker pool.
-    fn measure(&self) -> MeasuredInputs {
-        let pool = workers();
+    /// The bytes each spawn read, walked on the pool for long passes, `None`
+    /// where `stop` is raised first.
+    pub(crate) fn measure(&self, stop: &StopSignal) -> Option<MeasuredInputs> {
+        self.measure_until(|| stop.stopped())
+    }
+
+    /// [`measure`](Self::measure), asking `stopped` before each spawn's walk,
+    /// so a stop is seen within one walk.
+    fn measure_until(&self, stopped: impl Fn() -> bool + Sync) -> Option<MeasuredInputs> {
+        let pool = background_workers();
         let walks: Vec<Mutex<Option<Walk>>> = (0..pool.current_num_threads())
             .map(|_| Mutex::new(None))
             .collect();
         let mut per_spawn = vec![InputBytes::default(); self.roots.len()];
         pool.install(|| {
-            (per_spawn.par_iter_mut().zip(self.roots.par_iter())).for_each(|(read, &spawn)| {
+            (per_spawn.par_iter_mut().zip(self.roots.par_iter())).try_for_each(|(read, &spawn)| {
+                if stopped() {
+                    return None;
+                }
                 let worker = rayon::current_thread_index().unwrap_or(0);
                 let mut walk = walks[worker].lock().unwrap_or_else(PoisonError::into_inner);
                 *read = walk
                     .get_or_insert_with(|| Walk::new(self))
                     .input_bytes(self, spawn);
+                Some(())
             })
-        });
-        MeasuredInputs::new(per_spawn)
+        })?;
+        Some(MeasuredInputs::new(per_spawn))
     }
 }
 
@@ -674,10 +685,12 @@ impl Builder {
         Ok(())
     }
 
-    fn finish(self) -> ExecLog {
-        let inputs = InputGraph::new(self.entries, self.roots).measure();
-        ExecLog {
-            spawns: self.spawns.finish(inputs),
+    fn finish(self) -> UnmeasuredLog {
+        UnmeasuredLog {
+            log: ExecLog {
+                spawns: self.spawns.finish(),
+            },
+            inputs: InputGraph::new(self.entries, self.roots),
         }
     }
 }
@@ -922,10 +935,10 @@ mod tests {
         entry(0, Type::Spawn(reads))
     }
 
-    fn read(log: &ExecLog) -> Vec<(u64, u64)> {
+    fn read_bytes(log: &ExecLog) -> Vec<(u64, u64)> {
         log.spawns()
             .map(|s| {
-                let read = s.input_bytes();
+                let read = s.input_bytes().expect("measured");
                 (read.tools.get(), read.others.get())
             })
             .collect()
@@ -950,7 +963,81 @@ mod tests {
             reading(0, 0),
             reading(13, 13),
         ]);
-        assert_eq!(read(&log), [(100, 37), (0, 37), (0, 0), (100, 0)]);
+        assert_eq!(read_bytes(&log), [(100, 37), (0, 37), (0, 0), (100, 0)]);
+    }
+
+    #[test]
+    fn a_log_reads_before_what_its_spawns_read_is_measured() {
+        let log = read(&[
+            sized_file(1, "a.h", 10),
+            input_set(10, &[1], &[]),
+            reading(10, 0),
+        ]);
+        let spawns = log.log().logged_spawns();
+        assert!(!spawns.inputs_measured());
+        assert_eq!(spawns.iter().next().unwrap().input_bytes(), None);
+        let (_wanted, stop) = bviz_parallel::stop_on_drop();
+        let log = log.measure_inputs(&stop).expect("nothing stops it");
+        assert_eq!(read_bytes(&log), [(0, 10)]);
+    }
+
+    #[test]
+    fn a_measure_stopped_measures_nothing() {
+        let log = read(&[
+            sized_file(1, "a.h", 10),
+            input_set(10, &[1], &[]),
+            reading(10, 0),
+        ]);
+        let (unwanted, stop) = bviz_parallel::stop_on_drop();
+        drop(unwanted);
+        assert!(log.measure_inputs(&stop).is_none());
+    }
+
+    /// Spawns enough that the pool splits their walks among its workers.
+    const SPAWNS_ACROSS_WORKERS: u32 = 2_000;
+
+    /// A log of [`SPAWNS_ACROSS_WORKERS`] spawns, each reading a set shared
+    /// by all and a file of its own, as large as its place among them.
+    fn shared_and_own() -> Vec<ExecLogEntry> {
+        let shared = SPAWNS_ACROSS_WORKERS + 1;
+        let mut log = vec![
+            sized_file(shared, "shared.h", 7),
+            input_set(shared + 1, &[shared], &[]),
+        ];
+        for spawn in 1..=SPAWNS_ACROSS_WORKERS {
+            let own = shared + 1 + 2 * spawn;
+            log.push(sized_file(own, &format!("own/{spawn}"), i64::from(spawn)));
+            log.push(input_set(own + 1, &[own], &[shared + 1]));
+            log.push(reading(own + 1, 0));
+        }
+        log
+    }
+
+    #[test]
+    fn each_spawn_reads_its_own_whichever_worker_walks_it() {
+        let read = read_bytes(&load(&shared_and_own()));
+        let expected: Vec<(u64, u64)> = (1..=u64::from(SPAWNS_ACROSS_WORKERS))
+            .map(|spawn| (0, spawn + 7))
+            .collect();
+        assert_eq!(read, expected);
+    }
+
+    /// Walks a measure stopped part way runs before it sees the stop.
+    const WALKS_BEFORE_STOP: usize = 100;
+
+    #[test]
+    fn a_measure_stopped_part_way_measures_nothing() {
+        let log = read(&shared_and_own());
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let stopped =
+            || asked.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= WALKS_BEFORE_STOP;
+        assert!(log.inputs.measure_until(stopped).is_none());
+        let asked = asked.into_inner();
+        assert!(asked > WALKS_BEFORE_STOP, "{asked} walks asked");
+        assert!(
+            asked < SPAWNS_ACROSS_WORKERS as usize,
+            "{asked} walks asked"
+        );
     }
 
     /// Files enough that a walk's sets span several words.
@@ -974,7 +1061,7 @@ mod tests {
         ]);
         let every = u64::from(FILES_ACROSS_WORDS);
         assert_eq!(
-            read(&load(&log)),
+            read_bytes(&load(&log)),
             [(0, 2), (2, every - 2), (2, 0), (0, every)]
         );
     }
@@ -1016,7 +1103,7 @@ mod tests {
             input_set(15, &[2, 13], &[14]),
             reading(15, 14),
         ]);
-        assert_eq!(read(&log), [(189, 0)]);
+        assert_eq!(read_bytes(&log), [(189, 0)]);
     }
 
     fn file_in(path: &str) -> exec_log_entry::File {
@@ -1061,7 +1148,7 @@ mod tests {
         ]);
         let outputs: Vec<Vec<&str>> = log.spawns().map(|s| s.outputs().collect()).collect();
         assert_eq!(outputs, [vec![""], vec![]]);
-        assert_eq!(read(&log), [(0, 0), (0, 0)]);
+        assert_eq!(read_bytes(&log), [(0, 0), (0, 0)]);
     }
 
     #[test]
@@ -1109,7 +1196,7 @@ mod tests {
                 Err(LoadError::NotALog) if kept == 0 => continue,
                 _ => panic!("a log cut at {cut} of {} is cut off", log.len()),
             };
-            let labels: Vec<_> = read.spawns().map(|s| s.target_label()).collect();
+            let labels: Vec<_> = read.log().spawns().map(|s| s.target_label()).collect();
             let ahead: Vec<_> = entries[..labels.len()]
                 .iter()
                 .map(|entry| match &entry.r#type {

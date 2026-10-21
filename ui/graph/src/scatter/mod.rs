@@ -1241,6 +1241,7 @@ impl Choice {
         let carried = Carried {
             times: loaded.times().is_ok(),
             bytes: loaded.bytes().is_ok(),
+            inputs: loaded.bytes().is_ok_and(NodeBytes::inputs_measured),
         };
         let picker = UnitPicker::new(
             "scatter-unit",
@@ -2469,9 +2470,11 @@ impl<'a> Overlays<'a> {
 /// Which overlays `loaded` places on any point `reference` measures.
 fn carried(loaded: &Loaded, reference: &Measurement) -> Carried {
     let points = || reference.points.iter();
+    let bytes = (loaded.bytes()).is_ok_and(|bytes| points().any(|p| bytes.get(p.id).is_some()));
     Carried {
         times: (loaded.times()).is_ok_and(|times| points().any(|p| times.get(p.id).is_some())),
-        bytes: (loaded.bytes()).is_ok_and(|bytes| points().any(|p| bytes.get(p.id).is_some())),
+        bytes,
+        inputs: bytes && loaded.bytes().is_ok_and(NodeBytes::inputs_measured),
     }
 }
 
@@ -2479,13 +2482,17 @@ fn carried(loaded: &Loaded, reference: &Measurement) -> Carried {
 /// the graph places on some point of `unit`, as [`colour::overlays_hint`]
 /// words it.
 fn axis_note(overlays: Overlays, carried: Carried, unit: Unit, name: &str) -> SharedString {
-    colour::overlays_hint(
+    let hint = colour::overlays_hint(
         name,
         [
             (!carried.times).then(|| times_note(overlays.times, false, unit, name)),
             (!carried.bytes).then(|| bytes_note(overlays.bytes, unit, name)),
         ],
-    )
+    );
+    match carried.bytes {
+        true => colour::measuring_reads(hint, overlays.bytes),
+        false => hint,
+    }
 }
 
 /// Why the graph places spawn bytes on none of the points of `unit`, as

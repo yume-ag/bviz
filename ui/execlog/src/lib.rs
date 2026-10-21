@@ -90,8 +90,8 @@ fn read_log(input: Input) -> Result<Read, String> {
             invocation,
         });
     Ok(Read {
-        summary: log.as_ref().map(Summary::of),
-        spawns: log.into_inner().into_spawns(),
+        summary: log.as_ref().map(|log| Summary::of(log.log())),
+        log,
         reread,
     })
 }

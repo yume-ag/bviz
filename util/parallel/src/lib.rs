@@ -1,7 +1,9 @@
-//! bviz's threads, and how wide to fan work out across the machine. Every OS
-//! thread bviz starts goes through [`spawn`] or [`scope`].
+//! bviz's threads, how wide to fan work out across the machine, and how work
+//! is asked to stop. Every OS thread bviz starts goes through [`spawn`] or
+//! [`scope`].
 
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::thread::{JoinHandle, Scope};
 
 /// Runs `work` on a new OS thread.
@@ -70,4 +72,32 @@ pub fn background_workers() -> &'static rayon::ThreadPool {
             .build()
             .expect("build the background worker pool")
     })
+}
+
+/// Asks the work holding the [`StopSignal`] [`stop_on_drop`] paired it with
+/// to stop, once dropped: held by what wants the work's result, so the work
+/// stops once nothing does.
+pub struct StopOnDrop(Arc<AtomicBool>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+/// What work checks between its steps for whether its result is still
+/// wanted.
+#[derive(Clone)]
+pub struct StopSignal(Arc<AtomicBool>);
+
+impl StopSignal {
+    pub fn stopped(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
+/// A signal for work to check, and the guard that raises it once dropped.
+pub fn stop_on_drop() -> (StopOnDrop, StopSignal) {
+    let flag = Arc::new(AtomicBool::new(false));
+    (StopOnDrop(flag.clone()), StopSignal(flag))
 }

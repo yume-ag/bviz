@@ -38,6 +38,13 @@ pub trait Tables: Render {
     /// Shows the list after the one shown.
     fn cycle_list(&mut self, cx: &mut Context<Self>);
 
+    /// The summary the tables show.
+    fn summary(&self) -> &Summary;
+
+    /// Takes up `summary`, of the log shown, its spawns' inputs measured
+    /// since the tables were made.
+    fn take_up_measured(&mut self, summary: Summary, cx: &mut Context<Self>);
+
     /// The toolbar over `tables`, which a choice on it notifies.
     fn toolbar(tables: &Entity<Self>, focus: &FocusHandle, window: &Window, cx: &App) -> OneRow;
 
@@ -73,15 +80,24 @@ impl<T: Tables> SpawnPanel<T> {
     }
 
     fn show_loaded(&mut self, cx: &mut Context<Self>) {
-        if self.tables.is_some() {
-            return;
-        }
         let Source::Loaded(summary) = self.model.read(cx).source() else {
             return;
         };
-        let summary = summary.get().clone();
-        let focus = self.focus.clone();
-        self.tables = Some(cx.new(|cx| T::new(summary, &focus, cx)));
+        let summary = summary.get();
+        match &self.tables {
+            Some(tables) => {
+                let shown = tables.read(cx).summary().inputs_measured;
+                if shown != summary.inputs_measured {
+                    let summary = summary.clone();
+                    tables.update(cx, |tables, cx| tables.take_up_measured(summary, cx));
+                }
+            }
+            None => {
+                let summary = summary.clone();
+                let focus = self.focus.clone();
+                self.tables = Some(cx.new(|cx| T::new(summary, &focus, cx)));
+            }
+        }
     }
 }
 

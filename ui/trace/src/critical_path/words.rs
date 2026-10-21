@@ -513,6 +513,7 @@ pub(super) mod tests {
         use bviz_invocation::spawn::{
             Builder, Bytes, InputBytes, Logged, MeasuredInputs, PhaseTiming, REPORTED_PHASES,
         };
+        use std::sync::Arc;
         let json = r#"{"traceEvents":[
             {"name":"thread_name","ph":"M","tid":0,"args":{"name":"Critical Path"}},
             {"name":"thread_name","ph":"M","tid":1,"args":{"name":"Main Thread"}},
@@ -536,10 +537,14 @@ pub(super) mod tests {
             cache_hit: false,
             timing: PhaseTiming::new(ms(3), [Duration::ZERO; REPORTED_PHASES]),
         });
-        let log = builder.finish(MeasuredInputs::new(vec![InputBytes {
+        let read = Arc::new(MeasuredInputs::new(vec![InputBytes {
             tools: Bytes::ZERO,
             others: Bytes::new(512),
         }]));
+        let log = builder
+            .finish()
+            .measured(read)
+            .expect("one measure per spawn");
         CriticalPath::of(&profile, logged.then_some(&log), None).expect("path")
     }
 

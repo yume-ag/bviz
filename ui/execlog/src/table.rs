@@ -9,7 +9,7 @@ use crate::summary::{GroupRow, SpawnName};
 use bviz_execlog::ByteMeasure;
 use bviz_label::names::RepoNames;
 use bviz_label::shown::Parts;
-use bviz_ui_components::amount::{self, bytes};
+use bviz_ui_components::amount::{self, measured_bytes};
 use bviz_ui_components::gesture::{Button, Entry, Gestures, Input, Place, Pointer};
 use bviz_ui_components::{
     ByRoom, Dropdown, HintedLabelLine, LabelLine, ListScroll, MenuItem, OverflowRows, Presentation,
@@ -330,7 +330,9 @@ pub(crate) fn group_row(
                 TruncatingLabel::new("name", group.name.clone()).into_any_element()
             }
             GroupColumn::Spawns => group.spawns.to_string().into_any_element(),
-            GroupColumn::Bytes(measure) => bytes(group.bytes.measure(measure)).into_any_element(),
+            GroupColumn::Bytes(measure) => {
+                measured_bytes(group.bytes.measure(measure)).into_any_element()
+            }
             GroupColumn::Time => duration(group.timing.total()).into_any_element(),
             GroupColumn::Bar => phase_bar(&group.timing, longest, palette).into_any_element(),
             GroupColumn::Note => div()
@@ -680,7 +682,7 @@ pub(crate) fn none_note(text: String, palette: &Palette) -> Div {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bviz_execlog::{Bytes, PhaseTiming, SpawnBytes};
+    use bviz_execlog::{Bytes, InputBytes, PhaseTiming, SpawnBytes};
 
     #[test]
     fn every_gesture_is_reachable() {
@@ -751,7 +753,10 @@ mod tests {
         let mut table = rows(&[("a", 1), ("b", 1), ("c", 1)]);
         let tools = [5, 9, 0];
         for (row, tools) in table.iter_mut().zip(tools) {
-            row.bytes.inputs.tools = Bytes::new(tools);
+            row.bytes.inputs = Some(InputBytes {
+                tools: Bytes::new(tools),
+                others: Bytes::ZERO,
+            });
         }
         let by_tools = clicked(BY_TIME, SortBy::Bytes(ByteMeasure::Tools));
         apply(by_tools, &mut table);

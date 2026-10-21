@@ -103,9 +103,11 @@ impl Tally for Sized {
 pub(crate) struct NodeBytes {
     sized: NodeTable<Sized>,
     /// By [`ByteMeasure::index`], then by node kind, the extent of the bytes
-    /// its nodes hold.
+    /// its nodes hold; none for a measure not yet measured.
     extents: [Vec<(Kind, Extent<Bytes>)>; ByteMeasure::ALL.len()],
     coverage: Coverage,
+    /// Whether the bytes the spawns read are measured.
+    inputs_measured: bool,
 }
 
 /// Where in `graph`, which `names` names, the spawns `logged` recorded land,
@@ -165,6 +167,7 @@ impl NodeBytes {
             sized,
             extents,
             coverage,
+            inputs_measured: logged.inputs_measured(),
         })
     }
 
@@ -182,6 +185,10 @@ impl NodeBytes {
     pub(crate) fn coverage(&self) -> Coverage {
         self.coverage
     }
+
+    pub(crate) fn inputs_measured(&self) -> bool {
+        self.inputs_measured
+    }
 }
 
 #[cfg(test)]
@@ -189,15 +196,16 @@ pub(crate) mod tests {
     use super::*;
     use crate::timing::tests::Built;
     use bviz_invocation::spawn::{Builder, InputBytes, Logged, MeasuredInputs, PhaseTiming};
+    use std::sync::Arc;
 
     /// A spawn as an execution log records it: by primary output, target
     /// label, and the bytes it wrote, read and read of its tools.
     pub(crate) type Recorded<'a> = (Option<&'a str>, &'a str, u64, u64, u64);
 
-    pub(crate) fn logged(spawns: &[Recorded]) -> LoggedSpawns {
+    /// The spawns `spawns` records, their inputs not yet measured.
+    pub(crate) fn unmeasured(spawns: &[Recorded]) -> LoggedSpawns {
         let mut builder = Builder::with_capacity(spawns.len(), spawns.len(), 0);
-        let mut read = Vec::with_capacity(spawns.len());
-        for &(primary_output, target_label, outputs, others, tools) in spawns {
+        for &(primary_output, target_label, outputs, _, _) in spawns {
             if let Some(output) = primary_output {
                 builder.output(output, Bytes::new(outputs));
             }
@@ -208,12 +216,22 @@ pub(crate) mod tests {
                 cache_hit: false,
                 timing: PhaseTiming::default(),
             });
-            read.push(InputBytes {
+        }
+        builder.finish()
+    }
+
+    pub(crate) fn logged(spawns: &[Recorded]) -> LoggedSpawns {
+        let read = spawns
+            .iter()
+            .map(|&(_, _, _, others, tools)| InputBytes {
                 tools: Bytes::new(tools),
                 others: Bytes::new(others),
-            });
-        }
-        builder.finish(MeasuredInputs::new(read))
+            })
+            .collect();
+        let read = Arc::new(MeasuredInputs::new(read));
+        unmeasured(spawns)
+            .measured(read)
+            .expect("one measure per spawn")
     }
 
     fn resolve(built: &Built, logged: &LoggedSpawns) -> Result<NodeBytes, Unsized> {
@@ -225,7 +243,7 @@ pub(crate) mod tests {
         bytes.get(id).map(|sized| {
             let Spawned { spawns, bytes } = sized.held;
             let [outputs, read, tools] =
-                ByteMeasure::ALL.map(|measure| bytes.measure(measure).get());
+                ByteMeasure::ALL.map(|measure| bytes.measure(measure).expect("measured").get());
             (spawns, outputs, read, tools)
         })
     }
@@ -344,7 +362,13 @@ pub(crate) mod tests {
         built.action("bazel-out/large", bin);
         let recorded = logged(&[
             (Some("bazel-out/small"), "//app:bin", 4 << 10, 5, 9),
-            (Some("bazel-out/large"), "//app:bin", 4 << 20, (1 << 20) - 9, 9),
+            (
+                Some("bazel-out/large"),
+                "//app:bin",
+                4 << 20,
+                (1 << 20) - 9,
+                9,
+            ),
         ]);
 
         let bytes = resolve(&built, &recorded).expect("sized");
@@ -367,5 +391,27 @@ pub(crate) mod tests {
             "a size under the least placed is placed as that"
         );
         assert!((inputs.place(Bytes::new(32 << 10)) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn spawns_whose_inputs_are_unmeasured_place_what_they_wrote_alone() {
+        let mut built = Built::default();
+        let (_, _, bin) = built.target("app", "bin");
+        let link = built.action("bazel-out/bin/app/bin", bin);
+        let recorded = [(Some("bazel-out/bin/app/bin"), "//app:bin", 500, 100, 7)];
+
+        let bytes = resolve(&built, &unmeasured(&recorded)).expect("sized");
+
+        assert!(!bytes.inputs_measured());
+        let held = bytes.get(link).expect("landed").held.bytes;
+        assert_eq!(held.measure(ByteMeasure::Outputs), Some(Bytes::new(500)));
+        assert_eq!(held.measure(ByteMeasure::Inputs), None);
+        assert!(bytes.extent(ByteMeasure::Outputs, Kind::Action).is_some());
+        assert!(bytes.extent(ByteMeasure::Inputs, Kind::Action).is_none());
+        assert!(
+            resolve(&built, &logged(&recorded))
+                .expect("sized")
+                .inputs_measured()
+        );
     }
 }

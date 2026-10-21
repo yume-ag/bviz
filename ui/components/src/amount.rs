@@ -64,12 +64,23 @@ pub fn measure_name(measure: ByteMeasure) -> &'static str {
     }
 }
 
+/// How an amount still being measured reads in place of the amount.
+pub const MEASURING: &str = "…";
+
+/// [`bytes`], or [`MEASURING`] for `None`.
+pub fn measured_bytes(amount: Option<Bytes>) -> String {
+    amount.map_or_else(|| MEASURING.to_owned(), bytes)
+}
+
 /// What spawns wrote and read, every input counted as read and the share of
 /// it their tools take named only where they read any.
 pub fn moved(by_spawns: SpawnBytes) -> String {
     let wrote = bytes(by_spawns.outputs);
-    let read = bytes(by_spawns.inputs.all());
-    match by_spawns.inputs.tools {
+    let Some(inputs) = by_spawns.inputs else {
+        return format!("wrote {wrote} · read still being measured");
+    };
+    let read = bytes(inputs.all());
+    match inputs.tools {
         Bytes::ZERO => format!("wrote {wrote} · read {read}"),
         tools => format!("wrote {wrote} · read {read} (tools {})", bytes(tools)),
     }
@@ -103,10 +114,10 @@ mod tests {
         let moved_by = |outputs, others, tools| {
             moved(SpawnBytes {
                 outputs: Bytes::new(outputs),
-                inputs: InputBytes {
+                inputs: Some(InputBytes {
                     tools: Bytes::new(tools),
                     others: Bytes::new(others),
-                },
+                }),
             })
         };
         assert_eq!(moved_by(3 << 20, 512, 0), "wrote 3.0 MiB · read 512 B");
@@ -114,6 +125,11 @@ mod tests {
             moved_by(2 << 10, 3 << 20, 1 << 20),
             "wrote 2.0 KiB · read 4.0 MiB (tools 1.0 MiB)"
         );
+        let pending = SpawnBytes {
+            outputs: Bytes::new(1 << 10),
+            inputs: None,
+        };
+        assert_eq!(moved(pending), "wrote 1.0 KiB · read still being measured");
     }
 
     #[test]

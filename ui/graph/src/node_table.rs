@@ -217,14 +217,13 @@ impl<M: Magnitude> Extent<M> {
 pub(crate) fn extents<T, M: Magnitude>(
     table: &NodeTable<T>,
     graph: &Graph,
-    figure: impl Fn(&T) -> M,
+    figure: impl Fn(&T) -> Option<M>,
 ) -> Vec<(Kind, Extent<M>)> {
     let mut extents: Vec<(Kind, Extent<M>)> = Vec::new();
     for node in &graph.nodes {
-        let Some(entry) = table.get(node.id) else {
+        let Some(figure) = table.get(node.id).and_then(&figure) else {
             continue;
         };
-        let figure = figure(entry);
         match extents.iter_mut().find(|(kind, _)| *kind == node.kind) {
             Some((_, extent)) => extent.widen(figure),
             None => extents.push((node.kind, Extent::of(figure))),

@@ -432,12 +432,14 @@ impl<'a> Fills<'a> {
                 None => palette.unread_fill(b.kind, b.compound),
             },
             Fills::Bytes(bytes, measure) => {
-                let sized = bytes.get(b.id).zip(bytes.extent(*measure, b.kind));
-                match sized {
-                    Some((sized, extent)) => {
-                        let place = extent.place(sized.held.bytes.measure(*measure));
-                        palette.held_fill(b.kind, b.compound, palette.ramp_fill(place))
-                    }
+                let place = bytes
+                    .get(b.id)
+                    .zip(bytes.extent(*measure, b.kind))
+                    .and_then(|(sized, extent)| {
+                        Some(extent.place(sized.held.bytes.measure(*measure)?))
+                    });
+                match place {
+                    Some(place) => palette.held_fill(b.kind, b.compound, palette.ramp_fill(place)),
                     None => palette.unread_fill(b.kind, b.compound),
                 }
             }

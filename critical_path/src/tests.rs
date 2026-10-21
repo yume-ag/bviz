@@ -528,6 +528,7 @@ fn log(spawns: &[LogSpawn]) -> LoggedSpawns {
     use bviz_invocation::spawn::{
         Builder, Bytes, Logged, MeasuredInputs, PhaseTiming, REPORTED_PHASES,
     };
+    use std::sync::Arc;
     let mut builder = Builder::with_capacity(spawns.len(), 0, 0);
     for spawn in spawns {
         let wrote = std::iter::once(spawn.bytes.outputs).chain(std::iter::repeat(Bytes::ZERO));
@@ -546,8 +547,14 @@ fn log(spawns: &[LogSpawn]) -> LoggedSpawns {
             timing: PhaseTiming::new(us(spawn.total_us), reported),
         });
     }
-    let read = spawns.iter().map(|spawn| spawn.bytes.inputs);
-    builder.finish(MeasuredInputs::new(read.collect()))
+    let read = spawns
+        .iter()
+        .map(|spawn| spawn.bytes.inputs.unwrap_or_default());
+    let read = Arc::new(MeasuredInputs::new(read.collect()));
+    builder
+        .finish()
+        .measured(read)
+        .expect("one measure per spawn")
 }
 
 /// The spawns joined to `step`.
@@ -674,10 +681,10 @@ fn a_step_sums_what_its_spawns_wrote_and_read() {
     );
     let moved = |outputs, others, tools| SpawnBytes {
         outputs: Bytes::new(outputs),
-        inputs: InputBytes {
+        inputs: Some(InputBytes {
             tools: Bytes::new(tools),
             others: Bytes::new(others),
-        },
+        }),
     };
     let spawn = |outputs, bytes| LogSpawn {
         bytes,

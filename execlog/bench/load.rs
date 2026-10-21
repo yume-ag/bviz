@@ -13,7 +13,8 @@ fn main() {
         bviz_execlog::ExecLog::from_path(std::path::Path::new(&path)).expect("load execution log");
     let elapsed = start.elapsed().as_secs_f64();
     let cut_off = if read.is_cut_off() { ", cut off" } else { "" };
-    let log = read.into_inner();
+    let read = read.into_inner();
+    let log = read.log();
     eprintln!(
         "[bench] load: {elapsed:.3}s  ({} spawns, {} runners{cut_off})",
         log.spawn_count(),

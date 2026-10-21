@@ -84,14 +84,34 @@ impl ByteMeasure {
     pub const fn index(self) -> usize {
         self as usize
     }
+
+    /// Whether the measure is of a spawn's inputs, which are measured after
+    /// the rest of its log is read.
+    pub const fn of_inputs(self) -> bool {
+        match self {
+            ByteMeasure::Outputs => false,
+            ByteMeasure::Inputs | ByteMeasure::Tools => true,
+        }
+    }
 }
 
 /// The content of the files a spawn, or several spawns in sum, wrote and
 /// read.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpawnBytes {
     pub outputs: Bytes,
-    pub inputs: InputBytes,
+    /// `None` while the inputs of a spawn summed are being measured.
+    pub inputs: Option<InputBytes>,
+}
+
+/// No spawns, which wrote and read nothing.
+impl Default for SpawnBytes {
+    fn default() -> Self {
+        Self {
+            outputs: Bytes::ZERO,
+            inputs: Some(InputBytes::default()),
+        }
+    }
 }
 
 impl SpawnBytes {
@@ -102,11 +122,12 @@ impl SpawnBytes {
         }
     }
 
-    pub fn measure(self, measure: ByteMeasure) -> Bytes {
+    /// `None` for a measure of inputs still being measured.
+    pub fn measure(self, measure: ByteMeasure) -> Option<Bytes> {
         match measure {
-            ByteMeasure::Outputs => self.outputs,
-            ByteMeasure::Inputs => self.inputs.all(),
-            ByteMeasure::Tools => self.inputs.tools,
+            ByteMeasure::Outputs => Some(self.outputs),
+            ByteMeasure::Inputs => Some(self.inputs?.all()),
+            ByteMeasure::Tools => Some(self.inputs?.tools),
         }
     }
 }
@@ -114,6 +135,9 @@ impl SpawnBytes {
 impl AddAssign for SpawnBytes {
     fn add_assign(&mut self, other: SpawnBytes) {
         self.outputs += other.outputs;
-        self.inputs += other.inputs;
+        self.inputs = self.inputs.zip(other.inputs).map(|(mut sum, other)| {
+            sum += other;
+            sum
+        });
     }
 }

@@ -201,6 +201,18 @@ impl Tables for TimeTables {
         self.show(self.list.next(), cx);
     }
 
+    fn summary(&self) -> &Summary {
+        &self.summary
+    }
+
+    fn take_up_measured(&mut self, mut summary: Summary, cx: &mut Context<Self>) {
+        for runner in &mut summary.runners {
+            apply(self.sort, &mut runner.mnemonics);
+        }
+        self.summary = summary;
+        cx.notify();
+    }
+
     fn new(mut summary: Summary, focus: &FocusHandle, cx: &mut Context<Self>) -> Self {
         let sort = DEFAULT_SORT;
         for runner in &mut summary.runners {

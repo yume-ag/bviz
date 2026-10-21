@@ -5,6 +5,7 @@
 use std::cmp::Reverse;
 use std::fmt;
 use std::path::Path;
+use std::sync::Arc;
 
 mod frame;
 mod read;
@@ -17,6 +18,7 @@ use bviz_input::Input;
 use bviz_invocation::Recorded;
 pub use bviz_invocation::spawn::{ByteMeasure, Bytes, InputBytes, Phase, PhaseTiming, SpawnBytes};
 use bviz_invocation::spawn::{LoggedSpawn, LoggedSpawns};
+use bviz_parallel::StopSignal;
 pub use read::probe_invocation_id;
 
 #[derive(Debug)]
@@ -65,19 +67,47 @@ pub struct ExecLog {
     spawns: LoggedSpawns,
 }
 
+/// An execution log read, the bytes its spawns read yet to be measured. The
+/// measure walks every spawn's inputs, which grows with the spawns times the
+/// inputs each reaches rather than with the log, so it is kept apart from
+/// the read.
+pub struct UnmeasuredLog {
+    log: ExecLog,
+    inputs: read::InputGraph,
+}
+
+impl UnmeasuredLog {
+    /// The log, the bytes its spawns read unknown.
+    pub fn log(&self) -> &ExecLog {
+        &self.log
+    }
+
+    /// The log with the bytes its spawns read measured, `None` where `stop`
+    /// is raised before they are.
+    pub fn measure_inputs(self, stop: &StopSignal) -> Option<ExecLog> {
+        let measured = Arc::new(self.inputs.measure(stop)?);
+        let spawns = (self.log.spawns.measured(measured)).expect("the reader roots every spawn");
+        Some(ExecLog { spawns })
+    }
+}
+
 impl ExecLog {
     /// The log at `path`, as far as it goes where it is cut off.
-    pub fn from_path(path: &Path) -> Result<Recorded<ExecLog>, LoadError> {
+    pub fn from_path(path: &Path) -> Result<Recorded<UnmeasuredLog>, LoadError> {
         ExecLog::from_input(Input::open(path).map_err(LoadError::Io)?)
     }
 
     /// The log `input` holds, as far as it goes where it is cut off.
-    pub fn from_input(input: Input) -> Result<Recorded<ExecLog>, LoadError> {
+    pub fn from_input(input: Input) -> Result<Recorded<UnmeasuredLog>, LoadError> {
         read::read_input(input)
     }
 
     /// The log's spawns, for readers that join them to what other outputs of
     /// the invocation record.
+    pub fn logged_spawns(&self) -> &LoggedSpawns {
+        &self.spawns
+    }
+
     pub fn into_spawns(self) -> LoggedSpawns {
         self.spawns
     }
@@ -165,9 +195,13 @@ impl ExecLog {
     }
 
     /// The `n` spawns largest in `measure`, largest first, leaving out those
-    /// of no content in it.
+    /// of no content in it; none while it is still being measured.
     pub fn biggest_spawns(&self, measure: ByteMeasure, n: usize) -> Vec<LoggedSpawn<'_>> {
-        self.largest(n, |spawn| SpawnBytes::of(spawn).measure(measure))
+        self.largest(n, |spawn| {
+            SpawnBytes::of(spawn)
+                .measure(measure)
+                .unwrap_or(Bytes::ZERO)
+        })
     }
 
     /// The `n` spawns largest in `measure`, largest first, leaving out those
@@ -386,7 +420,7 @@ mod tests {
             .map(|s| {
                 (
                     s.target_label().unwrap_or_default(),
-                    SpawnBytes::of(s).measure(measure).get(),
+                    SpawnBytes::of(s).measure(measure).expect("measured").get(),
                 )
             })
             .collect()
@@ -418,8 +452,11 @@ mod tests {
                 (
                     g.name,
                     g.bytes.outputs.get(),
-                    g.bytes.inputs.all().get(),
-                    g.bytes.inputs.tools.get(),
+                    g.bytes
+                        .measure(ByteMeasure::Inputs)
+                        .expect("measured")
+                        .get(),
+                    g.bytes.measure(ByteMeasure::Tools).expect("measured").get(),
                 )
             })
             .collect()
@@ -430,7 +467,10 @@ mod tests {
         let log = sized_sample();
         assert_eq!(
             bytes(&log.by_runner()),
-            [("remote", 520, 1120, 1000), ("linux-sandbox", 0, 1000, 1000)]
+            [
+                ("remote", 520, 1120, 1000),
+                ("linux-sandbox", 0, 1000, 1000)
+            ]
         );
         assert_eq!(
             bytes(&log.by_mnemonic("remote")),

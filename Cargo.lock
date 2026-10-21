@@ -942,6 +942,7 @@ dependencies = [
  "bviz_input",
  "bviz_invocation",
  "bviz_label",
+ "bviz_parallel",
  "bviz_ui_assets",
  "bviz_ui_components",
  "bviz_ui_execlog_args",

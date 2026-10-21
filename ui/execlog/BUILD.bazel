@@ -23,6 +23,7 @@ rust_library(
         "//ui/theme",
         "//ui/workspace",
         "//util/input",
+        "//util/parallel",
         "@crates//:clap",
         "@crates//:gpui",
     ],

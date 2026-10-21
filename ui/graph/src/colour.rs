@@ -86,7 +86,8 @@ impl Colouring {
         match self {
             Self::Kind => true,
             Self::Time | Self::Runner => offered.timed,
-            Self::Written | Self::Read => offered.sized,
+            Self::Written => offered.sized,
+            Self::Read => offered.read,
             Self::Playback => offered.playable,
         }
     }
@@ -99,6 +100,8 @@ pub(crate) struct Offered {
     timed: bool,
     /// Its nodes carry the bytes of the spawns landing on them.
     sized: bool,
+    /// Those bytes count what the spawns read.
+    read: bool,
     /// Its nodes carry the execution attempts landing on them, which its
     /// document's clock plays back.
     playable: bool,
@@ -110,6 +113,7 @@ impl Offered {
         Offered {
             timed: loaded.is_some_and(|loaded| loaded.times().is_ok()),
             sized: loaded.is_some_and(|loaded| loaded.bytes().is_ok()),
+            read: loaded.is_some_and(|loaded| loaded.bytes().is_ok_and(NodeBytes::inputs_measured)),
             playable: loaded.is_some_and(|loaded| loaded.states().is_some()),
         }
     }
@@ -129,6 +133,9 @@ pub(crate) fn note(times: Result<&NodeTimes, Untimed>, name: &str) -> SharedStri
     }
     .into()
 }
+
+/// What a hint adds while the bytes the graph's spawns read are measured.
+pub(crate) const MEASURING_READS: &str = "bytes read still being measured";
 
 /// The hint of a control reading the bytes of the graph's spawns, which
 /// `name`s it where the graph places any, and says why it places none
@@ -190,13 +197,26 @@ pub(crate) fn hint(model: &GraphModel) -> SharedString {
     let loaded = model.loaded();
     let times = loaded.map_or(Err(Untimed::NoProfile), |loaded| loaded.times());
     let bytes = loaded.map_or(Err(Unsized::NoExecLog), |loaded| loaded.bytes());
-    overlays_hint(
+    let hint = overlays_hint(
         NAME,
         [
             times.is_err().then(|| note(times, NAME)),
             bytes.is_err().then(|| bytes_note(bytes, NAME)),
         ],
-    )
+    );
+    measuring_reads(hint, bytes)
+}
+
+/// `hint`, saying where `bytes` are placed that the bytes their spawns read
+/// are still being measured.
+pub(crate) fn measuring_reads(
+    hint: SharedString,
+    bytes: Result<&NodeBytes, Unsized>,
+) -> SharedString {
+    match bytes {
+        Ok(bytes) if !bytes.inputs_measured() => format!("{hint} · {MEASURING_READS}").into(),
+        _ => hint,
+    }
 }
 
 /// The hint of a picker `name`d offering choices that read overlays, each of
@@ -243,6 +263,7 @@ mod tests {
         let timed = Offered {
             timed: true,
             sized: false,
+            read: false,
             playable: false,
         };
         assert_eq!(Colouring::Kind.next(timed), Colouring::Time);
@@ -250,19 +271,27 @@ mod tests {
         let sized = Offered {
             timed: false,
             sized: true,
+            read: true,
             playable: false,
         };
         assert_eq!(Colouring::Kind.next(sized), Colouring::Written);
         assert_eq!(Colouring::Read.next(sized), Colouring::Kind);
+        let measuring = Offered {
+            read: false,
+            ..sized
+        };
+        assert_eq!(Colouring::Written.next(measuring), Colouring::Kind);
         let bare = Offered {
             timed: false,
             sized: false,
+            read: false,
             playable: false,
         };
         assert_eq!(Colouring::Kind.next(bare), Colouring::Kind);
         let playable = Offered {
             timed: false,
             sized: false,
+            read: false,
             playable: true,
         };
         assert_eq!(Colouring::Kind.next(playable), Colouring::Playback);

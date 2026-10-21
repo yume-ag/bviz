@@ -46,6 +46,8 @@ pub(crate) enum Overlay {
 pub(crate) struct Carried {
     pub(crate) times: bool,
     pub(crate) bytes: bool,
+    /// The bytes count what the spawns read.
+    pub(crate) inputs: bool,
 }
 
 impl Carried {
@@ -95,7 +97,7 @@ impl Axis {
     /// The bytes the axis measures of `reported`, where it measures bytes and
     /// the point has any.
     fn bytes(self, reported: Reported) -> Option<Bytes> {
-        Some(reported.bytes?.measure(self.measure()?))
+        reported.bytes?.measure(self.measure()?)
     }
 
     /// What the axis measures of a spawn's bytes, where it measures them.
@@ -126,8 +128,10 @@ impl Axis {
     /// Whether a unit carrying what `carried` says has any point the axis
     /// places.
     pub(crate) fn available(self, carried: Carried) -> bool {
+        let of_inputs = self.measure().is_some_and(ByteMeasure::of_inputs);
         self.overlay()
             .is_none_or(|overlay| carried.carries(overlay))
+            && (!of_inputs || carried.inputs)
     }
 
     /// How a line of text names the measure.
@@ -419,10 +423,10 @@ mod tests {
             time: None,
             bytes: Some(SpawnBytes {
                 outputs: Bytes::new(outputs),
-                inputs: InputBytes {
+                inputs: Some(InputBytes {
                     tools: Bytes::new(tools),
                     others: Bytes::new(others),
-                },
+                }),
             }),
         }
     }
@@ -559,6 +563,7 @@ mod tests {
         let carried = Carried {
             times: false,
             bytes: true,
+            inputs: true,
         };
         let fallen = |x, y| Axes { x, y }.available(carried);
         let (closure, blast, time) = (Axis::Closure, Axis::BlastRadius, Axis::ActionTime);
@@ -606,9 +611,26 @@ mod tests {
             },
             "an axis whose overlay is carried stays"
         );
+        let measuring = Carried {
+            inputs: false,
+            ..carried
+        };
+        assert_eq!(
+            Axes {
+                x: written,
+                y: read
+            }
+            .available(measuring),
+            Axes {
+                x: written,
+                y: closure
+            },
+            "an axis of what spawns read waits on their measure"
+        );
         let bare = Carried {
             times: false,
             bytes: false,
+            inputs: false,
         };
         assert_eq!(
             Axes {

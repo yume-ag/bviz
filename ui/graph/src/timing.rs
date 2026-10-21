@@ -141,7 +141,7 @@ impl NodeTimes {
             return Err(Untimed::Unplaced);
         }
         let timed = landed.roll_up(graph);
-        let extents = extents(&timed, graph, |timed| timed.held.total().wall);
+        let extents = extents(&timed, graph, |timed| Some(timed.held.total().wall));
         Ok(NodeTimes {
             timed,
             extents,

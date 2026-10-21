@@ -372,10 +372,10 @@ mod tests {
             spawns,
             bytes: SpawnBytes {
                 outputs: Bytes::new(outputs),
-                inputs: InputBytes {
+                inputs: Some(InputBytes {
                     tools: Bytes::new(tools),
                     others: Bytes::new(others),
-                },
+                }),
             },
         };
         let action = Sized {

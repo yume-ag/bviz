@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::Arc;
 
 use bviz_input::{reserved, reserved_text};
 
@@ -63,19 +64,14 @@ impl SpawnRunner {
     }
 }
 
-/// The spawns an execution log records of an invocation.
-#[derive(Default)]
+/// The spawns an execution log records of an invocation. The bytes they read
+/// are measured once the log is read, so a reader can show the rest before
+/// they are; clones share the spawns.
+#[derive(Default, Clone)]
 pub struct LoggedSpawns {
-    /// Distinct runner names, which [`Record::runner`] indexes.
-    runners: Vec<Box<str>>,
-    /// Distinct mnemonics, which [`Record::mnemonic`] indexes.
-    mnemonics: Vec<Box<str>>,
-    /// Distinct target labels, which [`Record::target`] indexes.
-    targets: Vec<Box<str>>,
-    records: Vec<Record>,
-    /// Every spawn's outputs, each spawn's a run [`Record::outputs`] names.
-    outputs: Paths,
-    inputs: MeasuredInputs,
+    spawns: Arc<Spawns>,
+    /// `None` until measured.
+    inputs: Option<Arc<MeasuredInputs>>,
 }
 
 /// The bytes each spawn of a [`LoggedSpawns`] read, in the order it lists them.
@@ -98,6 +94,19 @@ impl MeasuredInputs {
     pub fn is_empty(&self) -> bool {
         self.per_spawn.is_empty()
     }
+}
+
+#[derive(Default)]
+struct Spawns {
+    /// Distinct runner names, which [`Record::runner`] indexes.
+    runners: Vec<Box<str>>,
+    /// Distinct mnemonics, which [`Record::mnemonic`] indexes.
+    mnemonics: Vec<Box<str>>,
+    /// Distinct target labels, which [`Record::target`] indexes.
+    targets: Vec<Box<str>>,
+    records: Vec<Record>,
+    /// Every spawn's outputs, each spawn's a run [`Record::outputs`] names.
+    outputs: Paths,
 }
 
 struct Record {
@@ -150,46 +159,70 @@ impl Paths {
 
 impl LoggedSpawns {
     pub fn len(&self) -> usize {
-        self.records.len()
+        self.spawns.records.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.records.is_empty()
+        self.spawns.records.is_empty()
     }
 
     /// Distinct runner names, each at the place [`LoggedSpawn::runner_index`]
     /// names.
     pub fn runners(&self) -> &[Box<str>] {
-        &self.runners
+        &self.spawns.runners
     }
 
     /// Distinct mnemonics, each at the place [`LoggedSpawn::mnemonic_index`]
     /// names.
     pub fn mnemonics(&self) -> &[Box<str>] {
-        &self.mnemonics
+        &self.spawns.mnemonics
     }
 
     /// Distinct labels of the targets owning the spawns' actions.
     pub fn targets(&self) -> &[Box<str>] {
-        &self.targets
+        &self.spawns.targets
+    }
+
+    /// Whether the bytes the spawns read are measured.
+    pub fn inputs_measured(&self) -> bool {
+        self.inputs.is_some()
+    }
+
+    /// What is measured of the bytes the spawns read, `None` until it is.
+    pub fn measured_inputs(&self) -> Option<&Arc<MeasuredInputs>> {
+        self.inputs.as_ref()
+    }
+
+    /// These spawns, having read what `inputs` measures; `None` where it
+    /// measures another number of spawns.
+    pub fn measured(&self, inputs: Arc<MeasuredInputs>) -> Option<LoggedSpawns> {
+        (inputs.len() == self.len()).then(|| LoggedSpawns {
+            spawns: Arc::clone(&self.spawns),
+            inputs: Some(inputs),
+        })
     }
 
     /// The spawns in the order the log lists them.
     pub fn iter(&self) -> impl ExactSizeIterator<Item = LoggedSpawn<'_>> {
-        (self.records.iter().zip(&self.inputs.per_spawn)).map(|(record, &inputs)| LoggedSpawn {
-            log: self,
-            record,
-            inputs,
-        })
+        let inputs = self.inputs.as_deref();
+        self.spawns
+            .records
+            .iter()
+            .enumerate()
+            .map(move |(index, record)| LoggedSpawn {
+                log: &self.spawns,
+                record,
+                inputs: inputs.map(|inputs| inputs.per_spawn[index]),
+            })
     }
 }
 
 /// One spawn of [`LoggedSpawns`].
 #[derive(Clone, Copy)]
 pub struct LoggedSpawn<'a> {
-    log: &'a LoggedSpawns,
+    log: &'a Spawns,
     record: &'a Record,
-    inputs: InputBytes,
+    inputs: Option<InputBytes>,
 }
 
 impl<'a> LoggedSpawn<'a> {
@@ -254,7 +287,8 @@ impl<'a> LoggedSpawn<'a> {
         self.record.output_bytes
     }
 
-    pub fn input_bytes(&self) -> InputBytes {
+    /// `None` until the log's [inputs are measured](LoggedSpawns::inputs_measured).
+    pub fn input_bytes(&self) -> Option<InputBytes> {
         self.inputs
     }
 
@@ -335,22 +369,19 @@ impl Builder {
         self.records.push(record);
     }
 
-    /// The spawns pushed, having read what `inputs` measures of them; outputs
+    /// The spawns pushed, the bytes they read yet to be measured; outputs
     /// added after the last spawn are dropped.
-    ///
-    /// # Panics
-    ///
-    /// Where `inputs` measures another number of spawns.
-    pub fn finish(mut self, inputs: MeasuredInputs) -> LoggedSpawns {
-        assert_eq!(inputs.len(), self.records.len(), "one measure per spawn");
+    pub fn finish(mut self) -> LoggedSpawns {
         self.outputs.truncate(self.next_outputs);
         LoggedSpawns {
-            runners: self.runners.into_vec(),
-            mnemonics: self.mnemonics.into_vec(),
-            targets: self.targets.into_vec(),
-            records: self.records,
-            outputs: self.outputs,
-            inputs,
+            spawns: Arc::new(Spawns {
+                runners: self.runners.into_vec(),
+                mnemonics: self.mnemonics.into_vec(),
+                targets: self.targets.into_vec(),
+                records: self.records,
+                outputs: self.outputs,
+            }),
+            inputs: None,
         }
     }
 }
@@ -398,33 +429,39 @@ mod tests {
         }
     }
 
-    /// The spawns `builder` holds, reading no input.
-    fn finish(builder: Builder) -> LoggedSpawns {
-        let read = vec![InputBytes::default(); builder.records.len()];
-        builder.finish(MeasuredInputs::new(read))
-    }
-
     #[test]
-    fn each_spawn_reads_what_was_measured_of_it() {
+    fn spawns_read_nothing_known_until_measured_then_what_was_measured() {
         let mut builder = Builder::with_capacity(2, 0, 0);
         builder.push(logged("remote", "A"));
         builder.push(logged("remote", "B"));
+        let log = builder.finish();
+        assert!(!log.inputs_measured());
+        assert!(log.iter().all(|s| s.input_bytes().is_none()));
         let read = |tools, others| InputBytes {
             tools: Bytes::new(tools),
             others: Bytes::new(others),
         };
-        let log = builder.finish(MeasuredInputs::new(vec![read(1, 2), read(0, 5)]));
-        let all: Vec<u64> = log.iter().map(|s| s.input_bytes().all().get()).collect();
-        assert_eq!(all, [3, 5]);
-        assert_eq!(log.iter().next().unwrap().input_bytes(), read(1, 2));
+        let measured = log
+            .measured(Arc::new(MeasuredInputs::new(vec![read(1, 2), read(0, 5)])))
+            .expect("one measure per spawn");
+        assert!(measured.inputs_measured());
+        let all: Vec<_> = measured
+            .iter()
+            .map(|s| s.input_bytes().map(|read| read.all().get()))
+            .collect();
+        assert_eq!(all, [Some(3), Some(5)]);
+        assert!(
+            !log.inputs_measured(),
+            "the spawns measured are a new report"
+        );
     }
 
     #[test]
-    #[should_panic(expected = "one measure per spawn")]
     fn a_measure_of_other_spawns_is_refused() {
         let mut builder = Builder::with_capacity(1, 0, 0);
         builder.push(logged("remote", "A"));
-        builder.finish(MeasuredInputs::default());
+        let log = builder.finish();
+        assert!(log.measured(Arc::new(MeasuredInputs::default())).is_none());
     }
 
     #[test]
@@ -433,7 +470,7 @@ mod tests {
         builder.push(logged("remote", "A"));
         builder.push(logged("local", "B"));
         builder.push(logged("remote", "B"));
-        let log = finish(builder);
+        let log = builder.finish();
         assert_eq!(*log.runners(), ["remote".into(), "local".into()]);
         assert_eq!(*log.mnemonics(), ["A".into(), "B".into()]);
         let runners: Vec<&str> = log.iter().map(|spawn| spawn.runner()).collect();
@@ -450,7 +487,7 @@ mod tests {
                 ..logged("remote", mnemonic)
             });
         }
-        let log = finish(builder);
+        let log = builder.finish();
         let labels: Vec<_> = log.iter().map(|s| s.target_label()).collect();
         assert_eq!(labels, [None, Some("//a"), Some("//a")]);
         assert_eq!(*log.targets(), ["//a".into()]);
@@ -469,7 +506,7 @@ mod tests {
             ..logged("disk cache hit", "C")
         });
         builder.output("bazel-out/dropped", Bytes::new(1));
-        let log = finish(builder);
+        let log = builder.finish();
         let outputs: Vec<Vec<&str>> = log.iter().map(|s| s.outputs().collect()).collect();
         assert_eq!(
             outputs,
@@ -509,7 +546,7 @@ mod tests {
                 ..logged(runner, "M")
             });
         }
-        let log = finish(builder);
+        let log = builder.finish();
         let on: Vec<SpawnRunner> = log.iter().map(|spawn| spawn.ran_on()).collect();
         let expected: Vec<SpawnRunner> = ran.iter().map(|&(_, _, runner)| runner).collect();
         assert_eq!(on, expected);

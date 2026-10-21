@@ -6,7 +6,7 @@ use bazel_spawn_proto::tools::protos::{Digest, ExecLogEntry, SpawnMetrics};
 use bviz_invocation::Recorded;
 use prost::Message;
 
-use crate::{ExecLog, Phase};
+use crate::{ExecLog, Phase, UnmeasuredLog};
 
 pub(crate) fn entry(id: u32, payload: Type) -> ExecLogEntry {
     ExecLogEntry {
@@ -146,10 +146,19 @@ pub(crate) fn encode(entries: &[ExecLogEntry]) -> Vec<u8> {
     zstd::encode_all(decoded.as_slice(), 0).expect("compress in memory")
 }
 
-pub(crate) fn load(entries: &[ExecLogEntry]) -> ExecLog {
+/// The log of `entries`, its spawns' inputs yet to be measured.
+pub(crate) fn read(entries: &[ExecLogEntry]) -> UnmeasuredLog {
     let log = encode(entries);
     match crate::read::read_compressed(log.as_slice(), log.len() as u64) {
         Ok(Recorded::Complete(log)) => log,
         _ => panic!("the log reads whole"),
     }
+}
+
+/// The log of `entries`, its spawns' inputs measured.
+pub(crate) fn load(entries: &[ExecLogEntry]) -> ExecLog {
+    let (_wanted, stop) = bviz_parallel::stop_on_drop();
+    read(entries)
+        .measure_inputs(&stop)
+        .expect("nothing stops the measure")
 }

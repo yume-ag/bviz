@@ -12,7 +12,7 @@ use crate::table::{
     sort_tables, sorting_cell, sorting_header, spawn_row, totals,
 };
 use bviz_execlog::ByteMeasure;
-use bviz_ui_components::amount::{self, bytes, moved};
+use bviz_ui_components::amount::{self, measured_bytes, moved};
 use bviz_ui_components::{Dropdown, DropdownEvent, KeyScope, ListScroll, OneRow, Sort};
 use bviz_ui_workspace::{PanelKind, Role, ViewKind};
 use gpui::{
@@ -194,7 +194,10 @@ impl BytesTables {
         );
         let spawns = &self.summary.biggest[sort.by.index()];
         if spawns.is_empty() {
-            let none = format!("No spawn has any {}.", amount::measure_name(sort.by));
+            let none = match sort.by.of_inputs() && !self.summary.inputs_measured {
+                true => "Measuring what each spawn read…".to_owned(),
+                false => format!("No spawn has any {}.", amount::measure_name(sort.by)),
+            };
             return div().child(header).child(none_note(none, palette));
         }
         let rows = list_rows("largest", spawns.len(), &self.largest_scroll, {
@@ -207,8 +210,9 @@ impl BytesTables {
                         true => &spawns[index],
                         false => &spawns[spawns.len() - 1 - index],
                     };
-                    let amounts = ByteMeasure::ALL
-                        .map(|measure| cell(BYTES_COLUMN, bytes(spawn.bytes.measure(measure))));
+                    let amounts = ByteMeasure::ALL.map(|measure| {
+                        cell(BYTES_COLUMN, measured_bytes(spawn.bytes.measure(measure)))
+                    });
                     let time = cell(TIME_COLUMN, duration(spawn.time));
                     let names = name_cells(&spawn.name, &tables.summary.repos, &palette, runner);
                     spawn_row(
@@ -242,6 +246,21 @@ impl Tables for BytesTables {
 
     fn cycle_list(&mut self, cx: &mut Context<Self>) {
         self.show(self.list.next(), cx);
+    }
+
+    fn summary(&self) -> &Summary {
+        &self.summary
+    }
+
+    fn take_up_measured(&mut self, mut summary: Summary, cx: &mut Context<Self>) {
+        let tables = (summary.runners.iter_mut())
+            .map(|runner| &mut runner.mnemonics)
+            .chain([&mut summary.mnemonics]);
+        for table in tables {
+            apply(self.sort, table);
+        }
+        self.summary = summary;
+        cx.notify();
     }
 
     fn new(mut summary: Summary, _focus: &FocusHandle, cx: &mut Context<Self>) -> Self {

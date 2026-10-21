@@ -11,6 +11,7 @@ rust_library(
         "//trace/layout:__pkg__",
         "//trace/profile:__pkg__",
         "//ui/components:__pkg__",
+        "//ui/execlog:__pkg__",
         "//ui/graph:__pkg__",
         "//util/input:__pkg__",
     ],

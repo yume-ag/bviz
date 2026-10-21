@@ -90,6 +90,9 @@ pub struct Summary {
     pub(crate) biggest: [Vec<BigSpawn>; ByteMeasure::ALL.len()],
     /// The names the repositories the log's labels name are shown by.
     pub(crate) repos: Arc<RepoNames>,
+    /// Whether the bytes the spawns read are measured: until they are, the
+    /// lists of the largest in them are empty.
+    pub(crate) inputs_measured: bool,
 }
 
 impl Summary {
@@ -116,6 +119,7 @@ impl Summary {
             top: Phase::ALL.map(|phase| top_spawns(log, phase)),
             biggest: ByteMeasure::ALL.map(|measure| biggest_spawns(log, measure)),
             repos: Arc::new(RepoNames::of_labels(log.target_labels())),
+            inputs_measured: log.logged_spawns().inputs_measured(),
         }
     }
 
