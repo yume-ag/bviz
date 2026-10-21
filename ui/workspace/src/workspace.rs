@@ -2509,9 +2509,18 @@ fn viewport(window: &Window) -> Bounds<Pixels> {
 /// among them — could make anything of, so the type names the process as well
 /// as the application: a window of another bviz then finds nothing it takes on
 /// offer, and refuses the drop rather than accepting one it cannot carry out.
+/// The browser exposes no process id, so a page's type names the application
+/// alone.
 fn panel_mime() -> &'static str {
     static MIME: OnceLock<String> = OnceLock::new();
-    MIME.get_or_init(|| format!("application/x-bviz-panel;pid={}", std::process::id()))
+    MIME.get_or_init(|| {
+        let application = "application/x-bviz-panel";
+        if cfg!(target_family = "wasm") {
+            application.to_string()
+        } else {
+            format!("{application};pid={}", std::process::id())
+        }
+    })
 }
 
 /// Whether a press carried from `pressed` to `at` has travelled far enough to be
