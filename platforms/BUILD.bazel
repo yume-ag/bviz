@@ -82,6 +82,7 @@ platform(
         "--@rules_rs_rules_rust//rust/settings:extra_rustc_flag=-Cpanic=unwind",
         "--@rules_rs_rules_rust//rust/settings:extra_rustc_flag=-Clink-arg=-zstack-size=%d" % WEB_MAIN_THREAD_STACK,
     ],
+    visibility = ["//bviz:__pkg__"],
 )
 
 WASM32_ADDRESS_SPACE = 1 << 32
