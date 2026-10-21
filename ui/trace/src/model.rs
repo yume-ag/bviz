@@ -174,8 +174,11 @@ impl Presentation {
     fn of(profile: &Profile) -> Presentation {
         let t = bviz_time::now();
         let lanes = lay_out_lanes(profile, &METRICS);
-        if std::env::var_os("BVIZ_TRACE_TIMING").is_some() {
-            eprintln!("[timing] lay_out_lanes: {:.3}s", t.elapsed().as_secs_f64());
+        if bviz_switches::is_set(bviz_trace_profile::TIMING_SWITCH) {
+            bviz_switches::report(format_args!(
+                "[timing] lay_out_lanes: {:.3}s",
+                t.elapsed().as_secs_f64()
+            ));
         }
         Presentation {
             repos: repo_names(profile),
@@ -876,11 +879,11 @@ impl TraceModel {
                         ScopeAggregate::build_for_tracks_reusing(&scan, mode, &time_window, |i| {
                             selected.get(i).copied().unwrap_or(false)
                         });
-                    if std::env::var_os("BVIZ_TRACE_TIMING").is_some() {
-                        eprintln!(
+                    if bviz_switches::is_set(bviz_trace_profile::TIMING_SWITCH) {
+                        bviz_switches::report(format_args!(
                             "[timing] track_aggregate: {:.3}s",
                             t.elapsed().as_secs_f64()
-                        );
+                        ));
                     }
                     aggregate
                 })

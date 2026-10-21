@@ -64,7 +64,7 @@ then shows a banner saying bviz cannot use more than one thread.
 ### Measuring performance
 
 Set these environment variables when running bviz or a viewer binary to measure
-it; each reports on stderr. The values the `BVIZ_PAN_BENCH*` variables take are
+it; each reports on stderr, or on the console in a browser. The values the `BVIZ_PAN_BENCH*` variables take are
 documented in [`ui/graph/src/pan_bench.rs`](ui/graph/src/pan_bench.rs).
 
 | Variable | Purpose |
@@ -74,6 +74,11 @@ documented in [`ui/graph/src/pan_bench.rs`](ui/graph/src/pan_bench.rs).
 | `BVIZ_PAN_BENCH_MOTION` | how the benchmark moves the view |
 | `BVIZ_PAN_BENCH_PRESS` | where the benchmark's motion starts |
 | `BVIZ_TRACE_TIMING` | times each stage of loading a profile and of laying out its lanes |
+
+In a browser, name them in the fragment of the page's address, separated by
+`&`, each with its value after an `=`, as in
+`#BVIZ_PAN_BENCH=map&BVIZ_PAN_BENCH_FRAMES=300`. The page reads its fragment
+when it loads, so reload it after changing one.
 
 ## Before you open a pull request
 

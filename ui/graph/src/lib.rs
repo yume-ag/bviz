@@ -717,7 +717,7 @@ impl GraphPanel {
             _chrome_follows: chrome_follows,
             legend: Legend::default(),
             legend_state,
-            bench: pan_bench::Bench::from_env(),
+            bench: pan_bench::Bench::from_switches(),
         };
         // A panel minted over a graph its document has already read, as a
         // closed view reopened is, sees no read land.

@@ -738,6 +738,7 @@ dependencies = [
  "bviz_input",
  "bviz_invocation",
  "bviz_sniff",
+ "bviz_switches",
  "bviz_ui_components",
  "bviz_ui_console",
  "bviz_ui_execlog",
@@ -892,6 +893,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bviz_switches"
+version = "0.1.0"
+dependencies = [
+ "percent-encoding",
+ "web-sys",
+]
+
+[[package]]
 name = "bviz_terminal"
 version = "0.1.0"
 dependencies = [
@@ -928,6 +937,7 @@ dependencies = [
  "bviz_input",
  "bviz_invocation",
  "bviz_parallel",
+ "bviz_switches",
  "bviz_time",
  "crossbeam-channel",
  "crossbeam-utils",
@@ -1022,6 +1032,7 @@ dependencies = [
  "bviz_invocation",
  "bviz_label",
  "bviz_parallel",
+ "bviz_switches",
  "bviz_time",
  "bviz_ui_assets",
  "bviz_ui_components",
@@ -1107,6 +1118,7 @@ dependencies = [
  "bviz_input",
  "bviz_invocation",
  "bviz_label",
+ "bviz_switches",
  "bviz_time",
  "bviz_trace_layout",
  "bviz_trace_profile",

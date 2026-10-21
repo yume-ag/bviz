@@ -37,6 +37,7 @@ members = [
     "ui/workspace",
     "util/input",
     "util/parallel",
+    "util/switches",
     "util/time",
     "web",
 ]
@@ -54,6 +55,7 @@ bviz_label = { path = "label" }
 bviz_invocation = { path = "invocation" }
 bviz_input = { path = "util/input" }
 bviz_parallel = { path = "util/parallel" }
+bviz_switches = { path = "util/switches" }
 bviz_time = { path = "util/time" }
 clap = { version = "4", features = ["derive"] }
 crossbeam-channel = "0.5"

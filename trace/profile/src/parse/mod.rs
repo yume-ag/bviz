@@ -134,15 +134,22 @@ fn parse_streaming(text: &str) -> Result<Profile, serde_json::Error> {
     Ok(profile)
 }
 
-/// Wall-clock timing of a load stage, printed to stderr when `BVIZ_TRACE_TIMING`
-/// is set. Returns the closure's value so a stage can be wrapped inline.
+/// The switch that has each stage of loading and presenting a profile report
+/// how long it took.
+pub const TIMING_SWITCH: &str = "BVIZ_TRACE_TIMING";
+
+/// Wall-clock timing of a load stage, reported when [`TIMING_SWITCH`] is set.
+/// Returns the closure's value so a stage can be wrapped inline.
 fn timed<T>(label: &str, f: impl FnOnce() -> T) -> T {
-    if std::env::var_os("BVIZ_TRACE_TIMING").is_none() {
+    if !bviz_switches::is_set(TIMING_SWITCH) {
         return f();
     }
     let start = bviz_time::now();
     let out = f();
-    eprintln!("[timing] {label}: {:.3}s", start.elapsed().as_secs_f64());
+    bviz_switches::report(format_args!(
+        "[timing] {label}: {:.3}s",
+        start.elapsed().as_secs_f64()
+    ));
     out
 }
 

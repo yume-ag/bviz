@@ -12,4 +12,4 @@ pub use model::{
 };
 #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
 pub use parse::pipeline_chunk_bytes;
-pub use parse::{LoadError, gzip_size_hint, probe_invocation_id};
+pub use parse::{LoadError, TIMING_SWITCH, gzip_size_hint, probe_invocation_id};

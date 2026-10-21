@@ -24,6 +24,7 @@ rust_library(
         "//ui/workspace",
         "//util/input",
         "//util/parallel",
+        "//util/switches",
         "//util/time",
         "@crates//:cfg-if",
         "@crates//:clap",

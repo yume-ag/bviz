@@ -1,0 +1,18 @@
+[package]
+name = "bviz_switches"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[lib]
+name = "bviz_switches"
+path = "src/lib.rs"
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+percent-encoding = { workspace = true }
+web-sys = { workspace = true, features = ["console"] }
+
+[dev-dependencies]
+percent-encoding = { workspace = true }

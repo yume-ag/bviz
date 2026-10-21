@@ -1,4 +1,5 @@
-//! What bviz tells the page it runs in, as events on the page's window.
+//! What bviz tells the page it runs in, as events on the page's window, and
+//! what it reads of the page.
 
 use web_sys::Event;
 
@@ -15,6 +16,13 @@ pub fn failed(why: &str) {
 /// Tells the page that bviz's window has closed.
 pub fn closed() {
     dispatch("bviz:closed", None);
+}
+
+/// The fragment of the page's URL, with its `#`; empty where it has none.
+pub fn fragment() -> String {
+    web_sys::window()
+        .and_then(|window| window.location().hash().ok())
+        .unwrap_or_default()
 }
 
 /// Dispatches the event `name`, carrying `message` as its property of that

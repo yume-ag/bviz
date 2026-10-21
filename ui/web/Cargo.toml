@@ -28,6 +28,7 @@ web-sys = { workspace = true, features = [
     "FileList",
     "HtmlElement",
     "HtmlInputElement",
+    "Location",
     "MouseEvent",
     "Node",
     "UiEvent",

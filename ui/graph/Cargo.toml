@@ -19,6 +19,7 @@ bviz_input = { workspace = true }
 bviz_invocation = { workspace = true }
 bviz_label = { workspace = true }
 bviz_parallel = { workspace = true }
+bviz_switches = { workspace = true }
 bviz_time = { workspace = true }
 bviz_ui_assets = { path = "../assets" }
 bviz_ui_components = { path = "../components" }

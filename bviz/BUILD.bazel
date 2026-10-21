@@ -30,7 +30,10 @@ rust_binary(
         "@crates//:clap",
         "@crates//:gpui",
     ] + select({
-        "@platforms//cpu:wasm32": ["//ui/web"],
+        "@platforms//cpu:wasm32": [
+            "//ui/web",
+            "//util/switches",
+        ],
         "//conditions:default": [],
     }),
 )
