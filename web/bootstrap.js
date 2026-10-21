@@ -60,12 +60,40 @@ function help(reason, detail) {
   location.replace(`help.html#${given}`);
 }
 
+// Covers the page with what crashed bviz and a way to reload it: the panic or
+// fault `error` that escaped it, or, where an abort left none, the panic it
+// last recorded.
+function crashed(error) {
+  if (document.querySelector(".crashed")) {
+    return;
+  }
+  const what = error ? error.message : globalThis.bvizLastPanic;
+  const message = document.createElement("p");
+  message.textContent = what ? `bviz crashed: ${what}` : "bviz crashed.";
+  const reload = document.createElement("button");
+  reload.textContent = "Reload";
+  reload.addEventListener("click", () => location.reload());
+  const overlay = document.createElement("div");
+  overlay.className = "crashed";
+  overlay.append(message, reload);
+  document.body.append(overlay);
+  reload.focus();
+}
+
+// Whether `error` is a panic that escaped bviz, or the module failing.
+function escaped(error) {
+  return error?.name === "PanicError" || error instanceof WebAssembly.RuntimeError;
+}
+
 const reason = await missing();
 if (reason) {
   help(reason);
 } else {
   addEventListener("gpui:graphicsunavailable", (event) => help("graphics", event.message));
   addEventListener("bviz:failed", (event) => help("failed", event.message));
+  addEventListener("bviz:crashed", () => crashed());
+  addEventListener("error", (event) => escaped(event.error) && crashed(event.error));
+  addEventListener("unhandledrejection", (event) => escaped(event.reason) && crashed(event.reason));
 
   const status = document.createElement("p");
   status.className = "status";
@@ -77,6 +105,10 @@ if (reason) {
     const { default: init } = await import("./bviz.js");
     await init();
   } catch (error) {
-    help("load", String(error));
+    if (escaped(error)) {
+      crashed(error);
+    } else {
+      help("load", String(error));
+    }
   }
 }

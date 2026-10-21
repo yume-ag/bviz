@@ -2,5 +2,6 @@
 //! window opens empty, and tells the page once it stands.
 
 pub fn main() {
+    bviz_ui_web::report_crashes();
     crate::open_window(|_, _, _| bviz_ui_web::ready());
 }

@@ -2,6 +2,8 @@
 
 #![cfg(target_family = "wasm")]
 
+mod crash;
 mod page;
 
+pub use crash::report_crashes;
 pub use page::{failed, ready};
