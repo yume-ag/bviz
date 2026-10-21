@@ -45,6 +45,7 @@ rust_binary(
     deps = [
         ":execlog",
         "//alloc",
+        "//util/parallel",
         "//util/time",
     ],
 )
