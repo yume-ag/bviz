@@ -1,0 +1,16 @@
+:root {
+  color-scheme: light dark;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: Canvas;
+  color: CanvasText;
+  font-family: system-ui, sans-serif;
+}

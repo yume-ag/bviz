@@ -45,6 +45,21 @@ Each viewer also builds as a binary of its own, taking the same flags as
 | `//ui/console:console` | the console output, replayed against its clock |
 | `//ui/execlog:execlog` | the spawn time by phase, from the execution log |
 
+### Running in a browser
+
+`//web:serve` builds bviz for the browser and serves it locally, on
+`localhost` only. Open the address it prints.
+
+```sh
+bazel run -c opt //web:serve
+```
+
+What it serves is `//web:site`, the directory a static host would serve. It
+sends the headers the page needs: the wasm media type, cross-origin isolation,
+which lets the page share memory between threads, and a content security policy
+that admits no inline script or style. `--port` picks another port, and
+`--no-isolation` leaves out the cross-origin isolation headers.
+
 ### Measuring performance
 
 Set these environment variables when running bviz or a viewer binary to measure

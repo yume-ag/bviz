@@ -7,7 +7,10 @@ exports_files(
         "LICENSE",
         "NOTICE",
     ],
-    visibility = ["//dist:__pkg__"],
+    visibility = [
+        "//dist:__pkg__",
+        "//web:__pkg__",
+    ],
 )
 
 exports_files(["clippy.toml"])

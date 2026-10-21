@@ -69,6 +69,7 @@ platform_transition_filegroup(
     name = "third_party_notices_web",
     srcs = [":third_party_notices"],
     target_platform = "//platforms:wasm32_web_threads",
+    visibility = ["//web:__pkg__"],
 )
 
 [
