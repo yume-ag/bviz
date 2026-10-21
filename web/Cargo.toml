@@ -14,3 +14,4 @@ path = "src/serve.rs"
 clap = { workspace = true }
 percent-encoding = { workspace = true }
 tiny_http = { workspace = true }
+wasm-bindgen-cli = { workspace = true }

@@ -478,6 +478,10 @@ crate.annotation(
     crate = "protoc-gen-prost",
     gen_binaries = ["protoc-gen-prost"],
 )
+crate.annotation(
+    crate = "wasm-bindgen-cli",
+    gen_binaries = ["wasm-bindgen"],
+)
 use_repo(crate, "crates")
 
 rules_rust = use_extension("@rules_rs//rs:rules_rust.bzl", "rules_rust")
