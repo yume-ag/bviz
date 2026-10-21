@@ -3,6 +3,7 @@
 //! rendering the result.
 
 use bviz_graph_layout::Id;
+use bviz_input::Named;
 use bviz_invocation::Session;
 use bviz_ui_components::gesture::{
     GestureRow, Pointer, pinch_factor, scroll_pixels, wheel_zoom_factor,
@@ -19,7 +20,7 @@ use bviz_ui_session::Sharing;
 use bviz_ui_theme::{DataColors, Theme, ThemeColors};
 use bviz_ui_workspace::{
     Document, Member, Panel, PanelEvent, PanelKind, Role, Shared, Titled, ViewKind, ViewSpec,
-    document_label,
+    named_label,
 };
 use clap::Parser;
 use gpui::{
@@ -1565,8 +1566,8 @@ pub struct Load {
     title: SharedString,
 }
 
-impl From<GraphSource> for Load {
-    fn from(source: GraphSource) -> Self {
+impl From<GraphSource<Named>> for Load {
+    fn from(source: GraphSource<Named>) -> Self {
         let title = title(&source);
         Self {
             built: Pending::start(move || model::build(source)),
@@ -1576,11 +1577,12 @@ impl From<GraphSource> for Load {
 }
 
 /// Names the file the graph was read from, and how many more it merges.
-fn title(source: &GraphSource) -> SharedString {
+fn title(source: &GraphSource<Named>) -> SharedString {
     let (first, rest) = source.first_and_rest();
+    let label = named_label(&first.file);
     match rest.len() {
-        0 => document_label(&first.path),
-        more => format!("{} +{more}", document_label(&first.path)).into(),
+        0 => label,
+        more => format!("{label} +{more}").into(),
     }
 }
 
@@ -1628,7 +1630,11 @@ pub fn run() {
     bviz_ui_workspace::run_viewer(
         "bviz graph",
         bviz_ui_workspace::WINDOW_SIZE,
-        |cli: Cli| cli.graph.source().map(Load::from),
+        |cli: Cli| {
+            cli.graph
+                .source()
+                .map(|source| Load::from(source.map(Named::Path)))
+        },
         &format!("one of --{AQUERY_LONG}, --{CQUERY_LONG} or --{QUERY_LONG}"),
         |load: Load, window, cx| {
             let shared = Shared::new(cx);
@@ -2762,12 +2768,12 @@ mod tests {
 
     /// The graph read from `paths`, an aquery, a cquery and a query output in
     /// that order, as many of them as are given.
-    fn source(paths: &[&str]) -> GraphSource {
+    fn source(paths: &[&str]) -> GraphSource<Named> {
         use bviz_ui_graph_args::InputKind;
         let mut files = bviz_ui_graph_args::GraphFiles::default();
         let kinds = [InputKind::Aquery, InputKind::Cquery, InputKind::Query];
         for (kind, path) in kinds.into_iter().zip(paths) {
-            *files.file_mut(kind) = Some(path.into());
+            *files.file_mut(kind) = Some(std::path::PathBuf::from(path).into());
         }
         files.source().expect("the paths name a graph")
     }

@@ -12,6 +12,7 @@ use crate::{
     Joinable, Layout, Maximize, Member, Pane, PaneEvent, PathOpener, Regions, Removal, Role,
     Shared, Side, Split, SplitSide, WindowsChanged, documents, drag_icon, drop, panel_menu,
 };
+use bviz_input::Named;
 use bviz_ui_components::dialog;
 use bviz_ui_components::gesture::Pointer;
 use bviz_ui_components::{
@@ -872,13 +873,20 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Hands `paths` to the app's [`PathOpener`] to open into this window.
+    /// Hands the files at `paths` to the app's [`PathOpener`] to open into
+    /// this window.
     fn open_paths(&mut self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
-        if paths.is_empty() {
+        let files = paths.into_iter().map(Named::Path).collect();
+        self.open_named(files, window, cx);
+    }
+
+    /// Hands `files` to the app's [`PathOpener`] to open into this window.
+    fn open_named(&mut self, files: Vec<Named>, window: &mut Window, cx: &mut Context<Self>) {
+        if files.is_empty() {
             return;
         }
         if let Some(opener) = cx.try_global::<PathOpener>().cloned() {
-            opener.open(paths, cx.weak_entity(), window, cx);
+            opener.open(files, cx.weak_entity(), window, cx);
         }
     }
 

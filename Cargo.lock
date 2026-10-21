@@ -1142,6 +1142,7 @@ dependencies = [
 name = "bviz_ui_workspace"
 version = "0.1.0"
 dependencies = [
+ "bviz_input",
  "bviz_invocation",
  "bviz_ui_assets",
  "bviz_ui_components",

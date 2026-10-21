@@ -9,7 +9,7 @@ mod web;
 use bviz_bazel_flags_args::BazelrcArgs;
 #[cfg(not(target_family = "wasm"))]
 use bviz_cli::{Cli, Request, Source, Sources};
-use bviz_input::Input;
+use bviz_input::{Input, Named};
 use bviz_invocation::InvocationId;
 #[cfg(not(target_family = "wasm"))]
 use bviz_ui_components::Pending;
@@ -18,15 +18,15 @@ use bviz_ui_graph_args::{GraphFiles, GraphSource};
 use bviz_ui_session::Sharing;
 use bviz_ui_workspace::{
     AppAction, Document, Documents, Joinable, Member, Panel, PathOpener, Shared, ViewKind,
-    Workspace, document_label,
+    Workspace, named_label,
 };
 #[cfg(not(target_family = "wasm"))]
 use clap::Parser;
 use classify::Classified;
 use gpui::{App, AppContext, ClipboardItem, Context, SharedString, WeakEntity, Window, actions};
 use group::{File, Given, Kind, Open, Opening, Placing};
+use std::cell::Cell;
 use std::iter;
-use std::path::PathBuf;
 
 #[global_allocator]
 static GLOBAL: bviz_alloc::Allocator = bviz_alloc::Allocator;
@@ -108,7 +108,7 @@ impl Load {
         let start_each = |files: Vec<Source>| files.into_iter().map(Self::start).collect();
         match sources {
             Sources::Graph { graph, files } => Given::Graph {
-                graph: Self::Graph(graph.into()),
+                graph: Self::Graph(graph.map(Named::Path).into()),
                 files: start_each(files),
             },
             Sources::Files { first, rest } => Given::Files {
@@ -176,10 +176,10 @@ fn open_invocation_files(
     (first, others)
 }
 
-/// Opens `paths`, named to the window `into` frames, once a background task
+/// Opens `files`, named to the window `into` frames, once a background task
 /// has told what each holds.
-fn open_paths(paths: Vec<PathBuf>, into: WeakEntity<Workspace>, window: &mut Window, cx: &mut App) {
-    open_classified(move || classify::classify(paths), into, window, cx);
+fn open_files(files: Vec<Named>, into: WeakEntity<Workspace>, window: &mut Window, cx: &mut App) {
+    open_classified(move || classify::classify(files), into, window, cx);
 }
 
 /// Opens what `classifying` tells of files named to the window `into` frames.
@@ -248,7 +248,7 @@ const ASK_KIND: &str = "bviz cannot tell from how these files begin what they ho
 /// files named to the window `workspace` frames, after the files opened
 /// with them.
 fn ask_kinds(
-    unknown: Vec<PathBuf>,
+    unknown: Vec<Named>,
     workspace: &mut Workspace,
     window: &mut Window,
     cx: &mut Context<Workspace>,
@@ -256,19 +256,24 @@ fn ask_kinds(
     let choices = (classify::KINDS.iter())
         .map(|&(kind, name)| (kind, SharedString::from(name)))
         .collect();
-    let items = unknown.iter().map(|path| {
-        ChoiceItem::new(document_label(path)).detail(path.to_string_lossy().into_owned())
-    });
+    let items = (unknown.iter())
+        .map(|named| ChoiceItem::new(named_label(named)).detail(named.name().into_owned()));
     let dialog =
         cx.new(|cx| ChoiceDialog::new("Open files as", ASK_KIND, "Open", choices, items, cx));
+    // Taken by the answer, so a file held in memory is held once while it is
+    // read.
+    let unknown = Cell::new(Some(unknown));
     workspace.ask(
         dialog,
         move |_, event: &ChoiceDialogEvent<bviz_sniff::Kind>, window, cx| {
             let ChoiceDialogEvent::Chosen(chosen) = event else {
                 return;
             };
-            let chosen: Vec<(PathBuf, bviz_sniff::Kind)> = (unknown.iter().zip(chosen))
-                .filter_map(|(path, &kind)| Some((path.clone(), kind?)))
+            let Some(unknown) = unknown.take() else {
+                return;
+            };
+            let chosen: Vec<(Named, bviz_sniff::Kind)> = (unknown.into_iter().zip(chosen))
+                .filter_map(|(named, &kind)| Some((named, kind?)))
                 .collect();
             if !chosen.is_empty() {
                 let into = cx.weak_entity();
@@ -296,8 +301,8 @@ fn place(
         unknown,
         unreadable,
     } = classified;
-    for (path, error) in unreadable {
-        workspace.tell(format!("Cannot open {}: {error}", path.display()), cx);
+    for (named, error) in unreadable {
+        workspace.tell(format!("Cannot open {}: {error}", named.name()), cx);
     }
     open_batch(graph, further_graphs, files, workspace, window, cx);
     if !unknown.is_empty() {
@@ -308,8 +313,8 @@ fn place(
 /// Opens `graph`, `further_graphs` and `files`, named together, into
 /// `workspace` as documents grouped as the command line groups them.
 fn open_batch(
-    graph: GraphFiles,
-    further_graphs: Vec<GraphSource>,
+    graph: GraphFiles<Named>,
+    further_graphs: Vec<GraphSource<Named>>,
     files: Vec<File<Input>>,
     workspace: &mut Workspace,
     window: &mut Window,
@@ -333,7 +338,7 @@ fn open_batch(
 /// already.
 fn open_given(
     given: Given<Load>,
-    further_graphs: Vec<GraphSource>,
+    further_graphs: Vec<GraphSource<Named>>,
     workspace: &mut Workspace,
     window: &mut Window,
     cx: &mut Context<Workspace>,
@@ -407,7 +412,7 @@ fn of_invocation(id: InvocationId, first: Member, rest: Vec<Member>, shared: Sha
 }
 
 /// What `graph` and `files` name, `None` where they name nothing.
-fn given(graph: Option<GraphSource>, files: Vec<File<Load>>) -> Option<Given<Load>> {
+fn given(graph: Option<GraphSource<Named>>, files: Vec<File<Load>>) -> Option<Given<Load>> {
     if let Some(graph) = graph {
         return Some(Given::Graph {
             graph: Load::Graph(graph.into()),
@@ -459,7 +464,7 @@ fn open_window(arriving: impl FnOnce(WeakEntity<Workspace>, &mut Window, &mut Ap
         "bviz",
         bviz_ui_workspace::WINDOW_SIZE,
         arriving,
-        Some(PathOpener::new(open_paths)),
+        Some(PathOpener::new(open_files)),
         vec![AppAction::new(CopyBazelrc, copy_bazelrc)],
         &[
             bviz_ui_graph::register_keys,

@@ -14,6 +14,7 @@ path = "src/lib.rs"
 clap = { workspace = true }
 gpui = { workspace = true }
 shlex = { workspace = true }
+bviz_input = { workspace = true }
 bviz_invocation = { workspace = true }
 bviz_ui_assets = { path = "../assets" }
 bviz_ui_components = { path = "../components" }

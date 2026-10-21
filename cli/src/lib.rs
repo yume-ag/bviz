@@ -10,6 +10,7 @@ use bviz_ui_execlog_args::{ExecLogArgs, ExecLogSource};
 use bviz_ui_graph_args::{GraphArgs, GraphSource};
 use bviz_ui_trace_args::{TraceArgs, TraceSource};
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 /// Opens Bazel build documents: the dependency graph, the action timeline, the
 /// console replay, the spawn time by phase.
@@ -111,7 +112,7 @@ pub enum Source {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Sources {
     Graph {
-        graph: GraphSource,
+        graph: GraphSource<PathBuf>,
         files: Vec<Source>,
     },
     Files {

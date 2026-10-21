@@ -16,6 +16,7 @@ rust_library(
         "//ui/execlog:__pkg__",
         "//ui/graph:__pkg__",
         "//ui/trace:__pkg__",
+        "//ui/workspace:__pkg__",
     ],
     deps = ["@crates//:prost"],
 )
