@@ -12,7 +12,7 @@ use crate::table::{
     sort_tables, sorting_cell, sorting_header, spawn_row, totals,
 };
 use bviz_execlog::ByteMeasure;
-use bviz_ui_components::amount::{self, measured_bytes, moved};
+use bviz_ui_components::amount::{self, bytes, measured_bytes, moved};
 use bviz_ui_components::{Dropdown, DropdownEvent, KeyScope, ListScroll, OneRow, Sort};
 use bviz_ui_workspace::{PanelKind, Role, ViewKind};
 use gpui::{
@@ -56,6 +56,14 @@ const LARGEST: SpawnsToggle = SpawnsToggle {
     label: "largest",
     tip: "Spawns largest in bytes",
 };
+
+/// What the totals leave out.
+const UNLOGGED_CAVEAT: &str = "action-cache hits not logged";
+
+/// What the distinct content the totals name is.
+const DISTINCT_CONTENT: &str = "distinct content: what all spawns read, each file's \
+    content counted once however many spawns read it at however many paths, \
+    about what their inputs take up in a content-addressed cache";
 
 /// The runner picker's first option, summing every runner's spawns; the
 /// summary's runners follow it in order.
@@ -194,7 +202,7 @@ impl BytesTables {
         );
         let spawns = &self.summary.biggest[sort.by.index()];
         if spawns.is_empty() {
-            let none = match sort.by.of_inputs() && !self.summary.inputs_measured {
+            let none = match sort.by.of_inputs() && !self.summary.inputs_measured() {
                 true => "Measuring what each spawn read…".to_owned(),
                 false => format!("No spawn has any {}.", amount::measure_name(sort.by)),
             };
@@ -293,14 +301,18 @@ impl Tables for BytesTables {
         let this = tables.read(cx);
         let palette = Palette::from_theme(&bviz_ui_theme::theme(window, cx));
         let summary = &this.summary;
-        let text = format!("{} spawns: {}", summary.spawns, moved(summary.bytes()));
-        let caveats = "action-cache hits not logged";
+        let mut text = format!("{} spawns: {}", summary.spawns, moved(summary.bytes()));
+        let mut caveats = String::from(UNLOGGED_CAVEAT);
+        if let Some(distinct) = summary.distinct_inputs {
+            text += &format!(" · distinct content {}", bytes(distinct));
+            caveats = format!("{DISTINCT_CONTENT}\n{caveats}");
+        }
         let choose = {
             let tables = tables.clone();
             move |list, cx: &mut App| tables.update(cx, |tables, cx| tables.show(list, cx))
         };
         let row = OneRow::new("spawn-bytes-toolbar")
-            .filling(totals(text.into(), caveats, &palette))
+            .filling(totals(text.into(), caveats.into(), &palette))
             .group(list_group(this.list, LARGEST, choose, focus, window));
         match this.list {
             List::ByMnemonic => {

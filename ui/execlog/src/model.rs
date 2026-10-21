@@ -306,7 +306,7 @@ fn log_of(reread: &Reread) -> Option<UnmeasuredLog> {
 mod tests {
     use super::*;
     use bviz_input::Input;
-    use bviz_invocation::spawn::{Builder, InputBytes, Logged, PhaseTiming};
+    use bviz_invocation::spawn::{Builder, Bytes, InputBytes, Logged, PhaseTiming};
 
     /// A file at `name` that no execution log is written to.
     fn written_over(name: &str) -> Reread {
@@ -349,7 +349,10 @@ mod tests {
     }
 
     fn measured(unmeasured: &LoggedSpawns) -> LoggedSpawns {
-        let read = Arc::new(MeasuredInputs::new(vec![InputBytes::default(); 2]));
+        let read = Arc::new(MeasuredInputs::new(
+            vec![InputBytes::default(); 2],
+            Bytes::ZERO,
+        ));
         unmeasured.measured(read).expect("one measure per spawn")
     }
 

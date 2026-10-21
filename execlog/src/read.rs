@@ -1,5 +1,6 @@
 use std::io::{self, ErrorKind, Read};
 use std::num::NonZeroU32;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
@@ -140,6 +141,100 @@ impl Slots {
     }
 }
 
+/// File content as a digest names it.
+struct Content<'a> {
+    /// The hash, as the text Bazel writes it.
+    hash: &'a [u8],
+    size: Bytes,
+}
+
+/// Leading bytes of a digest's hash text that, with its size, tell contents
+/// apart. Sixteen hex characters are 64 bits of the hash, so two contents of
+/// one size share a key with odds negligible at any count a build reads, and
+/// keying by the text skips decoding it.
+const DIGEST_KEY_HASH_BYTES: usize = 16;
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct DigestKey {
+    hash: [u8; DIGEST_KEY_HASH_BYTES],
+    size: u64,
+}
+
+impl DigestKey {
+    fn of(content: &Content<'_>) -> DigestKey {
+        let mut hash = [0; DIGEST_KEY_HASH_BYTES];
+        let kept = content.hash.len().min(DIGEST_KEY_HASH_BYTES);
+        hash[..kept].copy_from_slice(&content.hash[..kept]);
+        DigestKey {
+            hash,
+            size: content.size.get(),
+        }
+    }
+}
+
+/// The distinct contents a log's entries hold, each by an id dense in the
+/// order first held, and the contents each slot holds.
+struct Digests {
+    /// By id.
+    sizes: Vec<Bytes>,
+    /// The ids of the contents each slot holds, slot by slot.
+    held: Vec<u32>,
+    /// Where each slot's ids end in `held`, the next slot's starting there.
+    ends: Vec<usize>,
+}
+
+impl Digests {
+    fn held_by(&self, slot: u32) -> &[u32] {
+        let slot = slot as usize;
+        let start = slot.checked_sub(1).map_or(0, |before| self.ends[before]);
+        &self.held[start..self.ends[slot]]
+    }
+}
+
+/// [`Digests`] being gathered as a log is read, with the ids by key.
+struct DigestIndex {
+    /// Grown as contents arrive rather than reserved from an estimate: a
+    /// hash table's room is written as it is reserved and filled across
+    /// it, so room it never needs is memory spent.
+    ids: FxHashMap<DigestKey, u32>,
+    digests: Digests,
+}
+
+impl DigestIndex {
+    /// Room for the contents of `entries` entries, about one each.
+    fn with_capacity(entries: usize) -> DigestIndex {
+        DigestIndex {
+            ids: FxHashMap::default(),
+            digests: Digests {
+                sizes: reserved(entries),
+                held: reserved(entries),
+                ends: reserved(entries),
+            },
+        }
+    }
+
+    /// Adds `content` to what the slot [`end_slot`](Self::end_slot) ends
+    /// next holds; empty content, which adds no bytes, is left out.
+    fn hold(&mut self, content: &Content<'_>) -> Result<(), DecodeError> {
+        if content.size == Bytes::ZERO {
+            return Ok(());
+        }
+        let digests = &mut self.digests;
+        let next = u32::try_from(digests.sizes.len())
+            .map_err(|_| DecodeError::new("more distinct contents than ids"))?;
+        let id = *self.ids.entry(DigestKey::of(content)).or_insert(next);
+        if id == next {
+            digests.sizes.push(content.size);
+        }
+        digests.held.push(id);
+        Ok(())
+    }
+
+    fn end_slot(&mut self) {
+        self.digests.ends.push(self.digests.held.len());
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum EntryKind {
     /// A file, directory or unresolved symlink.
@@ -171,6 +266,7 @@ struct Entries {
     held: Vec<u32>,
     /// The most entries one set holds.
     widest_set: usize,
+    digests: DigestIndex,
 }
 
 impl Entries {
@@ -187,6 +283,7 @@ impl Entries {
             held_ends: reserved(entries),
             held: reserved(held),
             widest_set: 0,
+            digests: DigestIndex::with_capacity(entries),
         }
     }
 
@@ -215,8 +312,16 @@ impl Entries {
         let holds = self.held.len() - self.held_ends.last().copied().unwrap_or(0);
         self.widest_set = self.widest_set.max(holds);
         self.held_ends.push(self.held.len());
+        self.digests.end_slot();
         self.slots.insert(id, slot);
         Ok(())
+    }
+
+    /// Adds `content` to what the entry inserted next holds, returning its
+    /// size.
+    fn hold_content(&mut self, content: Content<'_>) -> Result<Bytes, DecodeError> {
+        self.digests.hold(&content)?;
+        Ok(content.size)
     }
 
     /// Adds entry `id` to those the set [`insert_set`](Self::insert_set) adds
@@ -256,6 +361,7 @@ pub(crate) struct InputGraph {
     held_ends: Vec<usize>,
     held: Vec<u32>,
     widest_set: usize,
+    digests: Digests,
     /// Each spawn's, in the order the log lists them.
     roots: Vec<SpawnInputs>,
 }
@@ -267,6 +373,7 @@ impl InputGraph {
             held_ends: entries.held_ends,
             held: entries.held,
             widest_set: entries.widest_set,
+            digests: entries.digests.digests,
             roots,
         }
     }
@@ -297,6 +404,7 @@ impl InputGraph {
             .map(|_| Mutex::new(None))
             .collect();
         let mut per_spawn = vec![InputBytes::default(); self.roots.len()];
+        let readers = Readers::new(self.len());
         pool.install(|| {
             (per_spawn.par_iter_mut().zip(self.roots.par_iter())).try_for_each(|(read, &spawn)| {
                 if stopped() {
@@ -306,11 +414,35 @@ impl InputGraph {
                 let mut walk = walks[worker].lock().unwrap_or_else(PoisonError::into_inner);
                 *read = walk
                     .get_or_insert_with(|| Walk::new(self))
-                    .input_bytes(self, spawn);
+                    .input_bytes(self, spawn, &readers);
                 Some(())
             })
         })?;
-        Some(MeasuredInputs::new(per_spawn))
+        let distinct = self.distinct(readers);
+        Some(MeasuredInputs::new(per_spawn, distinct))
+    }
+
+    /// The distinct content any spawn read, by the contents the slots
+    /// `readers` records hold.
+    fn distinct(&self, readers: Readers) -> Bytes {
+        let digests = &self.digests;
+        let mut content_readers = vec![Readers::NONE; digests.sizes.len()];
+        for (slot, read) in (0..).zip(readers.into_states()) {
+            if read == Readers::NONE {
+                continue;
+            }
+            for &id in digests.held_by(slot) {
+                let readers = &mut content_readers[id as usize];
+                *readers = Readers::join(*readers, read);
+            }
+        }
+        let mut distinct = Bytes::ZERO;
+        for (&read, &size) in content_readers.iter().zip(&digests.sizes) {
+            if read != Readers::NONE {
+                distinct += size;
+            }
+        }
+        distinct
     }
 }
 
@@ -320,6 +452,75 @@ impl InputGraph {
 struct SpawnInputs {
     inputs: Option<u32>,
     tools: Option<u32>,
+    reader: Reader,
+}
+
+/// A spawn as [`Readers`] records it: one past its place among the log's
+/// spawns, so that no reader is [`Readers::NONE`] or [`Readers::MANY`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Reader(u32);
+
+impl Reader {
+    /// The reader of the spawn at `place`, `None` past the readers there are.
+    fn at(place: usize) -> Option<Reader> {
+        let reader = u32::try_from(place).ok()?.checked_add(1)?;
+        (reader != Readers::MANY).then_some(Reader(reader))
+    }
+}
+
+/// Which spawns' input sets reached each slot: none, one, or many, as the
+/// walks of every worker record it. A slot moves only from none to one
+/// spawn to many, so the record is exact whatever order the walks run in,
+/// and it costs a word per slot however many workers walk.
+struct Readers {
+    states: Vec<AtomicU32>,
+}
+
+impl Readers {
+    const NONE: u32 = 0;
+    const MANY: u32 = u32::MAX;
+
+    fn new(slots: usize) -> Readers {
+        Readers {
+            states: (0..slots).map(|_| AtomicU32::new(Readers::NONE)).collect(),
+        }
+    }
+
+    /// Records that `reader` reached `slot`.
+    fn read(&self, slot: u32, reader: Reader) {
+        let state = &self.states[slot as usize];
+        // Most slots are reached by many spawns, so a read spares most of
+        // them the write that would contend for the slot.
+        let seen = state.load(Ordering::Relaxed);
+        if seen == Readers::MANY || seen == reader.0 {
+            return;
+        }
+        let first = seen == Readers::NONE
+            && (state.compare_exchange(
+                Readers::NONE,
+                reader.0,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ))
+            .is_ok();
+        if !first {
+            state.store(Readers::MANY, Ordering::Relaxed);
+        }
+    }
+
+    /// Each slot's readers, by slot.
+    fn into_states(self) -> impl Iterator<Item = u32> {
+        self.states.into_iter().map(AtomicU32::into_inner)
+    }
+
+    /// The readers of something `a` and `b` each record readers of.
+    fn join(a: u32, b: u32) -> u32 {
+        match (a, b) {
+            (Readers::NONE, read) | (read, Readers::NONE) => read,
+            _ if a == b => a,
+            _ => Readers::MANY,
+        }
+    }
 }
 
 /// Slots one word of a [`SlotSet`] marks.
@@ -418,13 +619,20 @@ impl Walk {
     }
 
     /// The content of the entries `spawn`'s input set reaches, those its tool
-    /// set reaches too counted as tools.
-    fn input_bytes(&mut self, entries: &InputGraph, spawn: SpawnInputs) -> InputBytes {
+    /// set reaches too counted as tools, each recorded in `readers` as read
+    /// by the spawn.
+    fn input_bytes(
+        &mut self,
+        entries: &InputGraph,
+        spawn: SpawnInputs,
+        readers: &Readers,
+    ) -> InputBytes {
         let stepper = &mut self.stepper;
         stepper.walk(entries, spawn.tools, &mut self.tools, |_| {});
         let tools = &self.tools;
         let mut read = InputBytes::default();
         stepper.walk(entries, spawn.inputs, &mut self.inputs, |slot| {
+            readers.read(slot, spawn.reader);
             let bytes = entries.bytes[slot as usize];
             match tools.contains(slot) {
                 true => read.tools += bytes,
@@ -528,7 +736,7 @@ impl Builder {
             match next_field(&mut file)? {
                 (exec_log_entry::file::PATH, Value::Bytes(value)) => path = text(value)?,
                 (exec_log_entry::file::DIGEST, Value::Bytes(digest)) => {
-                    bytes = digest_bytes(digest)?
+                    bytes = self.entries.hold_content(digest_content(digest)?)?
                 }
                 _ => {}
             }
@@ -543,7 +751,9 @@ impl Builder {
             match next_field(&mut directory)? {
                 (exec_log_entry::directory::PATH, Value::Bytes(value)) => path = text(value)?,
                 (exec_log_entry::directory::FILES, Value::Bytes(file)) => {
-                    bytes += file_bytes(file)?
+                    if let Some(content) = file_content(file)? {
+                        bytes += self.entries.hold_content(content)?;
+                    }
                 }
                 _ => {}
             }
@@ -618,7 +828,9 @@ impl Builder {
                     Value::Varint(held),
                 ) => self.entries.hold(entry_id(held)?),
                 (exec_log_entry::runfiles_tree::REPO_MAPPING_MANIFEST, Value::Bytes(file)) => {
-                    bytes = file_bytes(file)?
+                    if let Some(content) = file_content(file)? {
+                        bytes = self.entries.hold_content(content)?;
+                    }
                 }
                 _ => {}
             }
@@ -681,7 +893,13 @@ impl Builder {
             cache_hit,
             timing: timing(metrics),
         });
-        self.roots.push(SpawnInputs { inputs, tools });
+        let reader = Reader::at(self.roots.len())
+            .ok_or_else(|| DecodeError::new("more spawns than readers"))?;
+        self.roots.push(SpawnInputs {
+            inputs,
+            tools,
+            reader,
+        });
         Ok(())
     }
 
@@ -715,27 +933,34 @@ fn spawn_output<'a>(
     Ok(found)
 }
 
-/// The content of the file encoded in `file`, none where it has no digest.
-fn file_bytes(mut file: &[u8]) -> Result<Bytes, DecodeError> {
-    let mut bytes = Bytes::ZERO;
+/// The content of the file encoded in `file`, `None` where it has no digest.
+fn file_content(mut file: &[u8]) -> Result<Option<Content<'_>>, DecodeError> {
+    let mut content = None;
     while !file.is_empty() {
         if let (exec_log_entry::file::DIGEST, Value::Bytes(digest)) = next_field(&mut file)? {
-            bytes = digest_bytes(digest)?;
+            content = Some(digest_content(digest)?);
         }
     }
-    Ok(bytes)
+    Ok(content)
 }
 
-/// The content size the digest encoded in `digest` names; a negative one
-/// reads as none.
-fn digest_bytes(mut digest: &[u8]) -> Result<Bytes, DecodeError> {
-    let mut bytes = Bytes::ZERO;
+/// The content the digest encoded in `digest` names; a negative size reads
+/// as none.
+fn digest_content(mut digest: &[u8]) -> Result<Content<'_>, DecodeError> {
+    let mut content = Content {
+        hash: &[],
+        size: Bytes::ZERO,
+    };
     while !digest.is_empty() {
-        if let (digest::SIZE_BYTES, Value::Varint(size)) = next_field(&mut digest)? {
-            bytes = Bytes::new(u64::try_from(size as i64).unwrap_or(0));
+        match next_field(&mut digest)? {
+            (digest::SIZE_BYTES, Value::Varint(size)) => {
+                content.size = Bytes::new(u64::try_from(size as i64).unwrap_or(0))
+            }
+            (digest::HASH, Value::Bytes(hash)) => content.hash = hash,
+            _ => {}
         }
     }
-    Ok(bytes)
+    Ok(content)
 }
 
 struct Entry<'a> {
@@ -1038,6 +1263,68 @@ mod tests {
             asked < SPAWNS_ACROSS_WORKERS as usize,
             "{asked} walks asked"
         );
+    }
+
+    fn distinct(log: &ExecLog) -> u64 {
+        let spawns = log.logged_spawns();
+        spawns.distinct_input_bytes().expect("measured").get()
+    }
+
+    #[test]
+    fn distinct_input_bytes_count_each_content_once_wherever_it_lies() {
+        let (shared, other, unread) = (1, 2, 3);
+        let log = load(&[
+            entry(1, Type::File(holding("a/x.h", shared, 100))),
+            entry(2, Type::File(holding("b/x.h", shared, 100))),
+            entry(3, Type::File(holding("c/y.h", other, 100))),
+            entry(4, Type::File(holding("d/z.h", unread, 1000))),
+            directory(
+                5,
+                "tree",
+                vec![holding("x.h", shared, 100), holding("w.h", other, 7)],
+            ),
+            input_set(10, &[1, 3], &[]),
+            input_set(11, &[2, 5], &[]),
+            reading(10, 0),
+            reading(11, 0),
+            reading(11, 11),
+        ]);
+        assert_eq!(read_bytes(&log), [(0, 200), (0, 207), (207, 0)]);
+        assert_eq!(distinct(&log), 207);
+    }
+
+    #[test]
+    fn distinct_input_bytes_count_tools_and_a_runfiles_manifest() {
+        let log = load(&[
+            sized_file(1, "bin/tool", 100),
+            input_set(10, &[1], &[]),
+            entry(
+                11,
+                Type::RunfilesTree(exec_log_entry::RunfilesTree {
+                    path: "bin/tool.runfiles".into(),
+                    input_set_id: 10,
+                    repo_mapping_manifest: Some(holding("", 9, 9)),
+                    ..Default::default()
+                }),
+            ),
+            input_set(12, &[11], &[]),
+            reading(12, 12),
+        ]);
+        assert_eq!(read_bytes(&log), [(109, 0)]);
+        assert_eq!(distinct(&log), 109);
+    }
+
+    #[test]
+    fn distinct_input_bytes_leave_out_files_of_no_content() {
+        let log = load(&[
+            file(1, "no-digest"),
+            sized_file(2, "empty", 0),
+            directory(3, "tree", vec![file_in("no-digest"), sized("empty", 0)]),
+            sized_file(4, "full", 5),
+            input_set(10, &[1, 2, 3, 4], &[]),
+            reading(10, 0),
+        ]);
+        assert_eq!(distinct(&log), 5);
     }
 
     /// Files enough that a walk's sets span several words.

@@ -1,7 +1,7 @@
 //! What the spawn time and spawn bytes panels show of a log, derived once
 //! off the UI thread.
 
-use bviz_execlog::{ByteMeasure, ExecLog, Group, Phase, PhaseTiming, SpawnBytes};
+use bviz_execlog::{ByteMeasure, Bytes, ExecLog, Group, Phase, PhaseTiming, SpawnBytes};
 use bviz_invocation::spawn::LoggedSpawn;
 use bviz_label::names::RepoNames;
 use gpui::SharedString;
@@ -90,9 +90,8 @@ pub struct Summary {
     pub(crate) biggest: [Vec<BigSpawn>; ByteMeasure::ALL.len()],
     /// The names the repositories the log's labels name are shown by.
     pub(crate) repos: Arc<RepoNames>,
-    /// Whether the bytes the spawns read are measured: until they are, the
-    /// lists of the largest in them are empty.
-    pub(crate) inputs_measured: bool,
+    /// The distinct content the spawns read, `None` until measured.
+    pub(crate) distinct_inputs: Option<Bytes>,
 }
 
 impl Summary {
@@ -119,8 +118,14 @@ impl Summary {
             top: Phase::ALL.map(|phase| top_spawns(log, phase)),
             biggest: ByteMeasure::ALL.map(|measure| biggest_spawns(log, measure)),
             repos: Arc::new(RepoNames::of_labels(log.target_labels())),
-            inputs_measured: log.logged_spawns().inputs_measured(),
+            distinct_inputs: log.logged_spawns().distinct_input_bytes(),
         }
+    }
+
+    /// Whether the bytes the spawns read are measured: until they are, the
+    /// lists of the largest in them are empty.
+    pub(crate) fn inputs_measured(&self) -> bool {
+        self.distinct_inputs.is_some()
     }
 
     /// What the log's spawns wrote and read in sum.

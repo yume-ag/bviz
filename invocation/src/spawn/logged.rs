@@ -74,16 +74,21 @@ pub struct LoggedSpawns {
     inputs: Option<Arc<MeasuredInputs>>,
 }
 
-/// The bytes each spawn of a [`LoggedSpawns`] read, in the order it lists them.
+/// The bytes the spawns of a [`LoggedSpawns`] read.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct MeasuredInputs {
+    /// In the order the spawns are listed.
     per_spawn: Box<[InputBytes]>,
+    /// The distinct content every spawn read, each counted once however
+    /// many spawns read it and at however many paths.
+    distinct: Bytes,
 }
 
 impl MeasuredInputs {
-    pub fn new(per_spawn: Vec<InputBytes>) -> Self {
+    pub fn new(per_spawn: Vec<InputBytes>, distinct: Bytes) -> Self {
         Self {
             per_spawn: per_spawn.into_boxed_slice(),
+            distinct,
         }
     }
 
@@ -186,6 +191,12 @@ impl LoggedSpawns {
     /// Whether the bytes the spawns read are measured.
     pub fn inputs_measured(&self) -> bool {
         self.inputs.is_some()
+    }
+
+    /// The distinct content the spawns read, which is about what their inputs
+    /// take up in a content-addressed cache; `None` until measured.
+    pub fn distinct_input_bytes(&self) -> Option<Bytes> {
+        Some(self.inputs.as_ref()?.distinct)
     }
 
     /// What is measured of the bytes the spawns read, `None` until it is.
@@ -442,7 +453,10 @@ mod tests {
             others: Bytes::new(others),
         };
         let measured = log
-            .measured(Arc::new(MeasuredInputs::new(vec![read(1, 2), read(0, 5)])))
+            .measured(Arc::new(MeasuredInputs::new(
+                vec![read(1, 2), read(0, 5)],
+                Bytes::new(6),
+            )))
             .expect("one measure per spawn");
         assert!(measured.inputs_measured());
         let all: Vec<_> = measured
@@ -450,6 +464,8 @@ mod tests {
             .map(|s| s.input_bytes().map(|read| read.all().get()))
             .collect();
         assert_eq!(all, [Some(3), Some(5)]);
+        assert_eq!(log.distinct_input_bytes(), None);
+        assert_eq!(measured.distinct_input_bytes(), Some(Bytes::new(6)));
         assert!(
             !log.inputs_measured(),
             "the spawns measured are a new report"

@@ -277,7 +277,7 @@ impl Tables for TimeTables {
             .map(|phase| LegendEntry::new(Swatch::Fill(palette.phase(phase)), phase_name(phase)));
         let legend = Legend::new("spawn-time-legend", &this.legend).entries(phases);
         OneRow::new("spawn-time-toolbar")
-            .filling(totals(text.into(), caveats, &palette))
+            .filling(totals(text.into(), caveats.into(), &palette))
             .group(list_group(this.list, LONGEST, choose, focus, window))
             .group(control)
             .trailing(legend.toolbar_group(window, cx))

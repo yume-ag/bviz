@@ -537,10 +537,13 @@ pub(super) mod tests {
             cache_hit: false,
             timing: PhaseTiming::new(ms(3), [Duration::ZERO; REPORTED_PHASES]),
         });
-        let read = Arc::new(MeasuredInputs::new(vec![InputBytes {
-            tools: Bytes::ZERO,
-            others: Bytes::new(512),
-        }]));
+        let read = Arc::new(MeasuredInputs::new(
+            vec![InputBytes {
+                tools: Bytes::ZERO,
+                others: Bytes::new(512),
+            }],
+            Bytes::new(512),
+        ));
         let log = builder
             .finish()
             .measured(read)

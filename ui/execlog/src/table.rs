@@ -646,7 +646,7 @@ pub(crate) fn picker_group(
 /// no room and take what its groups leave, cutting themselves short.
 pub(crate) fn totals(
     text: SharedString,
-    caveats: &'static str,
+    caveats: SharedString,
     palette: &Palette,
 ) -> impl FnMut() -> Div {
     let tooltip = palette.colors.tooltip();
@@ -658,7 +658,7 @@ pub(crate) fn totals(
             .whitespace_nowrap()
             .text_ellipsis()
             .child(text.clone())
-            .tooltip(TextTooltip::builder(caveats.into(), tooltip));
+            .tooltip(TextTooltip::builder(caveats.clone(), tooltip));
         div().flex_1().h_full().relative().child(
             div()
                 .absolute()

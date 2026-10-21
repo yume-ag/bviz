@@ -5,6 +5,7 @@ use bazel_spawn_proto::tools::protos::exec_log_entry::{self, Output, Type, outpu
 use bazel_spawn_proto::tools::protos::{Digest, ExecLogEntry, SpawnMetrics};
 use bviz_invocation::Recorded;
 use prost::Message;
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 use crate::{ExecLog, Phase, UnmeasuredLog};
 
@@ -36,12 +37,22 @@ pub(crate) fn file(id: u32, path: &str) -> ExecLogEntry {
 }
 
 /// A file of `bytes` bytes, at `path` relative to the directory holding it
-/// when it is a directory's.
+/// when it is a directory's, its content its path's own: files at two paths
+/// hold different content.
 pub(crate) fn sized(path: &str, bytes: i64) -> exec_log_entry::File {
+    let mut content = DefaultHasher::new();
+    path.hash(&mut content);
+    holding(path, content.finish(), bytes)
+}
+
+/// A file as [`sized`] makes one, of the content `content` names: files
+/// naming the same content of the same size hold the same, wherever they
+/// lie.
+pub(crate) fn holding(path: &str, content: u64, bytes: i64) -> exec_log_entry::File {
     exec_log_entry::File {
         path: path.into(),
         digest: Some(Digest {
-            hash: format!("{bytes:064x}"),
+            hash: format!("{content:016x}{bytes:048x}"),
             size_bytes: bytes,
             hash_function_name: String::new(),
         }),

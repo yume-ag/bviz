@@ -550,7 +550,7 @@ fn log(spawns: &[LogSpawn]) -> LoggedSpawns {
     let read = spawns
         .iter()
         .map(|spawn| spawn.bytes.inputs.unwrap_or_default());
-    let read = Arc::new(MeasuredInputs::new(read.collect()));
+    let read = Arc::new(MeasuredInputs::new(read.collect(), Bytes::ZERO));
     builder
         .finish()
         .measured(read)

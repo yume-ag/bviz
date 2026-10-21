@@ -86,8 +86,8 @@ impl<T: Tables> SpawnPanel<T> {
         let summary = summary.get();
         match &self.tables {
             Some(tables) => {
-                let shown = tables.read(cx).summary().inputs_measured;
-                if shown != summary.inputs_measured {
+                let shown = tables.read(cx).summary().inputs_measured();
+                if shown != summary.inputs_measured() {
                     let summary = summary.clone();
                     tables.update(cx, |tables, cx| tables.take_up_measured(summary, cx));
                 }

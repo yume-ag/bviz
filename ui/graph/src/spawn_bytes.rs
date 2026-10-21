@@ -228,7 +228,7 @@ pub(crate) mod tests {
                 others: Bytes::new(others),
             })
             .collect();
-        let read = Arc::new(MeasuredInputs::new(read));
+        let read = Arc::new(MeasuredInputs::new(read, Bytes::ZERO));
         unmeasured(spawns)
             .measured(read)
             .expect("one measure per spawn")
