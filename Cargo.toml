@@ -36,6 +36,7 @@ members = [
     "util/input",
     "util/parallel",
     "util/time",
+    "web",
 ]
 resolver = "2"
 
@@ -67,6 +68,7 @@ mimalloc = "0.1"
 nucleo = "0.5"
 num_cpus = "1"
 packageurl = "0.7"
+percent-encoding = "2"
 rayon = "1"
 regex-automata = "0.4"
 regex-syntax = "0.8"
@@ -76,6 +78,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 shlex = "2"
 spdx = "0.13"
+tiny_http = { version = "0.12", default-features = false }
 web-time = "1"
 zstd = { version = "0.14", default-features = false }
 org-eclipse-elk-alg-layered = { git = "https://github.com/openedges/elk-rs", tag = "v0.11.0+rs.2" }

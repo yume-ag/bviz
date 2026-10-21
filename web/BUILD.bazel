@@ -1,0 +1,22 @@
+load("@rules_rs//rs:rust_binary.bzl", "rust_binary")
+load("@rules_rs//rs:rust_test.bzl", "rust_test")
+load("//platforms:web.bzl", "NOT_WEB")
+
+rust_binary(
+    name = "serve",
+    srcs = ["src/serve.rs"],
+    crate_name = "bviz_web_serve",
+    target_compatible_with = NOT_WEB,
+    deps = [
+        "@crates//:clap",
+        "@crates//:percent-encoding",
+        "@crates//:tiny_http",
+        "@rules_rs_rules_rust//rust/runfiles",
+    ],
+)
+
+rust_test(
+    name = "serve_test",
+    size = "small",
+    crate = ":serve",
+)
