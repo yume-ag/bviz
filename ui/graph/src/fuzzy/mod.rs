@@ -1,8 +1,22 @@
 //! Fuzzy matching of a query against candidates a list offers, run off the UI
-//! thread, and the rows it ranks drawn with the matched characters picked out.
+//! thread where the build has threads and in time slices on it where it has
+//! none, and the rows it ranks drawn with the matched characters picked out.
 
 mod rank;
-mod workers;
+
+cfg_if::cfg_if! {
+    if #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))] {
+        mod sliced;
+        /// The engine a [`Matching`] matches on.
+        type Chosen = sliced::Sliced;
+    } else {
+        #[cfg(test)]
+        mod sliced;
+        mod workers;
+        /// The engine a [`Matching`] matches on.
+        type Chosen = workers::Workers;
+    }
+}
 
 use bviz_label::shown::Shown;
 use gpui::{
@@ -35,8 +49,9 @@ fn config() -> Config {
     config
 }
 
-/// The engine a [`Matching`] matches on.
-type Chosen = workers::Workers;
+/// Candidates as a source offers them to a matcher, each by its index and its
+/// text.
+pub(crate) type Offered<'a> = Box<dyn Iterator<Item = (u32, &'a str)> + 'a>;
 
 /// What matches a query against the candidates handed to it, by index, and
 /// keeps the latest result.
@@ -52,6 +67,16 @@ trait Engine {
     /// Drops every candidate, to be handed afresh through the sink returned.
     fn restart(&mut self) -> Self::Sink;
 
+    /// Hands `sink` the candidates `offer` reads from `source`, until they run
+    /// out or `stopped` is set.
+    fn feed<S: Send + 'static>(
+        sink: Self::Sink,
+        source: S,
+        offer: impl Fn(&S) -> Offered<'_> + Send + 'static,
+        stopped: Arc<AtomicBool>,
+        executor: &BackgroundExecutor,
+    ) -> impl Future<Output = ()> + 'static;
+
     /// Advances the match without waiting on it, reporting whether its result
     /// changed and whether it still runs.
     fn tick(&mut self) -> Status;
@@ -64,7 +89,7 @@ trait Engine {
 
     /// The candidates the latest result matches, best scored first, each by
     /// its index and its text.
-    fn found(&self) -> impl Iterator<Item = (u32, Utf32Str<'_>)>;
+    fn found(&mut self) -> impl Iterator<Item = (u32, Utf32Str<'_>)>;
 
     /// The pattern the latest result was matched by.
     fn pattern(&self) -> &Pattern;
@@ -228,27 +253,9 @@ impl<S> Matching<S> {
     }
 }
 
-/// Hands candidates to a matcher off the UI thread.
-pub(crate) struct Feeder {
-    sink: <Chosen as Engine>::Sink,
-    stopped: Arc<AtomicBool>,
-}
-
-impl Feeder {
-    /// Hands the matcher the candidate `index` reading `text`; reports whether
-    /// the matcher still takes candidates from this feeder.
-    pub(crate) fn push(&self, index: u32, text: &str) -> bool {
-        if self.stopped.load(Ordering::Relaxed) {
-            return false;
-        }
-        self.sink.hand(index, text);
-        true
-    }
-}
-
-/// Candidates being handed to the matcher off the UI thread, stopped once
-/// this is dropped: a restarted matcher reads nothing handed to it through an
-/// injector taken before.
+/// Candidates being handed to the matcher, stopped once this is dropped: a
+/// restarted matcher reads nothing handed to it through an injector taken
+/// before.
 struct Injecting {
     stopped: Arc<AtomicBool>,
     _task: Task<()>,
@@ -269,16 +276,16 @@ impl Drop for Injecting {
     }
 }
 
-/// Hands the matching `locate` reaches the source `prepare` yields and the
-/// candidates `feed` pushes from it, in place of any it held, off the UI
-/// thread, polling it through `take_up`. The source lands before the first
-/// candidate is pushed, so every row ranked can be read from it.
+/// Hands the matching `locate` reaches the source `prepare` yields off the UI
+/// thread and the candidates `offer` reads from it, in place of any it held,
+/// polling it through `take_up`. The source lands before the first candidate
+/// is handed over, so every row ranked can be read from it.
 pub(crate) fn inject<V: 'static, S: Clone + Send + 'static>(
     view: &mut V,
     locate: Locate<V, S>,
     take_up: TakeUp<V>,
     prepare: impl FnOnce() -> S + Send + 'static,
-    feed: impl FnOnce(&S, &Feeder) + Send + 'static,
+    offer: impl Fn(&S) -> Offered<'_> + Send + 'static,
     cx: &mut Context<V>,
 ) {
     let Some(matching) = locate(view) else {
@@ -288,11 +295,8 @@ pub(crate) fn inject<V: 'static, S: Clone + Send + 'static>(
     matching.landed = None;
     matching.matched = 0;
     matching.streaming = true;
-    let feeder = Feeder {
-        sink,
-        stopped: Arc::default(),
-    };
-    let stopped = Arc::clone(&feeder.stopped);
+    let stopped = Arc::<AtomicBool>::default();
+    let stopping = Arc::clone(&stopped);
     let task = cx.spawn(async move |view, cx| {
         let source = cx
             .background_executor()
@@ -308,9 +312,7 @@ pub(crate) fn inject<V: 'static, S: Clone + Send + 'static>(
             Some(())
         });
         if let Ok(Some(())) = landed {
-            cx.background_executor()
-                .spawn(async move { feed(&fed, &feeder) })
-                .await;
+            Chosen::feed(sink, fed, offer, stopping, cx.background_executor()).await;
         }
         let _ = view.update(cx, |view, cx| {
             if let Some(matching) = locate(view) {

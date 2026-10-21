@@ -1,12 +1,13 @@
 //! The matcher engine of a build with threads: nucleo's, matching on a pool
 //! of worker threads.
 
-use super::{Engine, Sink, config};
+use super::{Engine, Offered, Sink, config};
 use gpui::BackgroundExecutor;
 use nucleo::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo::{Injector, Nucleo, Status, Utf32Str};
 use std::mem::ManuallyDrop;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// A matcher and its worker pool, dropped on the background executor, since
 /// dropping a [`Nucleo`] waits for its worker to stop.
@@ -39,6 +40,23 @@ impl Engine for Workers {
         self.nucleo.injector()
     }
 
+    fn feed<S: Send + 'static>(
+        sink: Injector<u32>,
+        source: S,
+        offer: impl Fn(&S) -> Offered<'_> + Send + 'static,
+        stopped: Arc<AtomicBool>,
+        executor: &BackgroundExecutor,
+    ) -> impl Future<Output = ()> + 'static {
+        executor.spawn(async move {
+            for (index, text) in offer(&source) {
+                if stopped.load(Ordering::Relaxed) {
+                    return;
+                }
+                sink.hand(index, text);
+            }
+        })
+    }
+
     fn tick(&mut self) -> Status {
         self.nucleo.try_tick()
     }
@@ -51,7 +69,7 @@ impl Engine for Workers {
         self.nucleo.snapshot().item_count()
     }
 
-    fn found(&self) -> impl Iterator<Item = (u32, Utf32Str<'_>)> {
+    fn found(&mut self) -> impl Iterator<Item = (u32, Utf32Str<'_>)> {
         (self.nucleo.snapshot().matched_items(..))
             .map(|item| (*item.data, item.matcher_columns[0].slice(..)))
     }

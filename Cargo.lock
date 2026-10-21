@@ -1030,6 +1030,7 @@ dependencies = [
  "bviz_ui_session",
  "bviz_ui_theme",
  "bviz_ui_workspace",
+ "cfg-if",
  "clap",
  "fastrand",
  "fixedbitset",

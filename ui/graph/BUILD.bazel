@@ -25,6 +25,7 @@ rust_library(
         "//util/input",
         "//util/parallel",
         "//util/time",
+        "@crates//:cfg-if",
         "@crates//:clap",
         "@crates//:fixedbitset",
         "@crates//:gpui",

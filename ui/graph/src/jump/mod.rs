@@ -259,14 +259,18 @@ impl JumpPalette {
         };
         let (candidates, scope) = (jump.candidates.clone(), jump.scope);
         let prepare = move || candidates.ready();
-        let feed = move |candidates: &Ready<Candidates>, feeder: &fuzzy::Feeder| {
-            for index in candidates.in_scope(scope) {
-                if !feeder.push(index, &candidates.get(index).text) {
-                    return;
-                }
-            }
-        };
-        fuzzy::inject(self, matching, take_up, prepare, feed, cx);
+        fuzzy::inject(
+            self,
+            matching,
+            take_up,
+            prepare,
+            move |candidates: &Ready<Candidates>| {
+                let offered =
+                    (candidates.in_scope(scope)).map(|index| (index, &*candidates.get(index).text));
+                Box::new(offered)
+            },
+            cx,
+        );
     }
 
     /// Hands the matcher the query the field holds.

@@ -29,6 +29,7 @@ bviz_ui_theme = { path = "../theme" }
 bviz_ui_workspace = { path = "../workspace" }
 fixedbitset = { workspace = true }
 lyon_tessellation = { workspace = true }
+cfg-if = "1"
 nucleo = { workspace = true }
 rustc-hash = { workspace = true }
 
