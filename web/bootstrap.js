@@ -64,6 +64,8 @@ const reason = await missing();
 if (reason) {
   help(reason);
 } else {
+  addEventListener("gpui:graphicsunavailable", (event) => help("graphics", event.message));
+
   const status = document.createElement("p");
   status.className = "status";
   status.textContent = "Loading bviz…";
