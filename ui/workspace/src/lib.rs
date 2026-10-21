@@ -17,6 +17,7 @@ mod opener;
 mod pane;
 mod panel;
 mod panel_menu;
+#[cfg(not(target_family = "wasm"))]
 mod path_prompt;
 mod regions;
 #[cfg(test)]

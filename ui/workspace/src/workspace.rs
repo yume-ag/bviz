@@ -5,6 +5,7 @@ use crate::gestures::{CHROME_GESTURES, ChromeIntent, chrome_gestures};
 use crate::pane::Handover;
 use crate::panel::keys_focus;
 use crate::panel_menu::{Deed, Standing};
+#[cfg(not(target_family = "wasm"))]
 use crate::path_prompt::{PathPrompt, PathPromptEvent};
 use crate::regions::{Placement, placement};
 use crate::{
@@ -29,9 +30,9 @@ use bviz_ui_theme::ThemeColors;
 use gpui::{
     Action, AnyElement, AnyView, AnyWindowHandle, App, Axis, Bounds, Canvas, Div, ElementId,
     Entity, EntityId, EventEmitter, ExternalPaths, FocusHandle, Focusable, IconScale, IntoElement,
-    KeyBinding, KeyContext, MouseDownEvent, PathPromptOptions, Pixels, PlatformDragEvent, Point,
-    Rems, Render, SharedString, Size, Stateful, Subscription, WeakEntity, Window, actions,
-    deferred, div, point, prelude::*, px,
+    KeyBinding, KeyContext, MouseDownEvent, Pixels, PlatformDragEvent, Point, Rems, Render,
+    SharedString, Size, Stateful, Subscription, WeakEntity, Window, actions, deferred, div, point,
+    prelude::*, px,
 };
 use std::collections::{HashMap, VecDeque};
 use std::iter;
@@ -151,6 +152,7 @@ const MARK_FILL: f32 = 0.3;
 const MENU_LAYER: usize = 1;
 
 /// What a file chooser's control choosing the files says it does.
+#[cfg(not(target_family = "wasm"))]
 const OPEN: &str = "Open";
 
 /// How an empty window says that files dropped on it open.
@@ -800,11 +802,12 @@ impl Workspace {
     /// Asks which files to open, through the platform's file chooser or, where
     /// the platform offers none, the window's own dialog, and hands them to the
     /// app's [`PathOpener`].
+    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn open_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !cx.has_global::<PathOpener>() {
             return;
         }
-        let chosen = cx.prompt_for_paths(PathPromptOptions {
+        let chosen = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: true,
             directories: false,
             multiple: true,
@@ -822,7 +825,47 @@ impl Workspace {
         .detach();
     }
 
+    /// Asks which files to open through the browser's file chooser, and hands
+    /// them, once read, to the app's [`PathOpener`].
+    #[cfg(target_family = "wasm")]
+    pub(crate) fn open_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !cx.has_global::<PathOpener>() {
+            return;
+        }
+        let chosen = bviz_ui_web::choose_files();
+        cx.spawn_in(window, async move |this, cx| {
+            let read = bviz_ui_web::read_files(chosen.await).await;
+            this.update_in(cx, |workspace, window, cx| {
+                workspace.open_read(read, window, cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Hands the files `read` holds to the app's [`PathOpener`], telling the
+    /// user of each the browser handed over unread.
+    #[cfg(target_family = "wasm")]
+    fn open_read(
+        &mut self,
+        read: Vec<Result<Named, bviz_ui_web::Unread>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut files = Vec::with_capacity(read.len());
+        for file in read {
+            match file {
+                Ok(named) => files.push(named),
+                Err(unread) => {
+                    self.tell(format!("Cannot open {}: {}", unread.name, unread.error), cx)
+                }
+            }
+        }
+        self.open_named(files, window, cx);
+    }
+
     /// Opens the window's own dialog asking for the paths of files to open.
+    #[cfg(not(target_family = "wasm"))]
     fn ask_for_paths(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let prompt = cx.new(PathPrompt::new);
         self.ask(
