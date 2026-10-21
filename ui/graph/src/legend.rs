@@ -422,6 +422,7 @@ fn reading(
                 ByteMeasure::Outputs => "bytes their spawns wrote",
                 ByteMeasure::Inputs => "bytes their spawns read",
                 ByteMeasure::Tools => "bytes of their spawns' tools",
+                ByteMeasure::ReadAlone => "bytes only one of their spawns read",
             };
             notes.push(format!("{read}, on a log scale per kind"));
             let entries = ramps(scales, amount::bytes, palette)

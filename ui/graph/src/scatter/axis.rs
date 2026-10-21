@@ -426,6 +426,7 @@ mod tests {
                 inputs: Some(InputBytes {
                     tools: Bytes::new(tools),
                     others: Bytes::new(others),
+                    read_alone: Bytes::ZERO,
                 }),
             }),
         }

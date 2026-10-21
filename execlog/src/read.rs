@@ -418,13 +418,14 @@ impl InputGraph {
                 Some(())
             })
         })?;
-        let distinct = self.distinct(readers);
+        let distinct = self.share(readers, &mut per_spawn);
         Some(MeasuredInputs::new(per_spawn, distinct))
     }
 
-    /// The distinct content any spawn read, by the contents the slots
-    /// `readers` records hold.
-    fn distinct(&self, readers: Readers) -> Bytes {
+    /// Adds to each of `per_spawn` the content only it read, by the
+    /// contents the slots `readers` records hold, and returns the distinct
+    /// content any spawn read.
+    fn share(&self, readers: Readers, per_spawn: &mut [InputBytes]) -> Bytes {
         let digests = &self.digests;
         let mut content_readers = vec![Readers::NONE; digests.sizes.len()];
         for (slot, read) in (0..).zip(readers.into_states()) {
@@ -438,9 +439,12 @@ impl InputGraph {
         }
         let mut distinct = Bytes::ZERO;
         for (&read, &size) in content_readers.iter().zip(&digests.sizes) {
-            if read != Readers::NONE {
-                distinct += size;
+            match read {
+                Readers::NONE => continue,
+                Readers::MANY => {}
+                one => per_spawn[Reader(one).place()].read_alone += size,
             }
+            distinct += size;
         }
         distinct
     }
@@ -465,6 +469,10 @@ impl Reader {
     fn at(place: usize) -> Option<Reader> {
         let reader = u32::try_from(place).ok()?.checked_add(1)?;
         (reader != Readers::MANY).then_some(Reader(reader))
+    }
+
+    fn place(self) -> usize {
+        self.0 as usize - 1
     }
 }
 
@@ -1062,6 +1070,7 @@ mod tests {
     use crate::Phase;
     use crate::spawn_fields::exec_log_entry as fields;
     use crate::test_log::*;
+    use bviz_invocation::spawn::LoggedSpawn;
 
     fn ms(millis: u64) -> Duration {
         Duration::from_millis(millis)
@@ -1325,6 +1334,65 @@ mod tests {
             reading(10, 0),
         ]);
         assert_eq!(distinct(&log), 5);
+    }
+
+    fn read_alone(log: &ExecLog) -> Vec<u64> {
+        let read = |s: LoggedSpawn<'_>| s.input_bytes().expect("measured").read_alone.get();
+        log.logged_spawns().iter().map(read).collect()
+    }
+
+    #[test]
+    fn bytes_read_alone_count_what_no_other_spawn_read_by_content() {
+        let (shared, own, tool) = (1, 2, 3);
+        let log = load(&[
+            entry(1, Type::File(holding("k8/a.h", shared, 100))),
+            entry(2, Type::File(holding("arm/a.h", shared, 100))),
+            entry(3, Type::File(holding("x/own", own, 30))),
+            entry(4, Type::File(holding("y/own", own, 30))),
+            entry(5, Type::File(holding("bin/tool", tool, 1000))),
+            input_set(10, &[1, 3, 4, 5], &[]),
+            input_set(11, &[2], &[]),
+            input_set(12, &[5], &[]),
+            reading(10, 12),
+            reading(11, 0),
+            reading(0, 0),
+        ]);
+        assert_eq!(read_bytes(&log), [(1000, 160), (0, 100), (0, 0)]);
+        assert_eq!(read_alone(&log), [1030, 0, 0]);
+        assert_eq!(distinct(&log), 1130);
+    }
+
+    #[test]
+    fn content_two_spawns_read_is_read_alone_by_neither() {
+        let log = load(&[
+            sized_file(1, "a", 10),
+            sized_file(2, "b", 20),
+            input_set(10, &[1, 2], &[]),
+            input_set(11, &[1], &[]),
+            reading(10, 0),
+            reading(11, 0),
+            reading(11, 0),
+        ]);
+        assert_eq!(read_alone(&log), [20, 0, 0]);
+    }
+
+    #[test]
+    fn content_one_spawn_reads_as_a_file_and_another_in_a_directory_is_shared() {
+        let (shared, own) = (1, 2);
+        let log = load(&[
+            entry(1, Type::File(holding("src/a.h", shared, 100))),
+            directory(
+                2,
+                "bazel-out/tree",
+                vec![holding("a.h", shared, 100), holding("b.h", own, 8)],
+            ),
+            input_set(10, &[1], &[]),
+            input_set(11, &[2], &[]),
+            reading(10, 0),
+            reading(11, 0),
+        ]);
+        assert_eq!(read_alone(&log), [0, 8]);
+        assert_eq!(distinct(&log), 108);
     }
 
     /// Files enough that a walk's sets span several words.

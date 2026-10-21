@@ -61,6 +61,7 @@ pub fn measure_name(measure: ByteMeasure) -> &'static str {
         ByteMeasure::Outputs => "bytes written",
         ByteMeasure::Inputs => "bytes read",
         ByteMeasure::Tools => "tool bytes",
+        ByteMeasure::ReadAlone => "bytes read alone",
     }
 }
 
@@ -84,6 +85,16 @@ pub fn moved(by_spawns: SpawnBytes) -> String {
         Bytes::ZERO => format!("wrote {wrote} · read {read}"),
         tools => format!("wrote {wrote} · read {read} (tools {})", bytes(tools)),
     }
+}
+
+/// What of the inputs spawns read only one spawn did, `None` while their
+/// inputs are measured.
+pub fn read_alone(by_spawns: SpawnBytes) -> Option<String> {
+    let alone = by_spawns.measure(ByteMeasure::ReadAlone)?;
+    Some(format!(
+        "read alone {}: content only one spawn read",
+        bytes(alone)
+    ))
 }
 
 #[cfg(test)]
@@ -117,6 +128,7 @@ mod tests {
                 inputs: Some(InputBytes {
                     tools: Bytes::new(tools),
                     others: Bytes::new(others),
+                    read_alone: Bytes::ZERO,
                 }),
             })
         };
@@ -130,6 +142,18 @@ mod tests {
             inputs: None,
         };
         assert_eq!(moved(pending), "wrote 1.0 KiB · read still being measured");
+        assert_eq!(read_alone(pending), None);
+        let measured = SpawnBytes {
+            inputs: Some(InputBytes {
+                read_alone: Bytes::new(3 << 10),
+                ..InputBytes::default()
+            }),
+            ..pending
+        };
+        assert_eq!(
+            read_alone(measured).as_deref(),
+            Some("read alone 3.0 KiB: content only one spawn read")
+        );
     }
 
     #[test]

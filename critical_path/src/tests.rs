@@ -684,6 +684,7 @@ fn a_step_sums_what_its_spawns_wrote_and_read() {
         inputs: Some(InputBytes {
             tools: Bytes::new(tools),
             others: Bytes::new(others),
+            read_alone: Bytes::ZERO,
         }),
     };
     let spawn = |outputs, bytes| LogSpawn {

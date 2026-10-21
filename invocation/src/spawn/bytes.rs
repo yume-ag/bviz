@@ -48,6 +48,10 @@ pub struct InputBytes {
     pub tools: Bytes,
     /// The inputs that are none of the spawn's tools.
     pub others: Bytes,
+    /// The content of the inputs no other spawn of the log read, each
+    /// distinct content counted once; summed over spawns, the content only
+    /// one of them read.
+    pub read_alone: Bytes,
 }
 
 impl InputBytes {
@@ -60,6 +64,7 @@ impl AddAssign for InputBytes {
     fn add_assign(&mut self, other: InputBytes) {
         self.tools += other.tools;
         self.others += other.others;
+        self.read_alone += other.read_alone;
     }
 }
 
@@ -71,13 +76,16 @@ pub enum ByteMeasure {
     Inputs,
     /// The inputs that are the spawn's tools.
     Tools,
+    /// The content of the inputs only one spawn read.
+    ReadAlone,
 }
 
 impl ByteMeasure {
-    pub const ALL: [ByteMeasure; 3] = [
+    pub const ALL: [ByteMeasure; 4] = [
         ByteMeasure::Outputs,
         ByteMeasure::Inputs,
         ByteMeasure::Tools,
+        ByteMeasure::ReadAlone,
     ];
 
     /// Where `self` stands in [`ByteMeasure::ALL`].
@@ -90,7 +98,7 @@ impl ByteMeasure {
     pub const fn of_inputs(self) -> bool {
         match self {
             ByteMeasure::Outputs => false,
-            ByteMeasure::Inputs | ByteMeasure::Tools => true,
+            ByteMeasure::Inputs | ByteMeasure::Tools | ByteMeasure::ReadAlone => true,
         }
     }
 }
@@ -128,6 +136,7 @@ impl SpawnBytes {
             ByteMeasure::Outputs => Some(self.outputs),
             ByteMeasure::Inputs => Some(self.inputs?.all()),
             ByteMeasure::Tools => Some(self.inputs?.tools),
+            ByteMeasure::ReadAlone => Some(self.inputs?.read_alone),
         }
     }
 }

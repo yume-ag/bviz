@@ -228,6 +228,7 @@ pub(crate) fn measure_title(measure: ByteMeasure) -> &'static str {
         ByteMeasure::Outputs => "Outputs",
         ByteMeasure::Inputs => "Inputs",
         ByteMeasure::Tools => "Tools",
+        ByteMeasure::ReadAlone => "Read alone",
     }
 }
 
@@ -756,6 +757,7 @@ mod tests {
             row.bytes.inputs = Some(InputBytes {
                 tools: Bytes::new(tools),
                 others: Bytes::ZERO,
+                read_alone: Bytes::ZERO,
             });
         }
         let by_tools = clicked(BY_TIME, SortBy::Bytes(ByteMeasure::Tools));

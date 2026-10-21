@@ -198,7 +198,7 @@ impl GraphPanel {
 }
 
 /// The most lines a card reads.
-const CARD_LINES: usize = 9;
+const CARD_LINES: usize = 10;
 
 /// What the card describing `pointed` reads of what `loaded` knows: its name,
 /// then what it is, how its build went, what its actions took and what their
@@ -234,7 +234,10 @@ fn describe(pointed: &Pointed, loaded: &Loaded) -> Vec<String> {
     let timed = loaded.times().ok().and_then(|times| times.get(id));
     lines.extend(timed.into_iter().flat_map(|timed| time_taken(id, timed)));
     let sized = loaded.bytes().ok().and_then(|bytes| bytes.get(id));
-    lines.extend(sized.map(|sized| bytes_moved(kind, sized)));
+    if let Some(sized) = sized {
+        lines.push(bytes_moved(kind, sized));
+        lines.extend(amount::read_alone(sized.held.bytes));
+    }
     if loaded.critical().marks(id, !pointed.open) {
         lines.push("critical path".to_owned());
     }
@@ -375,6 +378,7 @@ mod tests {
                 inputs: Some(InputBytes {
                     tools: Bytes::new(tools),
                     others: Bytes::new(others),
+                    read_alone: Bytes::ZERO,
                 }),
             },
         };

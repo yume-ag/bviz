@@ -26,19 +26,25 @@ pub(crate) const KEY_CONTEXT: KeyScope = KeyScope::new("ExecLogBytes", "Spawn by
 
 pub type BytesPanel = SpawnPanel<BytesTables>;
 
-const COLUMNS: [GroupColumn; 6] = [
+const COLUMNS: [GroupColumn; 7] = [
     GroupColumn::Name,
     GroupColumn::Spawns,
     GroupColumn::Bytes(ByteMeasure::Outputs),
     GroupColumn::Bytes(ByteMeasure::Inputs),
     GroupColumn::Bytes(ByteMeasure::Tools),
+    GroupColumn::Bytes(ByteMeasure::ReadAlone),
     GroupColumn::Time,
 ];
 
 /// The columns of the figures each spawn of the list of the largest is listed
 /// with: its bytes in each measure, then its spawn time.
-const FIGURES: [Column; ByteMeasure::ALL.len() + 1] =
-    [BYTES_COLUMN, BYTES_COLUMN, BYTES_COLUMN, TIME_COLUMN];
+const FIGURES: [Column; ByteMeasure::ALL.len() + 1] = [
+    BYTES_COLUMN,
+    BYTES_COLUMN,
+    BYTES_COLUMN,
+    BYTES_COLUMN,
+    TIME_COLUMN,
+];
 
 /// The order the mnemonic table opens in.
 const DEFAULT_SORT: Sort<SortBy> = Sort {

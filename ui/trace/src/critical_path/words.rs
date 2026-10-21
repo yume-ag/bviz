@@ -104,6 +104,10 @@ fn spawned_note(spawned: &Spawned) -> String {
     );
     note.push('\n');
     note.push_str(&amount::moved(spawned.bytes()));
+    if let Some(alone) = amount::read_alone(spawned.bytes()) {
+        note.push('\n');
+        note.push_str(&alone);
+    }
     if spawned.fit() == Fit::Scaled {
         note.push_str("\nphases scaled to action time");
     }
@@ -541,6 +545,7 @@ pub(super) mod tests {
             vec![InputBytes {
                 tools: Bytes::ZERO,
                 others: Bytes::new(512),
+                read_alone: Bytes::new(500),
             }],
             Bytes::new(512),
         ));
@@ -574,6 +579,7 @@ pub(super) mod tests {
         assert_eq!(
             note,
             "remote execution · 1 spawn · 3.00ms\nwrote 3.0 MiB · read 512 B\n\
+             read alone 500 B: content only one spawn read\n\
              phases scaled to action time"
         );
     }

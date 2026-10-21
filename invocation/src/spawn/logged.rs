@@ -451,6 +451,7 @@ mod tests {
         let read = |tools, others| InputBytes {
             tools: Bytes::new(tools),
             others: Bytes::new(others),
+            read_alone: Bytes::ZERO,
         };
         let measured = log
             .measured(Arc::new(MeasuredInputs::new(

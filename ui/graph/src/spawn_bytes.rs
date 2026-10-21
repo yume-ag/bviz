@@ -226,6 +226,7 @@ pub(crate) mod tests {
             .map(|&(_, _, _, others, tools)| InputBytes {
                 tools: Bytes::new(tools),
                 others: Bytes::new(others),
+                read_alone: Bytes::ZERO,
             })
             .collect();
         let read = Arc::new(MeasuredInputs::new(read, Bytes::ZERO));
@@ -242,7 +243,7 @@ pub(crate) mod tests {
     fn held(bytes: &NodeBytes, id: Id) -> Option<(u32, u64, u64, u64)> {
         bytes.get(id).map(|sized| {
             let Spawned { spawns, bytes } = sized.held;
-            let [outputs, read, tools] =
+            let [outputs, read, tools, _read_alone] =
                 ByteMeasure::ALL.map(|measure| bytes.measure(measure).expect("measured").get());
             (spawns, outputs, read, tools)
         })
