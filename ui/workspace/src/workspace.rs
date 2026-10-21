@@ -843,6 +843,26 @@ impl Workspace {
         .detach();
     }
 
+    /// Opens the files dropped on the page into this window, as long as it
+    /// stands.
+    #[cfg(target_family = "wasm")]
+    pub(crate) fn open_dropped_files(&self, window: &Window, cx: &mut Context<Self>) {
+        let this = cx.weak_entity();
+        let async_cx = window.to_async(cx);
+        bviz_ui_web::on_files_dropped(move |files| {
+            let this = this.clone();
+            async_cx
+                .spawn(async move |cx| {
+                    let read = bviz_ui_web::read_files(files).await;
+                    this.update_in(cx, |workspace, window, cx| {
+                        workspace.open_read(read, window, cx)
+                    })
+                    .ok();
+                })
+                .detach();
+        });
+    }
+
     /// Hands the files `read` holds to the app's [`PathOpener`], telling the
     /// user of each the browser handed over unread.
     #[cfg(target_family = "wasm")]

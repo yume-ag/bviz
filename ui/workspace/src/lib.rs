@@ -169,6 +169,14 @@ fn run(
         else {
             return;
         };
+        #[cfg(target_family = "wasm")]
+        if cx.has_global::<PathOpener>() {
+            window
+                .update(cx, |workspace, window, cx| {
+                    workspace.open_dropped_files(window, cx)
+                })
+                .ok();
+        }
         window
             .update(cx, |_, window, cx| arriving(cx.weak_entity(), window, cx))
             .unwrap();
