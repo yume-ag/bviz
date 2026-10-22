@@ -17,8 +17,9 @@ const INDEX: &str = "index.html";
 #[derive(Parser)]
 #[command(about = "Serve the bviz web build on this machine")]
 struct Args {
-    /// The site directory, as a runfiles path or an absolute one.
-    site: PathBuf,
+    /// The site directory, as a runfiles path or an absolute one; by default
+    /// the site built with this server.
+    site: Option<PathBuf>,
     /// The port to listen on; 0 takes any free one.
     #[arg(long, default_value_t = DEFAULT_PORT)]
     port: u16,
@@ -30,8 +31,9 @@ struct Args {
 
 fn main() -> ExitCode {
     let args = Args::parse();
-    let Some(site) = locate(&args.site) else {
-        eprintln!("error: no site at {}", args.site.display());
+    let named = args.site.unwrap_or_else(|| PathBuf::from(env!("SITE")));
+    let Some(site) = locate(&named) else {
+        eprintln!("error: no site at {}", named.display());
         return ExitCode::FAILURE;
     };
     let server = match Server::http(("127.0.0.1", args.port)) {

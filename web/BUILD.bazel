@@ -7,9 +7,9 @@ load("//platforms:web.bzl", "NOT_WEB", "web_bindgen")
 rust_binary(
     name = "serve",
     srcs = ["src/serve.rs"],
-    args = ["$(rlocationpath :site)"],
     crate_name = "bviz_web_serve",
     data = [":site"],
+    rustc_env = {"SITE": "$(rlocationpath :site)"},
     target_compatible_with = NOT_WEB,
     deps = [
         "@crates//:clap",
