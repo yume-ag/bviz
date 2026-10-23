@@ -145,12 +145,12 @@ mod tests {
     }
 
     fn graph(inputs: &[(InputKind, &str)], files: Vec<Source>) -> Sources {
-        let mut args = GraphArgs::default();
+        let mut graph = bviz_ui_graph_args::GraphFiles::default();
         for &(kind, path) in inputs {
-            *args.file_mut(kind) = Some(path.into());
+            *graph.file_mut(kind) = Some(path.into());
         }
         Sources::Graph {
-            graph: args.source().expect("the inputs name a graph"),
+            graph: graph.source().expect("the inputs name a graph"),
             files,
         }
     }

@@ -14,7 +14,7 @@ use bviz_invocation::InvocationId;
 #[cfg(not(target_family = "wasm"))]
 use bviz_ui_components::Pending;
 use bviz_ui_components::{ChoiceDialog, ChoiceDialogEvent, ChoiceItem};
-use bviz_ui_graph_args::{GraphArgs, GraphSource};
+use bviz_ui_graph_args::{GraphFiles, GraphSource};
 use bviz_ui_session::Sharing;
 use bviz_ui_workspace::{
     AppAction, Document, Documents, Joinable, Member, Panel, PathOpener, Shared, ViewKind,
@@ -308,7 +308,7 @@ fn place(
 /// Opens `graph`, `further_graphs` and `files`, named together, into
 /// `workspace` as documents grouped as the command line groups them.
 fn open_batch(
-    graph: GraphArgs,
+    graph: GraphFiles,
     further_graphs: Vec<GraphSource>,
     files: Vec<File<Input>>,
     workspace: &mut Workspace,

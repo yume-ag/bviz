@@ -12,7 +12,7 @@ pub const CQUERY_LONG: &str = "cquery";
 /// The long name of [`GraphArgs::query`], for messages that name the flag.
 pub const QUERY_LONG: &str = "query";
 
-/// The files a joint build graph is read from.
+/// The flags naming the files a joint build graph is read from.
 #[derive(Args, Debug, Default)]
 #[command(next_help_heading = "Graph (one per command line; each file given at most once)")]
 pub struct GraphArgs {
@@ -29,6 +29,36 @@ pub struct GraphArgs {
 }
 
 impl GraphArgs {
+    /// The joint graph these flags name, and `None` where they name none.
+    pub fn source(self) -> Option<GraphSource> {
+        GraphFiles::from(self).source()
+    }
+}
+
+/// The files a joint build graph is read from, at most one of each kind.
+#[derive(Debug, Default)]
+pub struct GraphFiles {
+    aquery: Option<PathBuf>,
+    cquery: Option<PathBuf>,
+    query: Option<PathBuf>,
+}
+
+impl From<GraphArgs> for GraphFiles {
+    fn from(args: GraphArgs) -> Self {
+        let GraphArgs {
+            aquery,
+            cquery,
+            query,
+        } = args;
+        Self {
+            aquery,
+            cquery,
+            query,
+        }
+    }
+}
+
+impl GraphFiles {
     /// The joint graph these files build, and `None` where none was given.
     pub fn source(self) -> Option<GraphSource> {
         let Self {
@@ -95,7 +125,7 @@ pub struct Input {
 }
 
 /// One build graph, merged from every input given for it: at least one, and
-/// at most one of each kind, held in the order [`GraphArgs::source`] gives
+/// at most one of each kind, held in the order [`GraphFiles::source`] gives
 /// them whatever order they were named in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GraphSource {
@@ -170,16 +200,16 @@ mod tests {
 
     #[test]
     fn a_file_given_by_its_kind_is_read_as_that_kind() {
-        let mut args = GraphArgs::default();
-        *args.file_mut(InputKind::Query) = Some("q.pb".into());
-        *args.file_mut(InputKind::Aquery) = Some("a.pb".into());
+        let mut files = GraphFiles::default();
+        *files.file_mut(InputKind::Query) = Some("q.pb".into());
+        *files.file_mut(InputKind::Aquery) = Some("a.pb".into());
         let query = Input {
             kind: InputKind::Query,
             path: "q.pb".into(),
         };
-        assert_eq!(args.query, Some(query.path.clone()));
+        assert_eq!(files.query, Some(query.path.clone()));
         assert_eq!(
-            args.source().expect("two files name a graph").inputs()[1],
+            files.source().expect("two files name a graph").inputs()[1],
             query
         );
         assert_eq!(GraphSource::from(query.clone()).inputs(), [query]);

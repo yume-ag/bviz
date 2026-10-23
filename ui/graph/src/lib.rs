@@ -2764,12 +2764,12 @@ mod tests {
     /// that order, as many of them as are given.
     fn source(paths: &[&str]) -> GraphSource {
         use bviz_ui_graph_args::InputKind;
-        let mut args = GraphArgs::default();
+        let mut files = bviz_ui_graph_args::GraphFiles::default();
         let kinds = [InputKind::Aquery, InputKind::Cquery, InputKind::Query];
         for (kind, path) in kinds.into_iter().zip(paths) {
-            *args.file_mut(kind) = Some(path.into());
+            *files.file_mut(kind) = Some(path.into());
         }
-        args.source().expect("the paths name a graph")
+        files.source().expect("the paths name a graph")
     }
 
     /// One graph is drawn however many files it merges, so its title names the

@@ -4,14 +4,14 @@
 use crate::group::{File, Kind};
 use bviz_input::Input;
 use bviz_invocation::InvocationId;
-use bviz_ui_graph_args::{GraphArgs, GraphSource, Input as GraphInput, InputKind};
+use bviz_ui_graph_args::{GraphFiles, GraphSource, Input as GraphInput, InputKind};
 use std::io;
 use std::path::PathBuf;
 
 /// The files named together, by what they were found to hold.
 pub(crate) struct Classified {
     /// The query outputs merging into one graph, the first named of each kind.
-    pub(crate) graph: GraphArgs,
+    pub(crate) graph: GraphFiles,
     /// Each query output of a kind `graph` holds a file of, a graph of its own.
     pub(crate) further_graphs: Vec<GraphSource>,
     /// The files of a [`Kind`], in the order they were named.
@@ -70,7 +70,7 @@ pub(crate) const KINDS: [(bviz_sniff::Kind, &str); 6] = {
 impl Classified {
     fn with_capacity(paths: usize) -> Self {
         Self {
-            graph: GraphArgs::default(),
+            graph: GraphFiles::default(),
             further_graphs: Vec::new(),
             files: Vec::with_capacity(paths),
             unknown: Vec::new(),
