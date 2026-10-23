@@ -1,0 +1,16 @@
+load("@rules_rs//rs:rust_binary.bzl", "rust_binary")
+load("@rules_rs//rs:rust_test.bzl", "rust_test")
+
+rust_binary(
+    name = "wat_js",
+    srcs = ["wat_js.rs"],
+    crate_name = "bviz_wat_js",
+    visibility = ["//web:__pkg__"],
+    deps = ["@crates//:wat"],
+)
+
+rust_test(
+    name = "wat_js_test",
+    size = "small",
+    crate = ":wat_js",
+)

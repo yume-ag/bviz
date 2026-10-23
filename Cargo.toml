@@ -15,6 +15,7 @@ members = [
     "tools/notices",
     "tools/proto_field_numbers",
     "tools/scene_header",
+    "tools/wat_js",
     "trace/layout",
     "trace/profile",
     "ui/assets",
@@ -83,6 +84,7 @@ tiny_http = { version = "0.12", default-features = false }
 # Locked so Bazel can build wasm-bindgen's CLI at the version bviz links; no
 # crate links it.
 wasm-bindgen-cli = { version = "0.2", default-features = false }
+wat = "1"
 web-sys = "0.3"
 web-time = "1"
 zstd = { version = "0.14", default-features = false }
