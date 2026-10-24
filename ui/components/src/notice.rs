@@ -88,6 +88,12 @@ pub fn centered_notice(message: impl Into<SharedString>, colors: &ThemeColors) -
 /// A strip above the document a view shows, telling the reader something of
 /// the document to bear in mind while reading it.
 pub fn note_strip(note: impl Into<SharedString>, colors: &ThemeColors) -> Div {
+    note_frame(colors).child(note.into())
+}
+
+/// The strip a [`note_strip`] is, holding nothing yet, for a note that is
+/// more than a line of text.
+pub fn note_frame(colors: &ThemeColors) -> Div {
     div()
         .flex_none()
         .px_3()
@@ -98,7 +104,6 @@ pub fn note_strip(note: impl Into<SharedString>, colors: &ThemeColors) -> Div {
         .font_family(bviz_ui_assets::UI)
         .text_size(NOTE_TEXT_SIZE)
         .text_color(colors.text_muted)
-        .child(note.into())
 }
 
 /// Says the `file` a view shows ends early, as an invocation interrupted or
