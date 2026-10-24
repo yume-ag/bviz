@@ -17,8 +17,8 @@ use bviz_ui_components::{ChoiceDialog, ChoiceDialogEvent, ChoiceItem};
 use bviz_ui_graph_args::{GraphFiles, GraphSource};
 use bviz_ui_session::Sharing;
 use bviz_ui_workspace::{
-    AppAction, Document, Documents, Failure, Joinable, Member, Panel, PathOpener, PendingOpen,
-    Shared, ViewKind, Workspace, named_label,
+    AppAction, Document, Documents, Failure, FileIdentity, Identified, Joinable, Member, Panel,
+    PathOpener, PendingOpen, Shared, ViewKind, Workspace, named_label,
 };
 #[cfg(not(target_family = "wasm"))]
 use clap::Parser;
@@ -103,16 +103,27 @@ impl Load {
         }
     }
 
+    /// [`start`](Self::start) of each of `sources`, each with the files it
+    /// reads. Blocks on the file system.
     #[cfg(not(target_family = "wasm"))]
-    fn start_all(sources: Sources) -> Given<Self> {
-        let start_each = |files: Vec<Source>| files.into_iter().map(Self::start).collect();
+    fn start_all(sources: Sources) -> Given<Reading> {
+        let start = |source: Source| {
+            let path = match &source {
+                Source::Trace(source) => &source.path,
+                Source::Console(source) => &source.path,
+                Source::ExecLog(source) => &source.path,
+            };
+            let read_from = FileIdentity::of_path(path).ok().into_iter().collect();
+            Self::start(source).map(|load| Reading { load, read_from })
+        };
+        let start_each = |files: Vec<Source>| files.into_iter().map(start).collect();
         match sources {
             Sources::Graph { graph, files } => Given::Graph {
-                graph: Self::Graph(graph.map(Named::Path).into()),
+                graph: Reading::graph(graph.map(|path| Identified::of_named(Named::Path(path)))),
                 files: start_each(files),
             },
             Sources::Files { first, rest } => Given::Files {
-                first: Self::start(first),
+                first: start(first),
                 rest: start_each(rest),
             },
         }
@@ -131,9 +142,44 @@ impl Load {
     }
 }
 
+/// A [`Load`], with the identities its views are
+/// [`read_from`](Member::read_from).
+struct Reading {
+    load: Load,
+    read_from: Vec<FileIdentity>,
+}
+
+impl Reading {
+    fn of(load: Identified<Load>) -> Self {
+        Self {
+            load: load.file,
+            read_from: load.identity.into_iter().collect(),
+        }
+    }
+
+    /// The read of the graph merged from the files of `source`.
+    fn graph(source: GraphSource<Identified<Named>>) -> Self {
+        let mut read_from = Vec::with_capacity(source.first_and_rest().1.len() + 1);
+        let source = source.map(|named| {
+            read_from.extend(named.identity);
+            named.file
+        });
+        Self {
+            load: Load::Graph(source.into()),
+            read_from,
+        }
+    }
+
+    /// As [`Load::open`], the views recording the files they read.
+    fn open(self, shared: &Shared, sharing: Sharing, window: &mut Window, cx: &mut App) -> Member {
+        let member = self.load.open(shared, sharing, window, cx);
+        member.read_from(self.read_from)
+    }
+}
+
 /// The document `opening` is shown as: a file's own, or an invocation's files
 /// joined, each with a session and a clock of its own.
-fn open(opening: Opening<Load>, window: &mut Window, cx: &mut App) -> Document {
+fn open(opening: Opening<Reading>, window: &mut Window, cx: &mut App) -> Document {
     let shared = Shared::new(cx);
     match opening {
         Opening::Alone { file, invocation } => {
@@ -160,13 +206,13 @@ fn open(opening: Opening<Load>, window: &mut Window, cx: &mut App) -> Document {
 
 /// The views of `first` and `rest`, files of one invocation sharing `shared`.
 fn open_invocation_files(
-    first: Load,
-    rest: impl IntoIterator<Item = Load>,
+    first: Reading,
+    rest: impl IntoIterator<Item = Reading>,
     shared: &Shared,
     window: &mut Window,
     cx: &mut App,
 ) -> (Member, Vec<Member>) {
-    let mut open = |load: Load| load.open(shared, Sharing::Invocation, window, cx);
+    let mut open = |file: Reading| file.open(shared, Sharing::Invocation, window, cx);
     let first = open(first);
     let rest = rest.into_iter();
     let mut others = Vec::with_capacity(rest.size_hint().0);
@@ -178,7 +224,12 @@ fn open_invocation_files(
 
 /// Opens `files` as `pending`, once a background task has told what each
 /// holds.
-fn open_files(files: Vec<Named>, pending: PendingOpen, window: &mut Window, cx: &mut App) {
+fn open_files(
+    files: Vec<Identified<Named>>,
+    pending: PendingOpen,
+    window: &mut Window,
+    cx: &mut App,
+) {
     open_classified(move || classify::classify(files), pending, window, cx);
 }
 
@@ -203,7 +254,7 @@ fn open_classified(
 /// each holds, into the window `into` frames.
 #[cfg(not(target_family = "wasm"))]
 fn open_named(
-    pending: Pending<Given<Load>>,
+    pending: Pending<Given<Reading>>,
     into: WeakEntity<Workspace>,
     window: &mut Window,
     cx: &mut App,
@@ -215,7 +266,7 @@ fn open_named(
 /// `workspace`, telling the user where it tells nothing.
 #[cfg(not(target_family = "wasm"))]
 fn place_named(
-    named: Result<Given<Load>, String>,
+    named: Result<Given<Reading>, String>,
     workspace: &mut Workspace,
     window: &mut Window,
     cx: &mut Context<Workspace>,
@@ -255,7 +306,7 @@ const ASK_KIND: &str = "bviz cannot tell from how these files begin what they ho
 /// files named to the window `workspace` frames, after the files opened
 /// with them.
 fn ask_kinds(
-    unknown: Vec<Named>,
+    unknown: Vec<Identified<Named>>,
     workspace: &mut Workspace,
     window: &mut Window,
     cx: &mut Context<Workspace>,
@@ -263,25 +314,29 @@ fn ask_kinds(
     let choices = (classify::KINDS.iter())
         .map(|&(kind, name)| (kind, SharedString::from(name)))
         .collect();
-    let items = (unknown.iter())
-        .map(|named| ChoiceItem::new(named_label(named)).detail(named.name().into_owned()));
+    let items = (unknown.iter()).map(|named| {
+        ChoiceItem::new(named_label(&named.file)).detail(named.file.name().into_owned())
+    });
     let dialog =
         cx.new(|cx| ChoiceDialog::new("Open files as", ASK_KIND, "Open", choices, items, cx));
     // Taken by the answer, so a file held in memory is held once while it is
     // read.
-    let unknown = Cell::new(Some(unknown));
-    workspace.ask(
+    let holding = Identified::identities(&unknown);
+    let held = Cell::new(Some(unknown));
+    workspace.ask_holding(
         dialog,
+        holding,
         move |workspace, event: &ChoiceDialogEvent<bviz_sniff::Kind>, window, cx| {
             let ChoiceDialogEvent::Chosen(chosen) = event else {
                 return;
             };
-            let Some(unknown) = unknown.take() else {
+            let Some(unknown) = held.take() else {
                 return;
             };
-            let chosen: Vec<(Named, bviz_sniff::Kind)> = (unknown.into_iter().zip(chosen))
-                .filter_map(|(named, &kind)| Some((named, kind?)))
-                .collect();
+            let chosen: Vec<(Identified<Named>, bviz_sniff::Kind)> =
+                (unknown.into_iter().zip(chosen))
+                    .filter_map(|(named, &kind)| Some((named, kind?)))
+                    .collect();
             if !chosen.is_empty() {
                 let pending = workspace.begin_opening(chosen.iter().map(|(named, _)| named), cx);
                 open_classified(move || classify::classify_as(chosen), pending, window, cx);
@@ -322,19 +377,17 @@ fn place(
 /// Opens `graph`, `further_graphs` and `files`, named together, into
 /// `workspace` as documents grouped as the command line groups them.
 fn open_batch(
-    graph: GraphFiles<Named>,
-    further_graphs: Vec<GraphSource<Named>>,
-    files: Vec<File<Input>>,
+    graph: GraphFiles<Identified<Named>>,
+    further_graphs: Vec<GraphSource<Identified<Named>>>,
+    files: Vec<File<Identified<Input>>>,
     workspace: &mut Workspace,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
-    let files = files
-        .into_iter()
-        .map(|file| File {
-            file: Load::of(file.kind, file.file),
-            kind: file.kind,
-            invocation: file.invocation,
+    let files = (files.into_iter())
+        .map(|file| {
+            let kind = file.kind;
+            file.map(|input| Reading::of(input.map(|input| Load::of(kind, input))))
         })
         .collect();
     if let Some(given) = given(graph.source(), files) {
@@ -346,8 +399,8 @@ fn open_batch(
 /// documents grouped by invocation, joining those of their invocations open
 /// already.
 fn open_given(
-    given: Given<Load>,
-    further_graphs: Vec<GraphSource<Named>>,
+    given: Given<Reading>,
+    further_graphs: Vec<GraphSource<Identified<Named>>>,
     workspace: &mut Workspace,
     window: &mut Window,
     cx: &mut Context<Workspace>,
@@ -358,7 +411,7 @@ fn open_given(
     };
     let further = further_graphs.into_iter().map(|graph| {
         Placing::New(Opening::Alone {
-            file: Load::Graph(graph.into()),
+            file: Reading::graph(graph),
             invocation: None,
         })
     });
@@ -421,10 +474,13 @@ fn of_invocation(id: InvocationId, first: Member, rest: Vec<Member>, shared: Sha
 }
 
 /// What `graph` and `files` name, `None` where they name nothing.
-fn given(graph: Option<GraphSource<Named>>, files: Vec<File<Load>>) -> Option<Given<Load>> {
+fn given(
+    graph: Option<GraphSource<Identified<Named>>>,
+    files: Vec<File<Reading>>,
+) -> Option<Given<Reading>> {
     if let Some(graph) = graph {
         return Some(Given::Graph {
-            graph: Load::Graph(graph.into()),
+            graph: Reading::graph(graph),
             files,
         });
     }

@@ -5,30 +5,31 @@ use crate::group::{File, Kind};
 use bviz_input::{Input, Named, Opened};
 use bviz_invocation::InvocationId;
 use bviz_ui_graph_args::{GraphFiles, GraphSource, Input as GraphInput, InputKind};
+use bviz_ui_workspace::{FileIdentity, Identified};
 use std::io;
 
 /// The files named together, by what they were found to hold.
 pub(crate) struct Classified {
     /// The query outputs merging into one graph, the first named of each kind.
-    pub(crate) graph: GraphFiles<Named>,
+    pub(crate) graph: GraphFiles<Identified<Named>>,
     /// Each query output of a kind `graph` holds a file of, a graph of its own.
-    pub(crate) further_graphs: Vec<GraphSource<Named>>,
+    pub(crate) further_graphs: Vec<GraphSource<Identified<Named>>>,
     /// The files of a [`Kind`], in the order they were named.
-    pub(crate) files: Vec<File<Input>>,
+    pub(crate) files: Vec<File<Identified<Input>>>,
     /// The files whose head matches no kind bviz reads.
-    pub(crate) unknown: Vec<Named>,
+    pub(crate) unknown: Vec<Identified<Named>>,
     /// The files that do not open, each by its place among those named.
     pub(crate) unreadable: Vec<(usize, io::Error)>,
 }
 
 /// Reads the head of each of `files`, once, to tell what it holds. Blocks on
 /// the file system, so it runs off the UI thread.
-pub(crate) fn classify(files: Vec<Named>) -> Classified {
+pub(crate) fn classify(files: Vec<Identified<Named>>) -> Classified {
     let mut classified = Classified::with_capacity(files.len());
-    for (at, named) in files.into_iter().enumerate() {
-        if let Some(opened) = classified.open(at, named) {
+    for (at, Identified { file, identity }) in files.into_iter().enumerate() {
+        if let Some(opened) = classified.open(at, file) {
             let kind = opened.head().and_then(bviz_sniff::kind_of);
-            classified.sort(opened, holds(kind));
+            classified.sort(opened, identity, holds(kind));
         }
     }
     classified
@@ -36,11 +37,11 @@ pub(crate) fn classify(files: Vec<Named>) -> Classified {
 
 /// Opens each of `chosen` as the kind chosen for it, whatever its head
 /// tells. Blocks on the file system, so it runs off the UI thread.
-pub(crate) fn classify_as(chosen: Vec<(Named, bviz_sniff::Kind)>) -> Classified {
+pub(crate) fn classify_as(chosen: Vec<(Identified<Named>, bviz_sniff::Kind)>) -> Classified {
     let mut classified = Classified::with_capacity(chosen.len());
-    for (at, (named, kind)) in chosen.into_iter().enumerate() {
-        if let Some(opened) = classified.open(at, named) {
-            classified.sort(opened, holds(Some(kind)));
+    for (at, (Identified { file, identity }, kind)) in chosen.into_iter().enumerate() {
+        if let Some(opened) = classified.open(at, file) {
+            classified.sort(opened, identity, holds(Some(kind)));
         }
     }
     classified
@@ -90,25 +91,34 @@ impl Classified {
         }
     }
 
-    /// Files `opened` by what it `holds`.
-    fn sort(&mut self, opened: Opened, holds: Holds) {
+    /// Files `opened`, of `identity`, by what it `holds`.
+    fn sort(&mut self, opened: Opened, identity: Option<FileIdentity>, holds: Holds) {
         match holds {
             Holds::File(kind, probe) => {
                 let input = opened.into_input();
                 self.files.push(File {
                     kind,
                     invocation: probe(&input),
-                    file: input,
+                    file: Identified {
+                        file: input,
+                        identity,
+                    },
                 });
             }
             Holds::Graph(kind) => {
-                let named = opened.into_named();
+                let file = Identified {
+                    file: opened.into_named(),
+                    identity,
+                };
                 match self.graph.file_mut(kind) {
-                    slot @ None => *slot = Some(named),
-                    Some(_) => (self.further_graphs).push(GraphInput { kind, file: named }.into()),
+                    slot @ None => *slot = Some(file),
+                    Some(_) => (self.further_graphs).push(GraphInput { kind, file }.into()),
                 }
             }
-            Holds::Unknown => self.unknown.push(opened.into_named()),
+            Holds::Unknown => self.unknown.push(Identified {
+                file: opened.into_named(),
+                identity,
+            }),
         }
     }
 }
@@ -149,6 +159,10 @@ mod tests {
     /// A real `--build_event_binary_file`.
     const SAMPLE_BEP: &[u8] = include_bytes!(env!("SAMPLE_BEP"));
 
+    fn named(path: PathBuf) -> Identified<Named> {
+        Identified::of_named(path.into())
+    }
+
     fn sample_bep() -> PathBuf {
         let path = scratch().join("sample.bep");
         std::fs::write(&path, SAMPLE_BEP).unwrap();
@@ -157,12 +171,14 @@ mod tests {
 
     #[test]
     fn a_build_event_stream_is_told_with_the_invocation_it_names() {
-        let classified = classify(vec![sample_bep().into()]);
+        let bep = sample_bep();
+        let classified = classify(vec![named(bep.clone())]);
         let [file] = &classified.files[..] else {
             panic!("one file of a kind");
         };
         assert!(file.kind == Kind::Bep);
         assert!(file.invocation.is_some());
+        assert_eq!(file.file.identity, FileIdentity::of_path(&bep).ok());
         assert!(classified.graph.source().is_none() && classified.unknown.is_empty());
     }
 
@@ -172,9 +188,11 @@ mod tests {
         let unknown = dir.join("notes.txt");
         std::fs::write(&unknown, "not a build output").unwrap();
         let missing = dir.join("missing.bep");
-        let classified = classify(vec![unknown.clone().into(), missing.into()]);
+        let classified = classify(vec![named(unknown.clone()), named(missing)]);
         assert!(classified.files.is_empty() && classified.graph.source().is_none());
-        let unknown_names: Vec<_> = classified.unknown.iter().map(Named::name).collect();
+        let unknown_names: Vec<_> = (classified.unknown.iter())
+            .map(|unknown| unknown.file.name())
+            .collect();
         assert_eq!(unknown_names, [unknown.to_string_lossy()]);
         let unreadable: Vec<_> = classified.unreadable.iter().map(|(at, _)| *at).collect();
         assert_eq!(unreadable, [1]);
@@ -189,8 +207,14 @@ mod tests {
             name: "notes.txt".into(),
             bytes: NOTES.to_vec(),
         };
-        let classified = classify(vec![notes]);
-        let [Named::Memory { name, bytes }] = &classified.unknown[..] else {
+        let classified = classify(vec![Identified::of_named(notes)]);
+        let [
+            Identified {
+                file: Named::Memory { name, bytes },
+                ..
+            },
+        ] = &classified.unknown[..]
+        else {
             panic!("one file in memory of no kind");
         };
         assert_eq!((name.as_str(), &bytes[..]), ("notes.txt", NOTES));
@@ -201,7 +225,7 @@ mod tests {
     fn a_file_chosen_as_a_kind_opens_as_that_kind() {
         let unknown = scratch().join("chosen.txt");
         std::fs::write(&unknown, "not a build output").unwrap();
-        let classified = classify_as(vec![(unknown.into(), bviz_sniff::Kind::Profile)]);
+        let classified = classify_as(vec![(named(unknown), bviz_sniff::Kind::Profile)]);
         let [file] = &classified.files[..] else {
             panic!("one file of a kind");
         };
@@ -223,12 +247,14 @@ mod tests {
         for path in [&first, &second] {
             std::fs::write(path, QUERY_STREAM).unwrap();
         }
-        let classified = classify(vec![first.clone().into(), second.clone().into()]);
+        let classified = classify(vec![named(first.clone()), named(second.clone())]);
         let query = |path: &PathBuf| GraphInput {
             kind: InputKind::Query,
             file: path.to_string_lossy().into_owned(),
         };
-        let names = |graph: GraphSource<Named>| graph.map(|named| named.name().into_owned());
+        let names = |graph: GraphSource<Identified<Named>>| {
+            graph.map(|named| named.file.name().into_owned())
+        };
         let graph = classified
             .graph
             .source()

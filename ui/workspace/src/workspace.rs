@@ -1,6 +1,7 @@
 use crate::carry::{Carrying, Reported, Taken};
 use crate::documents_menu::{self, DocumentsMenu};
 use crate::drop::{PaneGeometry, Preview};
+use crate::file_identity::{BatchId, Batches, FileIdentity, Repeat, kept, repeats};
 use crate::gestures::{CHROME_GESTURES, ChromeIntent, chrome_gestures};
 use crate::opening::{Opening, Shown, Unopened};
 use crate::pane::Handover;
@@ -11,16 +12,18 @@ use crate::path_prompt::{PathPrompt, PathPromptEvent};
 use crate::regions::{Placement, placement};
 use crate::{
     AnyPanel, AppActions, Arrangement, DividerId, Document, DocumentId, Documents, Framing,
-    Joinable, Layout, Maximize, Member, Pane, PaneEvent, PathOpener, PendingOpen, Regions, Removal,
-    Role, Shared, Side, Split, SplitSide, WindowsChanged, documents, drag_icon, drop, panel_menu,
+    Identified, Joinable, Layout, Maximize, Member, Pane, PaneEvent, PathOpener, PendingOpen,
+    Regions, Removal, Role, Shared, Side, Split, SplitSide, WindowsChanged, documents, drag_icon,
+    drop, panel_menu,
 };
 use bviz_input::Named;
 use bviz_ui_components::dialog;
 use bviz_ui_components::gesture::Pointer;
 use bviz_ui_components::{
-    Button, Divider, DragEnd, GestureGroup, Host, KeyScope, KeyStyle, KeysHelp, Menu, MenuEvent,
-    NOTE_TEXT_SIZE, action_label, declare_scopes, declared_scopes, keys_in_effect, note_frame,
-    note_strip, overlay_canvas, spinner, text_input, track_drag,
+    Button, ChoiceDialog, ChoiceDialogEvent, ChoiceItem, Divider, DragEnd, GestureGroup, Host,
+    KeyScope, KeyStyle, KeysHelp, Menu, MenuEvent, NOTE_TEXT_SIZE, action_label, declare_scopes,
+    declared_scopes, keys_in_effect, note_frame, note_strip, overlay_canvas, spinner, text_input,
+    track_drag,
 };
 use bviz_ui_playback::{
     Clock, KEY_CONTEXT as PLAYBACK_KEY_CONTEXT, PlayPause, PlaybackBar, SeekEnd, SeekStart,
@@ -35,7 +38,8 @@ use gpui::{
     Render, SharedString, Size, Stateful, Subscription, WeakEntity, Window, actions, deferred, div,
     point, prelude::*, px, relative,
 };
-use std::collections::{HashMap, VecDeque};
+use std::cell::Cell;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::iter;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -152,8 +156,7 @@ const MARK_FILL: f32 = 0.3;
 /// holds.
 const MENU_LAYER: usize = 1;
 
-/// What a file chooser's control choosing the files says it does.
-#[cfg(not(target_family = "wasm"))]
+/// What a control choosing the files to open says it does.
 const OPEN: &str = "Open";
 
 /// How an empty window says that files dropped on it open.
@@ -184,6 +187,21 @@ const LABEL_SHARE: f32 = 0.5;
 
 /// What the control dismissing a note says it does.
 const DISMISS_NOTE: &str = "Dismiss";
+
+/// The heading of the dialog asking whether to open again files that repeat
+/// others.
+const REPEATS_TITLE: &str = "Open files again";
+
+/// What the dialog asking whether to open again files that repeat others says
+/// of why it asks.
+const REPEATS: &str = "These files are the same as ones bviz has open or is opening, \
+     as far as bviz can tell. Choose to open another copy of each, or skip it.";
+
+/// The choice of opening a file another copy of which is open or being opened.
+#[derive(Clone)]
+struct AnotherCopy;
+
+const OPEN_ANOTHER_COPY: &str = "Open another copy";
 
 /// Registers the window's key scopes and bindings, binding [`OpenFiles`], and
 /// [`CloseDocument`] with it, only where `opens_files` says the app opens files
@@ -605,6 +623,8 @@ struct Asking {
     dialog: AnyView,
     /// Where the dialog's keys are read.
     answer: FocusHandle,
+    /// The files the window holds as being opened while the dialog stands.
+    holds: Option<BatchId>,
     _answered: Subscription,
 }
 
@@ -648,6 +668,8 @@ pub struct Workspace {
     notes: Vec<Note>,
     /// How many notes the window has been told, which numbers the next.
     notes_told: u64,
+    /// The files of each batch named to the window that has not settled.
+    batches: Batches,
     /// The dialogs waiting on an answer, in the order they were asked; the
     /// first stands over the window, and the rest wait their turn behind it.
     dialogs: VecDeque<Asking>,
@@ -695,6 +717,7 @@ impl Workspace {
             playback: None,
             notes: Vec::new(),
             notes_told: 0,
+            batches: Batches::default(),
             dialogs: VecDeque::new(),
             _windows_changed: windows_changed,
             _documents_changed: documents_changed,
@@ -869,7 +892,11 @@ impl Workspace {
         }
         let chosen = bviz_ui_web::choose_files();
         cx.spawn_in(window, async move |this, cx| {
-            read_and_open(this, chosen.await, cx).await;
+            let chosen = identified(chosen.await);
+            this.update_in(cx, |workspace, window, cx| {
+                workspace.open_browser_files(chosen, window, cx)
+            })
+            .ok();
         })
         .detach();
     }
@@ -883,9 +910,34 @@ impl Workspace {
         bviz_ui_web::on_files_dropped(move |files| {
             let this = this.clone();
             async_cx
-                .spawn(async move |cx| read_and_open(this, files, cx).await)
+                .spawn(async move |cx| {
+                    let dropped = identified(files);
+                    this.update_in(cx, |workspace, window, cx| {
+                        workspace.open_browser_files(dropped, window, cx)
+                    })
+                    .ok();
+                })
                 .detach();
         });
+    }
+
+    /// Reads those of `files`, handed over by the browser, the user does not
+    /// [`screen`](Self::screen) out, and hands them to the app's
+    /// [`PathOpener`].
+    #[cfg(target_family = "wasm")]
+    fn open_browser_files(
+        &mut self,
+        files: Vec<Identified<bviz_ui_web::File>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let read = |_: &mut Self, kept, batch, window: &mut Window, cx: &mut Context<Self>| {
+            cx.spawn_in(window, async move |this, cx| {
+                read_and_open(this, kept, batch, cx).await;
+            })
+            .detach();
+        };
+        self.screen(files, browser_label, read, window, cx);
     }
 
     /// The opening of files the browser is reading, which `note` shows while
@@ -898,22 +950,24 @@ impl Workspace {
         })
     }
 
-    /// Hands the files `read` holds to the app's [`PathOpener`] to open as
-    /// `pending`, which goes on to show why each the browser handed over
-    /// unread did not open.
+    /// Hands the files `read` holds, each `read` from the file of its place
+    /// among `identities`, to the app's [`PathOpener`] to open as `pending`,
+    /// which goes on to show why each the browser handed over unread did not
+    /// open.
     #[cfg(target_family = "wasm")]
     fn open_read(
         &mut self,
         pending: PendingOpen,
         read: Vec<Result<Named, bviz_ui_web::Unread>>,
+        identities: Vec<Option<FileIdentity>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let mut files = Vec::with_capacity(read.len());
         let mut unread = Vec::new();
-        for (at, file) in read.into_iter().enumerate() {
+        for (at, (file, identity)) in read.into_iter().zip(identities).enumerate() {
             match file {
-                Ok(named) => files.push(named),
+                Ok(file) => files.push(Identified { file, identity }),
                 Err(failed) => unread.push((at, failed.error.to_string().into())),
             }
         }
@@ -953,6 +1007,38 @@ impl Workspace {
         V: Render + Focusable + EventEmitter<E>,
         E: 'static,
     {
+        self.stand(dialog, None, answered, window, cx);
+    }
+
+    /// As [`ask`](Self::ask), the window holding `files` as being opened
+    /// until the dialog is answered, so that a file named again meanwhile
+    /// repeats one of them.
+    pub fn ask_holding<V, E>(
+        &mut self,
+        dialog: Entity<V>,
+        files: Vec<FileIdentity>,
+        answered: impl Fn(&mut Self, &E, &mut Window, &mut Context<Self>) + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) where
+        V: Render + Focusable + EventEmitter<E>,
+        E: 'static,
+    {
+        let holds = self.batches.hold(files);
+        self.stand(dialog, Some(holds), answered, window, cx);
+    }
+
+    fn stand<V, E>(
+        &mut self,
+        dialog: Entity<V>,
+        holds: Option<BatchId>,
+        answered: impl Fn(&mut Self, &E, &mut Window, &mut Context<Self>) + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) where
+        V: Render + Focusable + EventEmitter<E>,
+        E: 'static,
+    {
         let asked = dialog.entity_id();
         let answered = cx.subscribe_in(&dialog, window, move |workspace, _, event, window, cx| {
             workspace.dismiss(asked, window, cx);
@@ -962,6 +1048,7 @@ impl Workspace {
         self.dialogs.push_back(Asking {
             dialog: dialog.into(),
             answer,
+            holds,
             _answered: answered,
         });
         self.focus_active_panel(window, cx);
@@ -970,33 +1057,140 @@ impl Workspace {
 
     /// Takes the dialog `asked` names off the window.
     fn dismiss(&mut self, asked: EntityId, window: &mut Window, cx: &mut Context<Self>) {
-        self.dialogs
-            .retain(|asking| asking.dialog.entity_id() != asked);
+        let at = (self.dialogs.iter()).position(|asking| asking.dialog.entity_id() == asked);
+        if let Some(Asking {
+            holds: Some(batch), ..
+        }) = at.and_then(|at| self.dialogs.remove(at))
+        {
+            self.batches.settle(batch);
+        }
         self.focus_active_panel(window, cx);
         cx.notify();
     }
 
     /// Hands the files at `paths` to the app's [`PathOpener`] to open into
-    /// this window.
+    /// this window, once a background task has told each one's identity, as
+    /// looking at a file can block on a slow file system.
     fn open_paths(&mut self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
-        let files = paths.into_iter().map(Named::Path).collect();
-        self.open_named(files, window, cx);
-    }
-
-    /// Hands `files` to the app's [`PathOpener`] to open into this window.
-    fn open_named(&mut self, files: Vec<Named>, window: &mut Window, cx: &mut Context<Self>) {
-        if files.is_empty() {
+        if paths.is_empty() {
             return;
         }
-        let pending = self.begin_opening(&files, cx);
+        let identifying = cx.background_executor().spawn(async move {
+            let files = paths.into_iter().map(Named::Path);
+            files.map(Identified::of_named).collect::<Vec<_>>()
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let files = identifying.await;
+            this.update_in(cx, |workspace, window, cx| {
+                workspace.open_identified(files, window, cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Hands those of `files` the user does not [`screen`](Self::screen) out
+    /// to the app's [`PathOpener`] to open into this window.
+    fn open_identified(
+        &mut self,
+        files: Vec<Identified<Named>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.screen(files, crate::named_label, Self::open_batch, window, cx);
+    }
+
+    /// Hands `files`, the batch the window holds as `batch`, to the app's
+    /// [`PathOpener`] to open into this window.
+    fn open_batch(
+        &mut self,
+        files: Vec<Identified<Named>>,
+        batch: BatchId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let opening = Opening::of(files.iter().map(|named| &named.file));
+        let pending = self.show_opening(opening, batch, cx);
         self.hand_to_opener(files, pending, window, cx);
+    }
+
+    /// Hands `batch` to `open` as the batch the window holds it as, but where
+    /// a file of it repeats one open, being opened in any window, or named
+    /// before it in `batch`. Then the whole batch waits on a dialog asking of
+    /// each such file, by its `label`, whether to open another copy of it or
+    /// skip it, and `open` is handed the files the answer keeps, or none of
+    /// them where the dialog is cancelled.
+    fn screen<F: 'static>(
+        &mut self,
+        batch: Vec<Identified<F>>,
+        label: impl Fn(&F) -> SharedString,
+        open: impl FnOnce(&mut Self, Vec<Identified<F>>, BatchId, &mut Window, &mut Context<Self>)
+        + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if batch.is_empty() {
+            return;
+        }
+        let repeats = self.repeats(&batch, cx);
+        let held = self.batches.hold(Identified::identities(&batch));
+        if repeats.iter().all(Option::is_none) {
+            open(self, batch, held, window, cx);
+            return;
+        }
+        let items = (batch.iter().zip(&repeats)).filter_map(|(named, repeat)| {
+            repeat.map(|repeat| ChoiceItem::new(label(&named.file)).detail(repeat.reads()))
+        });
+        let choices = vec![(AnotherCopy, OPEN_ANOTHER_COPY.into())];
+        let dialog =
+            cx.new(|cx| ChoiceDialog::new(REPEATS_TITLE, REPEATS, OPEN, choices, items, cx));
+        // Taken by the dialog's one answer, as `ask` calls back a `Fn`.
+        let waiting = Cell::new(Some((batch, open)));
+        self.ask(
+            dialog,
+            move |workspace, event: &ChoiceDialogEvent<AnotherCopy>, window, cx| {
+                let Some((batch, open)) = waiting.take() else {
+                    return;
+                };
+                let ChoiceDialogEvent::Chosen(chosen) = event else {
+                    workspace.batches.settle(held);
+                    return;
+                };
+                let kept = kept(batch, &repeats, chosen.iter().map(Option::is_some));
+                if kept.is_empty() {
+                    workspace.batches.settle(held);
+                    return;
+                }
+                workspace.batches.keep(held, Identified::identities(&kept));
+                open(workspace, kept, held, window, cx);
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// What each file of `batch` repeats among the files of the session's
+    /// documents, those every window is opening, and those of `batch`.
+    fn repeats<F>(&self, batch: &[Identified<F>], cx: &mut Context<Self>) -> Vec<Option<Repeat>> {
+        let documents = Documents::global(cx);
+        let here = cx.entity_id();
+        let cx: &App = cx;
+        let documents = documents.read(cx);
+        let open: HashSet<&FileIdentity> = documents.read_from().collect();
+        let mut pending: HashSet<&FileIdentity> = self.batches.files().collect();
+        let others = documents.workspaces();
+        for other in others.iter().filter(|other| other.entity_id() != here) {
+            pending.extend(other.read(cx).batches.files());
+        }
+        let batch = batch.iter().map(|named| named.identity.as_ref());
+        repeats(batch, &open, &pending)
     }
 
     /// Hands `files` to the app's [`PathOpener`] to open as `pending`, which
     /// settles at once where there are none to open.
     fn hand_to_opener(
         &mut self,
-        files: Vec<Named>,
+        files: Vec<Identified<Named>>,
         pending: PendingOpen,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1011,25 +1205,38 @@ impl Workspace {
     /// settled.
     pub fn begin_opening<'a>(
         &mut self,
-        named: impl IntoIterator<Item = &'a Named>,
+        named: impl IntoIterator<Item = &'a Identified<Named>>,
         cx: &mut Context<Self>,
     ) -> PendingOpen {
-        self.show_opening(Opening::of(named), cx)
+        let named: Vec<&Identified<Named>> = named.into_iter().collect();
+        let identities = named.iter().filter_map(|named| named.identity.clone());
+        let batch = self.batches.hold(identities.collect());
+        let opening = Opening::of(named.iter().map(|named| &named.file));
+        self.show_opening(opening, batch, cx)
     }
 
-    /// Shows `opening` until the [`PendingOpen`] returned is settled.
-    fn show_opening(&mut self, opening: Opening, cx: &mut Context<Self>) -> PendingOpen {
+    /// Shows `opening`, of the files the window holds as `batch`, until the
+    /// [`PendingOpen`] returned is settled.
+    fn show_opening(
+        &mut self,
+        opening: Opening,
+        batch: BatchId,
+        cx: &mut Context<Self>,
+    ) -> PendingOpen {
         let note = self.add_note(Says::Opening(opening), cx);
-        PendingOpen::new(cx.weak_entity(), note, cx)
+        PendingOpen::new(cx.weak_entity(), note, batch, cx)
     }
 
-    /// Replaces the opening `note` shows with what `settle` leaves of it.
+    /// Replaces the opening `note` shows with what `settle` leaves of it,
+    /// and lets go of the files the window holds as `batch`.
     pub(crate) fn settle_opening(
         &mut self,
         note: u64,
+        batch: BatchId,
         settle: impl FnOnce(Opening) -> Option<Unopened>,
         cx: &mut Context<Self>,
     ) {
+        self.batches.settle(batch);
         let Some(at) = (self.notes.iter()).position(|told| told.id == note) else {
             return;
         };
@@ -3136,25 +3343,48 @@ impl Render for Workspace {
     }
 }
 
-/// Reads `files`, handed over by the browser, into the window `this` frames,
-/// showing how much of each is read, and hands them to the app's
-/// [`PathOpener`].
+/// `files`, handed over by the browser, each with the identity the browser
+/// tells of it.
+#[cfg(target_family = "wasm")]
+fn identified(files: Vec<bviz_ui_web::File>) -> Vec<Identified<bviz_ui_web::File>> {
+    (files.into_iter())
+        .map(|file| {
+            let size = file.size() as u64;
+            let identity = FileIdentity::of_browser_file(file.name(), size, file.last_modified());
+            Identified {
+                file,
+                identity: Some(identity),
+            }
+        })
+        .collect()
+}
+
+/// How a list of files names `file`, handed over by the browser.
+#[cfg(target_family = "wasm")]
+fn browser_label(file: &bviz_ui_web::File) -> SharedString {
+    crate::document_label(std::path::Path::new(&file.name()))
+}
+
+/// Reads `files`, handed over by the browser and held by the window `this`
+/// frames as `batch`, showing how much of each is read, and hands them to the
+/// app's [`PathOpener`].
 #[cfg(target_family = "wasm")]
 async fn read_and_open(
     this: WeakEntity<Workspace>,
-    files: Vec<bviz_ui_web::File>,
+    files: Vec<Identified<bviz_ui_web::File>>,
+    batch: BatchId,
     cx: &mut gpui::AsyncWindowContext,
 ) {
     use std::ops::ControlFlow;
-    if files.is_empty() {
-        return;
-    }
-    let sizes = (files.iter()).map(|file| {
-        let label = crate::document_label(std::path::Path::new(&file.name()));
-        (label, file.size() as u64)
-    });
+    let (files, identities): (Vec<_>, Vec<_>) = (files.into_iter())
+        .map(|Identified { file, identity }| (file, identity))
+        .unzip();
+    let sizes = (files.iter()).map(|file| (browser_label(file), file.size() as u64));
     let opening = Opening::reading(sizes);
-    let Ok(pending) = this.update(cx, |workspace, cx| workspace.show_opening(opening, cx)) else {
+    let shown = this.update(cx, |workspace, cx| {
+        workspace.show_opening(opening, batch, cx)
+    });
+    let Ok(pending) = shown else {
         return;
     };
     let note = pending.note;
@@ -3175,7 +3405,7 @@ async fn read_and_open(
         return;
     };
     this.update_in(cx, |workspace, window, cx| {
-        workspace.open_read(pending, read, window, cx)
+        workspace.open_read(pending, read, identities, window, cx)
     })
     .ok();
 }

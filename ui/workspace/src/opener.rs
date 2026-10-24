@@ -1,5 +1,6 @@
-use crate::Workspace;
+use crate::file_identity::BatchId;
 use crate::opening::{Failure, Opening, Unopened};
+use crate::{Identified, Workspace};
 use bviz_input::Named;
 use gpui::{App, AsyncApp, Global, WeakEntity, Window};
 use std::rc::Rc;
@@ -10,23 +11,27 @@ use std::rc::Rc;
 #[derive(Clone)]
 pub struct PathOpener(Rc<Open>);
 
-type Open = dyn Fn(Vec<Named>, PendingOpen, &mut Window, &mut App);
+type Open = dyn Fn(Vec<Identified<Named>>, PendingOpen, &mut Window, &mut App);
 
 impl Global for PathOpener {}
 
 impl PathOpener {
     /// An opener calling `open` with the files named, at least one, and the
     /// opening of them the window shows, which `open` settles through
-    /// [`PendingOpen::settle`] once their views stand. `open` runs inside an
+    /// [`PendingOpen::settle`] once their views stand. Each file's identity
+    /// goes on the [`Member`](crate::Member) reading it, through
+    /// [`Member::read_from`](crate::Member::read_from). `open` runs inside an
     /// update of that workspace, so it reaches the workspace only from work it
     /// defers, such as a task it spawns on `window`.
-    pub fn new(open: impl Fn(Vec<Named>, PendingOpen, &mut Window, &mut App) + 'static) -> Self {
+    pub fn new(
+        open: impl Fn(Vec<Identified<Named>>, PendingOpen, &mut Window, &mut App) + 'static,
+    ) -> Self {
         Self(Rc::new(open))
     }
 
     pub(crate) fn open(
         &self,
-        files: Vec<Named>,
+        files: Vec<Identified<Named>>,
         pending: PendingOpen,
         window: &mut Window,
         cx: &mut App,
@@ -43,16 +48,24 @@ pub struct PendingOpen {
     workspace: WeakEntity<Workspace>,
     /// The note the window shows the opening as.
     pub(crate) note: u64,
+    /// The files being opened, as the window holds them.
+    pub(crate) batch: BatchId,
     /// Reaches the workspace from wherever this is settled or dropped, until
     /// it is settled.
     app: Option<AsyncApp>,
 }
 
 impl PendingOpen {
-    pub(crate) fn new(workspace: WeakEntity<Workspace>, note: u64, cx: &App) -> Self {
+    pub(crate) fn new(
+        workspace: WeakEntity<Workspace>,
+        note: u64,
+        batch: BatchId,
+        cx: &App,
+    ) -> Self {
         Self {
             workspace,
             note,
+            batch,
             app: Some(cx.to_async()),
         }
     }
@@ -76,10 +89,10 @@ impl PendingOpen {
         let Some(app) = self.app.take() else {
             return;
         };
-        let (workspace, note) = (self.workspace.clone(), self.note);
+        let (workspace, note, batch) = (self.workspace.clone(), self.note, self.batch);
         app.spawn(async move |cx| {
             (workspace.update(cx, |workspace, cx| {
-                workspace.settle_opening(note, settle, cx)
+                workspace.settle_opening(note, batch, settle, cx)
             }))
             .ok();
         })

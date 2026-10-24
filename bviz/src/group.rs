@@ -30,6 +30,16 @@ pub(crate) struct File<T> {
     pub(crate) invocation: Option<InvocationId>,
 }
 
+impl<T> File<T> {
+    pub(crate) fn map<U>(self, f: impl FnOnce(T) -> U) -> File<U> {
+        File {
+            file: f(self.file),
+            kind: self.kind,
+            invocation: self.invocation,
+        }
+    }
+}
+
 /// What `bviz_cli::Sources` names, each file with its kind and the invocation
 /// it carries the id of.
 pub(crate) enum Given<T> {

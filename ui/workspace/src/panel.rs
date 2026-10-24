@@ -1,4 +1,4 @@
-use crate::{DocumentId, Documents, Pane, Regions, Role, ViewSpec};
+use crate::{DocumentId, Documents, FileIdentity, Pane, Regions, Role, ViewSpec};
 use bviz_input::Named;
 use bviz_invocation::{InvocationId, Session};
 use bviz_ui_components::KeyScope;
@@ -299,6 +299,7 @@ pub struct Member {
     /// Whether the file has time to play back by itself, so a document it
     /// makes up alone plays back.
     pub(crate) plays_alone: bool,
+    pub(crate) read_from: Vec<FileIdentity>,
 }
 
 impl Member {
@@ -308,7 +309,14 @@ impl Member {
             first,
             rest,
             plays_alone: false,
+            read_from: Vec::new(),
         }
+    }
+
+    /// This file, as one read from the files the user named that `read_from`
+    /// identifies.
+    pub fn read_from(self, read_from: Vec<FileIdentity>) -> Self {
+        Self { read_from, ..self }
     }
 
     /// This file, as one with time to play back by itself.
