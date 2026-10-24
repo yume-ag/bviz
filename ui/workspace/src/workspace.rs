@@ -2,8 +2,6 @@ use crate::carry::{Carrying, Reported, Taken};
 use crate::documents_menu::{self, DocumentsMenu};
 use crate::drop::{PaneGeometry, Preview};
 use crate::gestures::{CHROME_GESTURES, ChromeIntent, chrome_gestures};
-#[cfg(target_family = "wasm")]
-use crate::opening::{FileState, OpeningFile};
 use crate::opening::{Opening, Shown, Unopened};
 use crate::pane::Handover;
 use crate::panel::keys_focus;
@@ -871,11 +869,7 @@ impl Workspace {
         }
         let chosen = bviz_ui_web::choose_files();
         cx.spawn_in(window, async move |this, cx| {
-            let read = bviz_ui_web::read_files(chosen.await).await;
-            this.update_in(cx, |workspace, window, cx| {
-                workspace.open_read(read, window, cx)
-            })
-            .ok();
+            read_and_open(this, chosen.await, cx).await;
         })
         .detach();
     }
@@ -889,43 +883,44 @@ impl Workspace {
         bviz_ui_web::on_files_dropped(move |files| {
             let this = this.clone();
             async_cx
-                .spawn(async move |cx| {
-                    let read = bviz_ui_web::read_files(files).await;
-                    this.update_in(cx, |workspace, window, cx| {
-                        workspace.open_read(read, window, cx)
-                    })
-                    .ok();
-                })
+                .spawn(async move |cx| read_and_open(this, files, cx).await)
                 .detach();
         });
     }
 
-    /// Hands the files `read` holds to the app's [`PathOpener`], telling the
-    /// user of each the browser handed over unread.
+    /// The opening of files the browser is reading, which `note` shows while
+    /// it stands.
+    #[cfg(target_family = "wasm")]
+    fn opening_mut(&mut self, note: u64) -> Option<&mut Opening> {
+        (self.notes.iter_mut()).find_map(|told| match &mut told.says {
+            Says::Opening(opening) if told.id == note => Some(opening),
+            _ => None,
+        })
+    }
+
+    /// Hands the files `read` holds to the app's [`PathOpener`] to open as
+    /// `pending`, which goes on to show why each the browser handed over
+    /// unread did not open.
     #[cfg(target_family = "wasm")]
     fn open_read(
         &mut self,
+        pending: PendingOpen,
         read: Vec<Result<Named, bviz_ui_web::Unread>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let mut files = Vec::with_capacity(read.len());
-        let mut lines = Vec::with_capacity(read.len());
-        for file in read {
-            let (label, state) = match file {
-                Ok(named) => {
-                    let label = crate::named_label(&named);
-                    files.push(named);
-                    (label, FileState::Opening)
-                }
-                Err(unread) => (
-                    crate::document_label(std::path::Path::new(&unread.name)),
-                    FileState::Failed(unread.error.to_string().into()),
-                ),
-            };
-            lines.push(OpeningFile { label, state });
+        let mut unread = Vec::new();
+        for (at, file) in read.into_iter().enumerate() {
+            match file {
+                Ok(named) => files.push(named),
+                Err(failed) => unread.push((at, failed.error.to_string().into())),
+            }
         }
-        let pending = self.show_opening(Opening::new(lines), cx);
+        if let Some(opening) = self.opening_mut(pending.note) {
+            opening.read_out(unread);
+        }
+        cx.notify();
         self.hand_to_opener(files, pending, window, cx);
     }
 
@@ -3141,6 +3136,50 @@ impl Render for Workspace {
     }
 }
 
+/// Reads `files`, handed over by the browser, into the window `this` frames,
+/// showing how much of each is read, and hands them to the app's
+/// [`PathOpener`].
+#[cfg(target_family = "wasm")]
+async fn read_and_open(
+    this: WeakEntity<Workspace>,
+    files: Vec<bviz_ui_web::File>,
+    cx: &mut gpui::AsyncWindowContext,
+) {
+    use std::ops::ControlFlow;
+    if files.is_empty() {
+        return;
+    }
+    let sizes = (files.iter()).map(|file| {
+        let label = crate::document_label(std::path::Path::new(&file.name()));
+        (label, file.size() as u64)
+    });
+    let opening = Opening::reading(sizes);
+    let Ok(pending) = this.update(cx, |workspace, cx| workspace.show_opening(opening, cx)) else {
+        return;
+    };
+    let note = pending.note;
+    let read = bviz_ui_web::read_files(files, |at, bytes| {
+        let shown = this.update(cx, |workspace, cx| {
+            if let Some(opening) = workspace.opening_mut(note) {
+                opening.read(at, bytes);
+                cx.notify();
+            }
+        });
+        match shown {
+            Ok(()) => ControlFlow::Continue(()),
+            Err(_) => ControlFlow::Break(()),
+        }
+    })
+    .await;
+    let Some(read) = read else {
+        return;
+    };
+    this.update_in(cx, |workspace, window, cx| {
+        workspace.open_read(pending, read, window, cx)
+    })
+    .ok();
+}
+
 /// Handlers for the three actions pointing at `side`.
 fn towards<Focus: Action, Move: Action, SplitOff: Action>(
     body: Div,
@@ -3219,6 +3258,8 @@ fn file_list(
     let line = |(at, (label, shown)): (usize, (&SharedString, Shown<'_>))| {
         let state = div().flex_1().min_w_0();
         let state = match shown {
+            #[cfg(any(test, target_family = "wasm"))]
+            Shown::Plain(text) => state.text_color(colors.text_muted).child(text),
             Shown::Busy(text) => state
                 .flex()
                 .flex_row()

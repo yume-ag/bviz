@@ -13,6 +13,10 @@ pub(crate) struct OpeningFile {
 }
 
 pub(crate) enum FileState {
+    /// Being read into memory, as a browser hands a file over: `read` of its
+    /// `total` bytes so far.
+    #[cfg(any(test, target_family = "wasm"))]
+    Reading { read: u64, total: u64 },
     /// Handed to the app, which is telling what it holds and opening its views.
     Opening,
     /// Why it does not open.
@@ -51,6 +55,8 @@ pub(crate) struct Unopened(Vec<Unopenable>);
 
 /// How a line shows its file's state.
 pub(crate) enum Shown<'a> {
+    #[cfg(any(test, target_family = "wasm"))]
+    Plain(SharedString),
     /// Work under way with no progress to report, which the line marks as
     /// busy so it does not read as stalled.
     Busy(&'static str),
@@ -77,7 +83,7 @@ impl Opening {
         )
     }
 
-    #[cfg(any(test, target_family = "wasm"))]
+    #[cfg(test)]
     pub(crate) fn new(files: Vec<OpeningFile>) -> Self {
         Self(files)
     }
@@ -102,7 +108,7 @@ impl Opening {
     /// file still on its way failed.
     pub(crate) fn lose(mut self) -> Option<Unopened> {
         for file in &mut self.0 {
-            if let FileState::Opening = file.state {
+            if !matches!(file.state, FileState::Failed(_)) {
                 file.state = FileState::Failed(LOST.into());
             }
         }
@@ -116,7 +122,7 @@ impl Opening {
                     label: file.label,
                     reason,
                 }),
-                FileState::Opening => None,
+                _ => None,
             })
             .collect();
         (!failed.is_empty()).then_some(Unopened(failed))
@@ -151,6 +157,10 @@ impl Unopened {
 impl FileState {
     fn shown(&self) -> Shown<'_> {
         match self {
+            #[cfg(any(test, target_family = "wasm"))]
+            Self::Reading { read, total } => {
+                Shown::Plain(reading::byte_progress(*read, *total).into())
+            }
             Self::Opening => Shown::Busy(OPENING),
             Self::Failed(reason) => Shown::Error(reason),
         }
@@ -165,8 +175,83 @@ fn files_counted(count: usize) -> String {
     }
 }
 
+/// What a window shows of files a browser is reading into memory.
+#[cfg(any(test, target_family = "wasm"))]
+mod reading {
+    use super::{FileState, Opening, OpeningFile};
+    use gpui::SharedString;
+
+    /// The units a count of bytes reads in, smallest first, each this many
+    /// of the one before, as file choosers count them.
+    const BYTE_UNITS: [&str; 4] = ["KB", "MB", "GB", "TB"];
+    const BYTE_UNIT_STEP: f64 = 1000.0;
+
+    impl Opening {
+        /// Files of the labels and sizes `files` gives, none read yet.
+        pub(crate) fn reading(files: impl IntoIterator<Item = (SharedString, u64)>) -> Self {
+            Self(
+                (files.into_iter())
+                    .map(|(label, total)| OpeningFile {
+                        label,
+                        state: FileState::Reading { read: 0, total },
+                    })
+                    .collect(),
+            )
+        }
+
+        /// Records `read` bytes of the file at `file` read so far.
+        pub(crate) fn read(&mut self, file: usize, read: u64) {
+            if let Some(OpeningFile {
+                state:
+                    FileState::Reading {
+                        read: so_far,
+                        total,
+                    },
+                ..
+            }) = self.0.get_mut(file)
+            {
+                *so_far = read.min(*total);
+            }
+        }
+
+        /// Records every file read, but those `unread` names by place, with
+        /// why.
+        pub(crate) fn read_out(&mut self, unread: Vec<(usize, SharedString)>) {
+            for file in &mut self.0 {
+                if let FileState::Reading { .. } = file.state {
+                    file.state = FileState::Opening;
+                }
+            }
+            for (file, reason) in unread {
+                if let Some(file) = self.0.get_mut(file) {
+                    file.state = FileState::Failed(reason);
+                }
+            }
+        }
+    }
+
+    /// `read` of `total` bytes, both in the unit `total` reads best in.
+    pub(super) fn byte_progress(read: u64, total: u64) -> String {
+        let mut scale = BYTE_UNIT_STEP;
+        let mut unit = BYTE_UNITS[0];
+        for larger in &BYTE_UNITS[1..] {
+            if (total as f64) < scale * BYTE_UNIT_STEP {
+                break;
+            }
+            scale *= BYTE_UNIT_STEP;
+            unit = larger;
+        }
+        format!(
+            "{:.1} of {:.1} {unit}",
+            read as f64 / scale,
+            total as f64 / scale
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::reading::byte_progress;
     use super::*;
     use std::path::PathBuf;
 
@@ -185,6 +270,7 @@ mod tests {
         (lines.into_iter())
             .map(|(label, shown)| {
                 let shown = match shown {
+                    Shown::Plain(text) => text.to_string(),
                     Shown::Busy(text) => text.to_owned(),
                     Shown::Error(reason) => format!("error: {reason}"),
                 };
@@ -288,14 +374,59 @@ mod tests {
                 label: "b.pb".into(),
                 state: FileState::Opening,
             },
+            OpeningFile {
+                label: "c.pb".into(),
+                state: FileState::Reading { read: 0, total: 1 },
+            },
         ]);
-        let unopened = opening.lose().expect("both failed");
+        let unopened = opening.lose().expect("every file failed");
         assert_eq!(
             texts(unopened.lines()),
             [
                 ("a.bep".into(), "error: unreadable".into()),
                 ("b.pb".into(), "error: did not finish opening".into()),
+                ("c.pb".into(), "error: did not finish opening".into()),
             ]
         );
+    }
+
+    const MB: u64 = 1_000_000;
+
+    #[test]
+    fn progress_reads_in_the_unit_of_the_whole() {
+        assert_eq!(byte_progress(12 * MB, 48 * MB), "12.0 of 48.0 MB");
+        assert_eq!(byte_progress(500, 1000), "0.5 of 1.0 KB");
+        assert_eq!(byte_progress(MB - 1000, MB - 1000), "999.0 of 999.0 KB");
+        assert_eq!(byte_progress(1000 * MB, 5000 * MB), "1.0 of 5.0 GB");
+        assert_eq!(byte_progress(0, 0), "0.0 of 0.0 KB");
+    }
+
+    #[test]
+    fn a_file_being_read_shows_how_much_of_it_is_read() {
+        let mut opening = Opening::reading([("a.bep".into(), 48 * MB), ("b.pb".into(), 1000)]);
+        opening.read(0, 16 * MB);
+        opening.read(1, 4096);
+        assert_eq!(
+            texts(opening.lines()),
+            [
+                ("a.bep".into(), "16.0 of 48.0 MB".into()),
+                ("b.pb".into(), "1.0 of 1.0 KB".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_read_out_is_opening_and_one_unread_failed() {
+        let mut opening = Opening::reading([("a.bep".into(), MB), ("b.pb".into(), MB)]);
+        opening.read_out(vec![(1, "too large".into())]);
+        assert_eq!(
+            texts(opening.lines()),
+            [
+                ("a.bep".into(), "opening".into()),
+                ("b.pb".into(), "error: too large".into()),
+            ]
+        );
+        let unopened = opening.settle(Vec::new()).expect("one file failed");
+        assert_eq!(unopened.heading(), "Cannot open 1 file");
     }
 }
