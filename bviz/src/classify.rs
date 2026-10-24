@@ -17,15 +17,16 @@ pub(crate) struct Classified {
     pub(crate) files: Vec<File<Input>>,
     /// The files whose head matches no kind bviz reads.
     pub(crate) unknown: Vec<Named>,
-    pub(crate) unreadable: Vec<(Named, io::Error)>,
+    /// The files that do not open, each by its place among those named.
+    pub(crate) unreadable: Vec<(usize, io::Error)>,
 }
 
 /// Reads the head of each of `files`, once, to tell what it holds. Blocks on
 /// the file system, so it runs off the UI thread.
 pub(crate) fn classify(files: Vec<Named>) -> Classified {
     let mut classified = Classified::with_capacity(files.len());
-    for named in files {
-        if let Some(opened) = classified.open(named) {
+    for (at, named) in files.into_iter().enumerate() {
+        if let Some(opened) = classified.open(at, named) {
             let kind = opened.head().and_then(bviz_sniff::kind_of);
             classified.sort(opened, holds(kind));
         }
@@ -37,8 +38,8 @@ pub(crate) fn classify(files: Vec<Named>) -> Classified {
 /// tells. Blocks on the file system, so it runs off the UI thread.
 pub(crate) fn classify_as(chosen: Vec<(Named, bviz_sniff::Kind)>) -> Classified {
     let mut classified = Classified::with_capacity(chosen.len());
-    for (named, kind) in chosen {
-        if let Some(opened) = classified.open(named) {
+    for (at, (named, kind)) in chosen.into_iter().enumerate() {
+        if let Some(opened) = classified.open(at, named) {
             classified.sort(opened, holds(Some(kind)));
         }
     }
@@ -77,12 +78,13 @@ impl Classified {
         }
     }
 
-    /// `named` opened, or recorded as unreadable where it does not open.
-    fn open(&mut self, named: Named) -> Option<Opened> {
+    /// `named`, at `at` among the files named, opened, or recorded as
+    /// unreadable where it does not open.
+    fn open(&mut self, at: usize, named: Named) -> Option<Opened> {
         match named.open() {
             Ok(opened) => Some(opened),
-            Err(unopened) => {
-                self.unreadable.push(unopened);
+            Err((_, error)) => {
+                self.unreadable.push((at, error));
                 None
             }
         }
@@ -170,14 +172,12 @@ mod tests {
         let unknown = dir.join("notes.txt");
         std::fs::write(&unknown, "not a build output").unwrap();
         let missing = dir.join("missing.bep");
-        let classified = classify(vec![unknown.clone().into(), missing.clone().into()]);
+        let classified = classify(vec![unknown.clone().into(), missing.into()]);
         assert!(classified.files.is_empty() && classified.graph.source().is_none());
         let unknown_names: Vec<_> = classified.unknown.iter().map(Named::name).collect();
         assert_eq!(unknown_names, [unknown.to_string_lossy()]);
-        let unreadable: Vec<_> = (classified.unreadable.iter())
-            .map(|(named, _)| named.name())
-            .collect();
-        assert_eq!(unreadable, [missing.to_string_lossy()]);
+        let unreadable: Vec<_> = classified.unreadable.iter().map(|(at, _)| *at).collect();
+        assert_eq!(unreadable, [1]);
     }
 
     /// A file held in memory that is not opened is kept, bytes and all, to be

@@ -7,7 +7,7 @@ use gpui::{Div, Pixels, SharedString, div, prelude::*, px};
 const LOADING: &str = "Loading…";
 
 /// Size of the text a [`note_strip`] is set in.
-const NOTE_TEXT_SIZE: Pixels = px(12.);
+pub const NOTE_TEXT_SIZE: Pixels = px(12.);
 
 /// The load state of the document a view renders.
 pub enum Source<T> {

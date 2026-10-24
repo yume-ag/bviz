@@ -17,8 +17,8 @@ use bviz_ui_components::{ChoiceDialog, ChoiceDialogEvent, ChoiceItem};
 use bviz_ui_graph_args::{GraphFiles, GraphSource};
 use bviz_ui_session::Sharing;
 use bviz_ui_workspace::{
-    AppAction, Document, Documents, Joinable, Member, Panel, PathOpener, Shared, ViewKind,
-    Workspace, named_label,
+    AppAction, Document, Documents, Failure, Joinable, Member, Panel, PathOpener, PendingOpen,
+    Shared, ViewKind, Workspace, named_label,
 };
 #[cfg(not(target_family = "wasm"))]
 use clap::Parser;
@@ -176,20 +176,27 @@ fn open_invocation_files(
     (first, others)
 }
 
-/// Opens `files`, named to the window `into` frames, once a background task
-/// has told what each holds.
-fn open_files(files: Vec<Named>, into: WeakEntity<Workspace>, window: &mut Window, cx: &mut App) {
-    open_classified(move || classify::classify(files), into, window, cx);
+/// Opens `files` as `pending`, once a background task has told what each
+/// holds.
+fn open_files(files: Vec<Named>, pending: PendingOpen, window: &mut Window, cx: &mut App) {
+    open_classified(move || classify::classify(files), pending, window, cx);
 }
 
-/// Opens what `classifying` tells of files named to the window `into` frames.
+/// Opens what `classifying` tells of files named to a window, as `pending`.
 fn open_classified(
     classifying: impl FnOnce() -> Classified + Send + 'static,
-    into: WeakEntity<Workspace>,
+    pending: PendingOpen,
     window: &mut Window,
     cx: &mut App,
 ) {
-    off_thread(classifying, place, into, window, cx);
+    let into = pending.workspace().clone();
+    off_thread(
+        classifying,
+        move |classified, workspace, window, cx| place(classified, pending, workspace, window, cx),
+        into,
+        window,
+        cx,
+    );
 }
 
 /// Opens the files named on the command line, once `pending` has told what
@@ -265,7 +272,7 @@ fn ask_kinds(
     let unknown = Cell::new(Some(unknown));
     workspace.ask(
         dialog,
-        move |_, event: &ChoiceDialogEvent<bviz_sniff::Kind>, window, cx| {
+        move |workspace, event: &ChoiceDialogEvent<bviz_sniff::Kind>, window, cx| {
             let ChoiceDialogEvent::Chosen(chosen) = event else {
                 return;
             };
@@ -276,8 +283,8 @@ fn ask_kinds(
                 .filter_map(|(named, &kind)| Some((named, kind?)))
                 .collect();
             if !chosen.is_empty() {
-                let into = cx.weak_entity();
-                open_classified(move || classify::classify_as(chosen), into, window, cx);
+                let pending = workspace.begin_opening(chosen.iter().map(|(named, _)| named), cx);
+                open_classified(move || classify::classify_as(chosen), pending, window, cx);
             }
         },
         window,
@@ -286,10 +293,11 @@ fn ask_kinds(
 }
 
 /// Opens what `classified` names into `workspace`, as documents grouped as
-/// the command line groups them, tells the user of each file it cannot open,
-/// and asks what each file it cannot tell holds.
+/// the command line groups them, settling `pending` with each file it cannot
+/// open, and asks what each file it cannot tell holds.
 fn place(
     classified: Classified,
+    pending: PendingOpen,
     workspace: &mut Workspace,
     window: &mut Window,
     cx: &mut Context<Workspace>,
@@ -301,10 +309,11 @@ fn place(
         unknown,
         unreadable,
     } = classified;
-    for (named, error) in unreadable {
-        workspace.tell(format!("Cannot open {}: {error}", named.name()), cx);
-    }
+    let failures = (unreadable.into_iter())
+        .map(|(at, error)| Failure::new(at, error))
+        .collect();
     open_batch(graph, further_graphs, files, workspace, window, cx);
+    pending.settle(failures);
     if !unknown.is_empty() {
         ask_kinds(unknown, workspace, window, cx);
     }

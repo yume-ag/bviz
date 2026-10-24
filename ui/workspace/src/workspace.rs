@@ -2,6 +2,9 @@ use crate::carry::{Carrying, Reported, Taken};
 use crate::documents_menu::{self, DocumentsMenu};
 use crate::drop::{PaneGeometry, Preview};
 use crate::gestures::{CHROME_GESTURES, ChromeIntent, chrome_gestures};
+#[cfg(target_family = "wasm")]
+use crate::opening::{FileState, OpeningFile};
+use crate::opening::{Opening, Shown, Unopened};
 use crate::pane::Handover;
 use crate::panel::keys_focus;
 use crate::panel_menu::{Deed, Standing};
@@ -10,16 +13,16 @@ use crate::path_prompt::{PathPrompt, PathPromptEvent};
 use crate::regions::{Placement, placement};
 use crate::{
     AnyPanel, AppActions, Arrangement, DividerId, Document, DocumentId, Documents, Framing,
-    Joinable, Layout, Maximize, Member, Pane, PaneEvent, PathOpener, Regions, Removal, Role,
-    Shared, Side, Split, SplitSide, WindowsChanged, documents, drag_icon, drop, panel_menu,
+    Joinable, Layout, Maximize, Member, Pane, PaneEvent, PathOpener, PendingOpen, Regions, Removal,
+    Role, Shared, Side, Split, SplitSide, WindowsChanged, documents, drag_icon, drop, panel_menu,
 };
 use bviz_input::Named;
 use bviz_ui_components::dialog;
 use bviz_ui_components::gesture::Pointer;
 use bviz_ui_components::{
     Button, Divider, DragEnd, GestureGroup, Host, KeyScope, KeyStyle, KeysHelp, Menu, MenuEvent,
-    action_label, declare_scopes, declared_scopes, keys_in_effect, note_strip, overlay_canvas,
-    text_input, track_drag,
+    NOTE_TEXT_SIZE, action_label, declare_scopes, declared_scopes, keys_in_effect, note_frame,
+    note_strip, overlay_canvas, spinner, text_input, track_drag,
 };
 use bviz_ui_playback::{
     Clock, KEY_CONTEXT as PLAYBACK_KEY_CONTEXT, PlayPause, PlaybackBar, SeekEnd, SeekStart,
@@ -28,11 +31,11 @@ use bviz_ui_playback::{
 use bviz_ui_shell::Chrome;
 use bviz_ui_theme::ThemeColors;
 use gpui::{
-    Action, AnyElement, AnyView, AnyWindowHandle, App, Axis, Bounds, Canvas, Div, ElementId,
-    Entity, EntityId, EventEmitter, ExternalPaths, FocusHandle, Focusable, IconScale, IntoElement,
-    KeyBinding, KeyContext, MouseDownEvent, Pixels, PlatformDragEvent, Point, Rems, Render,
-    SharedString, Size, Stateful, Subscription, WeakEntity, Window, actions, deferred, div, point,
-    prelude::*, px,
+    AbsoluteLength, Action, AnyElement, AnyView, AnyWindowHandle, App, Axis, Bounds, Canvas, Div,
+    ElementId, Entity, EntityId, EventEmitter, ExternalPaths, FocusHandle, Focusable, IconScale,
+    IntoElement, KeyBinding, KeyContext, MouseDownEvent, Pixels, PlatformDragEvent, Point, Rems,
+    Render, SharedString, Size, Stateful, Subscription, WeakEntity, Window, actions, deferred, div,
+    point, prelude::*, px, relative,
 };
 use std::collections::{HashMap, VecDeque};
 use std::iter;
@@ -165,9 +168,21 @@ const BRIEF_NOTE: Duration = Duration::from_secs(4);
 /// Adds `note` to `notes` in place of one reading the same, so a note told
 /// again stands once, from when it was last told.
 fn add_note(notes: &mut Vec<Note>, note: Note) {
-    notes.retain(|standing| standing.text != note.text);
+    if let Says::Text(text) = &note.says {
+        notes.retain(|standing| !matches!(&standing.says, Says::Text(told) if told == text));
+    }
     notes.push(note);
 }
+
+/// How wide an empty window shows the openings of files named to it.
+const OPENINGS_WIDTH: Rems = Rems(32.);
+
+/// The text size of the openings an empty window shows in its body.
+const OPENINGS_TEXT_SIZE: Rems = Rems(0.875);
+
+/// The most of a line of an opening its file's label takes, leaving the rest
+/// to the file's state.
+const LABEL_SHARE: f32 = 0.5;
 
 /// What the control dismissing a note says it does.
 const DISMISS_NOTE: &str = "Dismiss";
@@ -562,8 +577,30 @@ struct Note {
     /// Names the note apart from every other the window has been told, so its
     /// dismissal reaches it whichever notes go before it.
     id: u64,
-    text: SharedString,
+    says: Says,
 }
+
+enum Says {
+    Text(SharedString),
+    /// Files on their way to their views, which no user dismisses: the note
+    /// stands until the opening settles.
+    Opening(Opening),
+    Unopened(Unopened),
+}
+
+impl Says {
+    /// The heading and the files' lines of an opening, `None` for a note of
+    /// text alone.
+    fn listing(&self) -> Option<Listing<'_>> {
+        match self {
+            Self::Text(_) => None,
+            Self::Opening(opening) => Some((opening.heading(), opening.lines())),
+            Self::Unopened(unopened) => Some((unopened.heading(), unopened.lines())),
+        }
+    }
+}
+
+type Listing<'a> = (String, Vec<(&'a SharedString, Shown<'a>)>);
 
 /// A dialog standing over the window, and what it answers into.
 struct Asking {
@@ -873,15 +910,23 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let mut files = Vec::with_capacity(read.len());
+        let mut lines = Vec::with_capacity(read.len());
         for file in read {
-            match file {
-                Ok(named) => files.push(named),
-                Err(unread) => {
-                    self.tell(format!("Cannot open {}: {}", unread.name, unread.error), cx)
+            let (label, state) = match file {
+                Ok(named) => {
+                    let label = crate::named_label(&named);
+                    files.push(named);
+                    (label, FileState::Opening)
                 }
-            }
+                Err(unread) => (
+                    crate::document_label(std::path::Path::new(&unread.name)),
+                    FileState::Failed(unread.error.to_string().into()),
+                ),
+            };
+            lines.push(OpeningFile { label, state });
         }
-        self.open_named(files, window, cx);
+        let pending = self.show_opening(Opening::new(lines), cx);
+        self.hand_to_opener(files, pending, window, cx);
     }
 
     /// Opens the window's own dialog asking for the paths of files to open.
@@ -948,9 +993,60 @@ impl Workspace {
         if files.is_empty() {
             return;
         }
-        if let Some(opener) = cx.try_global::<PathOpener>().cloned() {
-            opener.open(files, cx.weak_entity(), window, cx);
+        let pending = self.begin_opening(&files, cx);
+        self.hand_to_opener(files, pending, window, cx);
+    }
+
+    /// Hands `files` to the app's [`PathOpener`] to open as `pending`, which
+    /// settles at once where there are none to open.
+    fn hand_to_opener(
+        &mut self,
+        files: Vec<Named>,
+        pending: PendingOpen,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match cx.try_global::<PathOpener>().cloned() {
+            Some(opener) if !files.is_empty() => opener.open(files, pending, window, cx),
+            _ => pending.settle(Vec::new()),
         }
+    }
+
+    /// Shows `named` as being opened until the [`PendingOpen`] returned is
+    /// settled.
+    pub fn begin_opening<'a>(
+        &mut self,
+        named: impl IntoIterator<Item = &'a Named>,
+        cx: &mut Context<Self>,
+    ) -> PendingOpen {
+        self.show_opening(Opening::of(named), cx)
+    }
+
+    /// Shows `opening` until the [`PendingOpen`] returned is settled.
+    fn show_opening(&mut self, opening: Opening, cx: &mut Context<Self>) -> PendingOpen {
+        let note = self.add_note(Says::Opening(opening), cx);
+        PendingOpen::new(cx.weak_entity(), note, cx)
+    }
+
+    /// Replaces the opening `note` shows with what `settle` leaves of it.
+    pub(crate) fn settle_opening(
+        &mut self,
+        note: u64,
+        settle: impl FnOnce(Opening) -> Option<Unopened>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(at) = (self.notes.iter()).position(|told| told.id == note) else {
+            return;
+        };
+        let Note { id, says } = self.notes.remove(at);
+        let says = match says {
+            Says::Opening(opening) => settle(opening).map(Says::Unopened),
+            says => Some(says),
+        };
+        if let Some(says) = says {
+            self.notes.insert(at, Note { id, says });
+        }
+        cx.notify();
     }
 
     /// The control on an empty window running [`OpenFiles`], where the app
@@ -994,13 +1090,13 @@ impl Workspace {
 
     /// Shows `note` above the window's panes until the user dismisses it.
     pub fn tell(&mut self, note: impl Into<SharedString>, cx: &mut Context<Self>) {
-        self.add_note(note.into(), cx);
+        self.add_note(Says::Text(note.into()), cx);
     }
 
     /// Shows `note` above the window's panes for [`BRIEF_NOTE`], or until the
     /// user dismisses it sooner.
     pub fn tell_briefly(&mut self, note: impl Into<SharedString>, cx: &mut Context<Self>) {
-        let id = self.add_note(note.into(), cx);
+        let id = self.add_note(Says::Text(note.into()), cx);
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(BRIEF_NOTE).await;
             this.update(cx, |workspace, cx| workspace.dismiss_note(id, cx))
@@ -1009,11 +1105,11 @@ impl Workspace {
         .detach();
     }
 
-    /// Adds a note reading `text`; the id naming it.
-    fn add_note(&mut self, text: SharedString, cx: &mut Context<Self>) -> u64 {
+    /// Adds a note saying `says`; the id naming it.
+    fn add_note(&mut self, says: Says, cx: &mut Context<Self>) -> u64 {
         let id = self.notes_told;
         self.notes_told += 1;
-        add_note(&mut self.notes, Note { id, text });
+        add_note(&mut self.notes, Note { id, says });
         cx.notify();
         id
     }
@@ -1023,13 +1119,78 @@ impl Workspace {
         cx.notify();
     }
 
-    /// A strip for each note the window holds, with the control dismissing it.
+    /// A strip for each note the window holds, with the control dismissing
+    /// it, but for the openings an empty window shows in its body.
     fn note_strips(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Vec<Div> {
+        let framed = self.frame().is_some();
         let mut strips = Vec::with_capacity(self.notes.len());
         for note in &self.notes {
-            let this = cx.weak_entity();
-            let id = note.id;
-            let dismiss = Button::new(
+            let strip = match &note.says {
+                Says::Text(text) => note_strip(text.clone(), colors).items_center(),
+                _ if !framed => continue,
+                says => note_frame(colors).items_start().children(
+                    says.listing()
+                        .map(|listing| file_list(note.id, listing, NOTE_TEXT_SIZE.into(), colors)),
+                ),
+            };
+            strips.push(
+                strip
+                    .flex()
+                    .flex_row()
+                    .justify_between()
+                    .gap_2()
+                    .children(self.dismiss_control(note, cx)),
+            );
+        }
+        strips
+    }
+
+    /// The openings an empty window shows in its body, each with the control
+    /// dismissing it once it can be.
+    fn opening_blocks(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Vec<Div> {
+        let mut blocks = Vec::with_capacity(self.notes.len());
+        for note in &self.notes {
+            let Some(listing) = note.says.listing() else {
+                continue;
+            };
+            blocks.push(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_row()
+                    .items_start()
+                    .justify_between()
+                    .gap_2()
+                    .px_3()
+                    .py_2()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(colors.border)
+                    .bg(colors.surface)
+                    .text_size(OPENINGS_TEXT_SIZE)
+                    .text_color(colors.text_muted)
+                    .child(file_list(
+                        note.id,
+                        listing,
+                        OPENINGS_TEXT_SIZE.into(),
+                        colors,
+                    ))
+                    .children(self.dismiss_control(note, cx)),
+            );
+        }
+        blocks
+    }
+
+    /// The control dismissing `note`, which an opening still under way has
+    /// none of.
+    fn dismiss_control(&self, note: &Note, cx: &mut Context<Self>) -> Option<Button> {
+        if let Says::Opening(_) = note.says {
+            return None;
+        }
+        let this = cx.weak_entity();
+        let id = note.id;
+        Some(
+            Button::new(
                 ElementId::NamedInteger("workspace-note-dismiss".into(), id),
                 move |_, _, cx| {
                     this.update(cx, |workspace, cx| workspace.dismiss_note(id, cx))
@@ -1039,18 +1200,8 @@ impl Workspace {
             .ghost()
             .icon("x")
             .compact()
-            .tooltip(DISMISS_NOTE);
-            strips.push(
-                note_strip(note.text.clone(), colors)
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .child(dismiss),
-            );
-        }
-        strips
+            .tooltip(DISMISS_NOTE),
+        )
     }
 
     pub fn active_pane(&self) -> Option<&Entity<Pane>> {
@@ -2206,7 +2357,8 @@ impl Workspace {
         let Some(frame) = self.frame() else {
             let any_open = !Documents::global(cx).read(cx).is_empty();
             let open = self.open_files_button(cx);
-            return empty_state(colors, any_open, open).into_any_element();
+            let openings = self.opening_blocks(colors, cx);
+            return empty_state(colors, any_open, openings, open).into_any_element();
         };
         match frame.arrangement.maximized() {
             Some(pane) => self.framed_pane(pane, cx).into_any_element(),
@@ -3006,16 +3158,32 @@ fn towards<Focus: Action, Move: Action, SplitOff: Action>(
     }))
 }
 
-/// What a window framing no panel shows in its place: that the session holds
-/// no document, or, where `any_open` says it holds one, that a view of it is to
-/// be shown from the Documents menu; and `open`, where the app opens files.
-fn empty_state(colors: &ThemeColors, any_open: bool, open: Option<Button>) -> Div {
+/// What a window framing no panel shows in its place: the `openings` of files
+/// named to it, or, where there are none, that the session holds no document,
+/// or, where `any_open` says it holds one, that a view of it is to be shown
+/// from the Documents menu; and `open`, where the app opens files.
+fn empty_state(
+    colors: &ThemeColors,
+    any_open: bool,
+    openings: Vec<Div>,
+    open: Option<Button>,
+) -> Div {
     let heading = if any_open {
         "No views shown"
     } else {
         "No documents open"
     };
-    let shown = any_open.then_some("Show one from the Documents menu.");
+    let idle = openings.is_empty();
+    let heading = idle.then(|| div().text_color(colors.text).child(heading));
+    let shown = (idle && any_open).then_some("Show one from the Documents menu.");
+    let openings = (!openings.is_empty()).then(|| {
+        div()
+            .w(OPENINGS_WIDTH)
+            .flex()
+            .flex_col()
+            .gap_2()
+            .children(openings)
+    });
     let hint = |text: &'static str| div().text_sm().text_color(colors.text_muted).child(text);
     let open = open.map(|open| {
         div()
@@ -3034,9 +3202,62 @@ fn empty_state(colors: &ThemeColors, any_open: bool, open: Option<Button>) -> Di
         .justify_center()
         .gap_3()
         .bg(colors.background)
-        .child(div().text_color(colors.text).child(heading))
+        .children(heading)
+        .children(openings)
         .children(shown.map(hint))
         .children(open)
+}
+
+/// `listing`'s heading over a line for each file, its label beside its state,
+/// as `note` shows them in text of `text_size`.
+fn file_list(
+    note: u64,
+    (heading, lines): Listing<'_>,
+    text_size: AbsoluteLength,
+    colors: &ThemeColors,
+) -> Stateful<Div> {
+    let line = |(at, (label, shown)): (usize, (&SharedString, Shown<'_>))| {
+        let state = div().flex_1().min_w_0();
+        let state = match shown {
+            Shown::Busy(text) => state
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1()
+                .text_color(colors.text_muted)
+                .child(spinner(
+                    ("workspace-opening-spinner", at),
+                    text_size,
+                    colors.text_muted,
+                ))
+                .child(text),
+            Shown::Error(reason) => state.text_color(colors.error).child(reason.clone()),
+        };
+        div()
+            .flex()
+            .flex_row()
+            .gap_3()
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .max_w(relative(LABEL_SHARE))
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .text_color(colors.text)
+                    .child(label.clone()),
+            )
+            .child(state)
+    };
+    div()
+        .id(("workspace-note-files", note))
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap_0p5()
+        .child(div().text_color(colors.text).child(heading))
+        .children(lines.into_iter().enumerate().map(line))
 }
 
 /// How a window reads where another window's menu offers a move into it: what
@@ -3664,7 +3885,7 @@ mod tests {
     fn a_note_told_again_stands_once_as_last_told() {
         let note = |id, text: &'static str| Note {
             id,
-            text: text.into(),
+            says: Says::Text(text.into()),
         };
         let mut notes = Vec::new();
         add_note(&mut notes, note(0, "copied"));
