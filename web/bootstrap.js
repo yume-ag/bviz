@@ -50,24 +50,28 @@ async function missing() {
   return null;
 }
 
-// Leaves for the help page on why bviz cannot run, with what the browser said
+// The help page's address for why bviz cannot run, with what the browser said
 // of it where it said anything.
-function help(reason, detail) {
+function helpAddress(reason, detail) {
   const given = new URLSearchParams({ reason, ...about() });
   if (detail) {
     given.set("detail", detail);
   }
-  location.replace(`help.html#${given}`);
+  return `help.html#${given}`;
 }
 
-// Covers the page with `message` and a way to reload bviz, once bviz has
-// ended for good.
-function ended(message) {
+function help(reason, detail) {
+  location.replace(helpAddress(reason, detail));
+}
+
+// Covers the page with `message`, text and elements, and a way to reload
+// bviz, once bviz has ended for good.
+function ended(...message) {
   if (document.querySelector(".ended")) {
     return;
   }
   const text = document.createElement("p");
-  text.textContent = message;
+  text.append(...message);
   const reload = document.createElement("button");
   reload.textContent = "Reload";
   reload.addEventListener("click", () => location.reload());
@@ -78,10 +82,55 @@ function ended(message) {
   reload.focus();
 }
 
+// The share of its size by which bviz's memory must still be able to grow for
+// a crash not to count as running out of memory: an allocation that fails
+// typically doubles a buffer that holds much of the memory.
+const HEADROOM = 1 / 2;
+
+// The module's memory, from when `init` resolves, after bviz's `main` has run.
+let memory;
+
+// The panic bviz last recorded, kept until the task that recorded it ends, so a
+// crash in that task is the panic's, and one in a later task is not a panic
+// bviz caught before it.
+let lastPanic;
+Object.defineProperty(globalThis, "bvizLastPanic", {
+  get: () => lastPanic,
+  set(message) {
+    lastPanic = message;
+    setTimeout(() => {
+      lastPanic = undefined;
+    });
+  },
+});
+
+// Whether bviz's memory cannot grow by HEADROOM of its size. Asking it to grow
+// meets whichever limit binds it, its declared maximum or the browser's own,
+// and costs nothing once bviz has crashed.
+function exhausted() {
+  const pages = memory.grow(0);
+  try {
+    memory.grow(Math.ceil(pages * HEADROOM));
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 // Tells what crashed bviz: the panic or fault `error` that escaped it, or,
-// where an abort left none, the panic it last recorded.
+// where an abort left none, the panic it last recorded. A fault that is no
+// panic, at a memory that cannot grow, is running out of memory: a failed
+// allocation aborts with a bare trap and runs no panic hook.
 function crashed(error) {
-  const what = error ? error.message : globalThis.bvizLastPanic;
+  const panicked = error?.name === "PanicError" || lastPanic !== undefined;
+  if (error instanceof WebAssembly.RuntimeError && !panicked && memory && exhausted()) {
+    const desktop = document.createElement("a");
+    desktop.href = helpAddress("memory");
+    desktop.textContent = "bviz on the desktop";
+    ended("bviz ran out of the memory the browser gives it. For large builds, run ", desktop, ".");
+    return;
+  }
+  const what = lastPanic ?? error?.message;
   ended(what ? `bviz crashed: ${what}` : "bviz crashed.");
 }
 
@@ -128,7 +177,7 @@ if (reason) {
 
   try {
     const { default: init } = await import("./bviz.js");
-    await init();
+    ({ memory } = await init());
   } catch (error) {
     if (escaped(error)) {
       crashed(error);
