@@ -15,7 +15,7 @@ const WINDOW: usize = 256;
 /// [`WINDOW`] is shared past it. The matcher breaks a tie on its score by the
 /// text's length and its order, which the ranking's own tie-breaks override,
 /// so every match sharing that score is ranked, up to this many.
-const MAX_WINDOW: usize = 4096;
+pub(super) const MAX_WINDOW: usize = 4096;
 
 /// What the ranking reads of a matched candidate past the matcher's score.
 pub(crate) struct Standing {

@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>bviz cannot run here</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="style.css">
+    <script type="module" src="help.js"></script>
+  </head>
+  <body>
+    <main class="help">
+      <h1>bviz cannot run in this browser</h1>
+
+      <section data-reason="insecure">
+        <h2>The page is not in a secure context</h2>
+        <p>
+          Browsers offer WebGPU only to pages served over HTTPS or from the
+          machine the browser runs on, and this page came over plain HTTP from
+          another machine.
+        </p>
+        <p>
+          Serve it over HTTPS, or open it as if from this machine by forwarding
+          the server's port, then opening <code>http://localhost:&lt;port&gt;/</code>:
+        </p>
+        <pre>ssh -L &lt;port&gt;:localhost:&lt;port&gt; &lt;server&gt;</pre>
+      </section>
+
+      <section data-reason="wasm">
+        <h2>The browser is too old</h2>
+        <p>
+          bviz is WebAssembly that uses fixed-width SIMD and exception
+          handling, which this browser does not run. It needs Chrome 96,
+          Firefox 100, Safari 16.4, or a later version of one of them.
+        </p>
+      </section>
+
+      <section data-reason="graphics">
+        <h2>The browser offers no graphics bviz can draw with</h2>
+        <p>
+          bviz draws with WebGPU or, failing that, WebGL2, and this browser
+          offers neither: graphics acceleration may be turned off, or the
+          browser may not trust the graphics driver.
+        </p>
+        <div data-browser="chromium" data-os="linux">
+          <p>Start Chrome or Chromium on Linux with these flags:</p>
+          <p>
+            <code>--enable-unsafe-webgpu</code>
+            <code>--ozone-platform=x11</code>
+            <code>--use-angle=vulkan</code>
+            <code>--enable-features=Vulkan,VulkanFromANGLE</code>
+          </p>
+          <p>
+            Where it does not trust the graphics driver, add
+            <code>--ignore-gpu-blocklist</code> as well.
+          </p>
+        </div>
+        <div data-browser="chromium">
+          <p>
+            Turn on <q>Use graphics acceleration when available</q> in the
+            browser's system settings, and check on <code>chrome://gpu</code>
+            that WebGPU or WebGL2 is hardware accelerated.
+          </p>
+        </div>
+        <div data-browser="firefox" data-os="linux">
+          <p>
+            Where Firefox on Linux offers no WebGPU, set both
+            <code>dom.webgpu.enabled</code> and
+            <code>gfx.webgpu.ignore-blocklist</code> to true on
+            <code>about:config</code>.
+          </p>
+        </div>
+        <div data-browser="firefox">
+          <p>
+            Check that <code>webgl.disabled</code> is false on
+            <code>about:config</code>, and what the graphics section of
+            <code>about:support</code> says of WebGPU and WebGL2.
+          </p>
+        </div>
+        <div data-browser="safari">
+          <p>Check that neither WebGL nor WebGPU is turned off among Safari's feature flags.</p>
+        </div>
+        <div data-browser="other">
+          <p>
+            Update the browser and the graphics driver, and turn on hardware
+            acceleration in the browser's settings.
+          </p>
+        </div>
+      </section>
+
+      <section data-reason="load">
+        <h2>bviz could not load</h2>
+        <p>
+          The browser could not fetch or start bviz's WebAssembly: the server
+          may lack some of bviz's files, or the browser the memory to hold it.
+        </p>
+      </section>
+
+      <section data-reason="failed">
+        <h2>bviz could not open its window</h2>
+        <p>
+          bviz started, but the browser refused it the window it draws in.
+        </p>
+      </section>
+
+      <p data-detail hidden>What failed: <code></code></p>
+
+      <p><a href="./">Try again</a></p>
+
+      <section>
+        <h2>Run bviz on the desktop</h2>
+        <p>
+          bviz also runs as a desktop application on Linux and macOS:
+          download it from <a href="https://github.com/yume-ag/bviz/releases">its releases</a>.
+        </p>
+      </section>
+    </main>
+  </body>
+</html>

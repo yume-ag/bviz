@@ -12,6 +12,9 @@ mod file;
 mod no_file_system;
 
 pub mod delimited;
+mod named;
+
+pub use named::{Named, Opened};
 
 /// Bytes of an input read ahead as its [`head`](Input::head): every look a
 /// reader takes at a file's start, to tell what it holds or which invocation
@@ -51,6 +54,15 @@ pub trait ReadAt: Send + Sync {
     }
 }
 
+impl ReadAt for Vec<u8> {
+    fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<usize> {
+        let start = usize::try_from(offset).map_or(self.len(), |at| at.min(self.len()));
+        let n = buf.len().min(self.len() - start);
+        buf[..n].copy_from_slice(&self[start..start + n]);
+        Ok(n)
+    }
+}
+
 impl<R: ReadAt + ?Sized> ReadAt for Arc<R> {
     fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<usize> {
         (**self).read_at(buf, offset)
@@ -66,6 +78,8 @@ pub enum Access {
         reader: Box<dyn Read + Send>,
         size: Option<u64>,
     },
+    /// Bytes held in memory, read at any offset.
+    Memory(Vec<u8>),
 }
 
 impl Access {
@@ -73,6 +87,7 @@ impl Access {
         match self {
             Access::Seekable { size, .. } => Some(*size),
             Access::Stream { size, .. } => *size,
+            Access::Memory(bytes) => Some(bytes.len() as u64),
         }
     }
 }
@@ -97,6 +112,9 @@ impl Input {
                 .take(head_limit)
                 .read_to_end(&mut head)?,
             Access::Stream { reader, .. } => reader.take(head_limit).read_to_end(&mut head)?,
+            Access::Memory(bytes) => At::new(&*bytes, 0)
+                .take(head_limit)
+                .read_to_end(&mut head)?,
         };
         Ok(Input {
             name,
@@ -105,7 +123,18 @@ impl Input {
         })
     }
 
-    /// What the user knows the input by: on the desktop, the path as given.
+    /// The input `name` names, held in memory as `bytes`.
+    pub(crate) fn in_memory(name: String, bytes: Vec<u8>) -> Input {
+        let head = bytes[..bytes.len().min(HEAD_BYTES)].to_vec();
+        Input {
+            name,
+            head: Some(head),
+            access: Access::Memory(bytes),
+        }
+    }
+
+    /// What the user knows the input by: the path as given, or the name of a
+    /// file held in memory.
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -131,6 +160,7 @@ impl Input {
     pub fn seekable(&self) -> Option<&dyn ReadAt> {
         match &self.access {
             Access::Seekable { source, .. } => Some(&**source),
+            Access::Memory(bytes) => Some(bytes),
             Access::Stream { .. } => None,
         }
     }
@@ -148,6 +178,10 @@ impl Input {
         let rest = match self.access {
             Access::Seekable { source, .. } => Rest::Seekable(At::new(source, read_ahead)),
             Access::Stream { reader, .. } => Rest::Stream(reader),
+            Access::Memory(bytes) => {
+                let source: Box<dyn ReadAt> = Box::new(bytes);
+                Rest::Seekable(At::new(source, read_ahead))
+            }
         };
         io::Cursor::new(self.head.unwrap_or_default()).chain(rest)
     }
@@ -156,10 +190,14 @@ impl Input {
     /// read at any offset; a stream, which yields its bytes once, comes back
     /// as `Err`.
     pub fn reopenable(self) -> Result<(Input, Reopener), Input> {
-        let Access::Seekable { source, size } = self.access else {
-            return Err(self);
+        let (source, size): (Arc<dyn ReadAt>, u64) = match self.access {
+            Access::Seekable { source, size } => (Arc::from(source), size),
+            Access::Memory(bytes) => {
+                let size = bytes.len() as u64;
+                (Arc::new(bytes), size)
+            }
+            Access::Stream { .. } => return Err(self),
         };
-        let source: Arc<dyn ReadAt> = Arc::from(source);
         let reopener = Reopener {
             name: self.name.clone(),
             source: source.clone(),
@@ -176,18 +214,31 @@ impl Input {
         Ok((input, reopener))
     }
 
-    /// The whole input, in one buffer.
+    /// The whole input, in one buffer: for an input held in memory, the very
+    /// buffer it holds.
     pub fn read_all(self) -> io::Result<Vec<u8>> {
         let read_ahead = self.read_ahead();
-        let mut all = self.head.unwrap_or_default();
-        if let Some(size) = self.access.size() {
-            reserve_exact(&mut all, size.saturating_sub(read_ahead))?;
-        }
-        match self.access {
-            Access::Seekable { source, .. } => source.read_to_end_from(read_ahead, &mut all)?,
-            Access::Stream { mut reader, .. } => reader.read_to_end(&mut all)?,
+        let size = self.size();
+        let with_room = |head: Option<Vec<u8>>| {
+            let mut all = head.unwrap_or_default();
+            if let Some(size) = size {
+                reserve_exact(&mut all, size.saturating_sub(read_ahead))?;
+            }
+            io::Result::Ok(all)
         };
-        Ok(all)
+        match self.access {
+            Access::Memory(bytes) => Ok(bytes),
+            Access::Seekable { source, .. } => {
+                let mut all = with_room(self.head)?;
+                source.read_to_end_from(read_ahead, &mut all)?;
+                Ok(all)
+            }
+            Access::Stream { mut reader, .. } => {
+                let mut all = with_room(self.head)?;
+                reader.read_to_end(&mut all)?;
+                Ok(all)
+            }
+        }
     }
 }
 
@@ -265,15 +316,6 @@ impl Read for Rest {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    impl ReadAt for Vec<u8> {
-        fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<usize> {
-            let start = usize::try_from(offset).map_or(self.len(), |at| at.min(self.len()));
-            let n = buf.len().min(self.len() - start);
-            buf[..n].copy_from_slice(&self[start..start + n]);
-            Ok(n)
-        }
-    }
 
     /// Bytes that differ at every offset a test reads from.
     pub(crate) fn bytes(len: usize) -> Vec<u8> {

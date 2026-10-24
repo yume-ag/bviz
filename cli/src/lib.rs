@@ -10,6 +10,7 @@ use bviz_ui_execlog_args::{ExecLogArgs, ExecLogSource};
 use bviz_ui_graph_args::{GraphArgs, GraphSource};
 use bviz_ui_trace_args::{TraceArgs, TraceSource};
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 /// Opens Bazel build documents: the dependency graph, the action timeline, the
 /// console replay, the spawn time by phase.
@@ -111,7 +112,7 @@ pub enum Source {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Sources {
     Graph {
-        graph: GraphSource,
+        graph: GraphSource<PathBuf>,
         files: Vec<Source>,
     },
     Files {
@@ -145,12 +146,12 @@ mod tests {
     }
 
     fn graph(inputs: &[(InputKind, &str)], files: Vec<Source>) -> Sources {
-        let mut args = GraphArgs::default();
+        let mut graph = bviz_ui_graph_args::GraphFiles::default();
         for &(kind, path) in inputs {
-            *args.file_mut(kind) = Some(path.into());
+            *graph.file_mut(kind) = Some(path.into());
         }
         Sources::Graph {
-            graph: args.source().expect("the inputs name a graph"),
+            graph: graph.source().expect("the inputs name a graph"),
             files,
         }
     }

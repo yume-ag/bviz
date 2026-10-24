@@ -19,15 +19,19 @@ pub fn dispatched(
 }
 
 /// The action `keys` dispatch under `bindings` with focus in the innermost of
-/// `stack`, which runs outermost first.
+/// `stack`, which runs outermost first. `keys` may be a chord of keystrokes
+/// separated by spaces, as a binding spells one.
 pub fn dispatched_within(
     bindings: Vec<KeyBinding>,
     keys: &str,
     stack: &[KeyContext],
 ) -> Option<Box<dyn Action>> {
     let keymap = Keymap::new(bindings);
-    let keystroke = Keystroke::parse(keys).expect("a keystroke");
-    let (matched, _) = keymap.bindings_for_input(&[keystroke], stack);
+    let keystrokes: Vec<Keystroke> = keys
+        .split_whitespace()
+        .map(|keystroke| Keystroke::parse(keystroke).expect("a keystroke"))
+        .collect();
+    let (matched, _) = keymap.bindings_for_input(&keystrokes, stack);
     matched
         .first()
         .map(|binding| binding.action().boxed_clone())

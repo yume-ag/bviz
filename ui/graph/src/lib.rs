@@ -3,12 +3,13 @@
 //! rendering the result.
 
 use bviz_graph_layout::Id;
+use bviz_input::Named;
 use bviz_invocation::Session;
 use bviz_ui_components::gesture::{
     GestureRow, Pointer, pinch_factor, scroll_pixels, wheel_zoom_factor,
 };
 use bviz_ui_components::{
-    DragEnd, Dropdown, DropdownEvent, KeyScope, LegendState, MultiSelect, MultiSelectEvent,
+    DragEnd, Dropdown, DropdownEvent, Host, KeyScope, LegendState, MultiSelect, MultiSelectEvent,
     Pending, ScrollbarColors, ShowLegend, ZOOM_KEY_STEP, ZoomIn, ZoomOut, cached_layer,
     declare_scopes, find_key_bindings, legend_gestures, legend_key_bindings, overlay_canvas,
     text_input, zoom_key_bindings,
@@ -19,7 +20,7 @@ use bviz_ui_session::Sharing;
 use bviz_ui_theme::{DataColors, Theme, ThemeColors};
 use bviz_ui_workspace::{
     Document, Member, Panel, PanelEvent, PanelKind, Role, Shared, Titled, ViewKind, ViewSpec,
-    document_label,
+    named_label,
 };
 use clap::Parser;
 use gpui::{
@@ -156,10 +157,11 @@ pub fn register_keys(cx: &mut App) {
             chips::AIMED_KEY_CONTEXT,
         ],
     );
-    cx.bind_keys(bindings());
+    cx.bind_keys(bindings(Host::CURRENT));
 }
 
-fn bindings() -> Vec<KeyBinding> {
+/// The panels' bindings in an application running in `host`.
+fn bindings(host: Host) -> Vec<KeyBinding> {
     let unless_typing = text_input::unless_typing(KEY_CONTEXT);
     let unless_typing = Some(unless_typing.as_str());
     let jumping = Some(jump::KEY_CONTEXT.id());
@@ -260,6 +262,16 @@ fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("enter", scatter::SelectAimed, picking),
         KeyBinding::new("escape", scatter::ClosePickList, picking),
     ];
+    if host == Host::Browser {
+        bindings.extend([
+            KeyBinding::new("secondary-k [", JumpBack, unless_typing),
+            KeyBinding::new("secondary-k ]", JumpForward, unless_typing),
+            KeyBinding::new("secondary-k [", exclusive::FocusBack, exclusive_canvas),
+            KeyBinding::new("secondary-k ]", exclusive::FocusForward, exclusive_canvas),
+            KeyBinding::new("secondary-k [", JumpBack, scatter_canvas),
+            KeyBinding::new("secondary-k ]", JumpForward, scatter_canvas),
+        ]);
+    }
     bindings.extend(chips::bindings());
     bindings.extend(zoom_key_bindings(KEY_CONTEXT));
     bindings.extend(zoom_key_bindings(scatter::KEY_CONTEXT));
@@ -705,7 +717,7 @@ impl GraphPanel {
             _chrome_follows: chrome_follows,
             legend: Legend::default(),
             legend_state,
-            bench: pan_bench::Bench::from_env(),
+            bench: pan_bench::Bench::from_switches(),
         };
         // A panel minted over a graph its document has already read, as a
         // closed view reopened is, sees no read land.
@@ -1554,8 +1566,8 @@ pub struct Load {
     title: SharedString,
 }
 
-impl From<GraphSource> for Load {
-    fn from(source: GraphSource) -> Self {
+impl From<GraphSource<Named>> for Load {
+    fn from(source: GraphSource<Named>) -> Self {
         let title = title(&source);
         Self {
             built: Pending::start(move || model::build(source)),
@@ -1565,11 +1577,12 @@ impl From<GraphSource> for Load {
 }
 
 /// Names the file the graph was read from, and how many more it merges.
-fn title(source: &GraphSource) -> SharedString {
+fn title(source: &GraphSource<Named>) -> SharedString {
     let (first, rest) = source.first_and_rest();
+    let label = named_label(&first.file);
     match rest.len() {
-        0 => document_label(&first.path),
-        more => format!("{} +{more}", document_label(&first.path)).into(),
+        0 => label,
+        more => format!("{label} +{more}").into(),
     }
 }
 
@@ -1617,7 +1630,11 @@ pub fn run() {
     bviz_ui_workspace::run_viewer(
         "bviz graph",
         bviz_ui_workspace::WINDOW_SIZE,
-        |cli: Cli| cli.graph.source().map(Load::from),
+        |cli: Cli| {
+            cli.graph
+                .source()
+                .map(|source| Load::from(source.map(Named::Path)))
+        },
         &format!("one of --{AQUERY_LONG}, --{CQUERY_LONG} or --{QUERY_LONG}"),
         |load: Load, window, cx| {
             let shared = Shared::new(cx);
@@ -1659,8 +1676,16 @@ mod tests {
     /// The action `keys` dispatch with focus in the innermost of `contexts`,
     /// under the panel's bindings and those of the text field.
     fn dispatched(keys: &str, contexts: &[&str]) -> Option<std::boxed::Box<dyn gpui::Action>> {
-        let mut bindings = bindings();
-        bindings.extend(text_input::bindings());
+        dispatched_on(Host::Desktop, keys, contexts)
+    }
+
+    fn dispatched_on(
+        host: Host,
+        keys: &str,
+        contexts: &[&str],
+    ) -> Option<std::boxed::Box<dyn gpui::Action>> {
+        let mut bindings = bindings(host);
+        bindings.extend(text_input::bindings(host));
         keymap_probe::dispatched(bindings, keys, contexts)
     }
 
@@ -1756,6 +1781,35 @@ mod tests {
             dispatched("alt-right", exclusive),
             exclusive::FocusForward
         ));
+    }
+
+    /// In a browser the same histories are walked by chords as well, which a
+    /// text field keeps as it keeps the arrows.
+    #[test]
+    fn a_browser_walks_the_histories_by_chords_too() {
+        let browser = |keys, contexts| dispatched_on(Host::Browser, keys, contexts);
+        assert!(is(browser("alt-left", IN_PANEL), JumpBack));
+        assert!(is(browser("secondary-k [", IN_PANEL), JumpBack));
+        assert!(is(browser("secondary-k ]", IN_PANEL), JumpForward));
+        let scatter = &[scatter::KEY_CONTEXT.id()];
+        assert!(is(browser("secondary-k [", scatter), JumpBack));
+        assert!(is(browser("secondary-k ]", scatter), JumpForward));
+        let exclusive = &[exclusive::KEY_CONTEXT.id()];
+        assert!(is(
+            browser("secondary-k [", exclusive),
+            exclusive::FocusBack
+        ));
+        assert!(is(
+            browser("secondary-k ]", exclusive),
+            exclusive::FocusForward
+        ));
+        for keys in ["secondary-k [", "secondary-k ]"] {
+            for field in [IN_PALETTE, IN_CHIP_FIELD] {
+                assert!(!is(browser(keys, field), JumpBack), "{keys}");
+                assert!(!is(browser(keys, field), JumpForward), "{keys}");
+            }
+            assert!(dispatched(keys, IN_PANEL).is_none(), "{keys}");
+        }
     }
 
     /// The exclusive-deps panel's roots are edited by `r`, `q` reaching the
@@ -1867,8 +1921,8 @@ mod tests {
     /// The action `keys` dispatch with focus in the query field while its
     /// completion's list stands open, with a row `aimed` at or not.
     fn completing(keys: &str, aimed: bool) -> Option<std::boxed::Box<dyn gpui::Action>> {
-        let mut bindings = bindings();
-        bindings.extend(text_input::bindings());
+        let mut bindings = bindings(Host::Desktop);
+        bindings.extend(text_input::bindings(Host::Desktop));
         keymap_probe::dispatched_within(
             bindings,
             keys,
@@ -1987,14 +2041,17 @@ mod tests {
     /// binding would silently take the key from the earlier.
     #[test]
     fn no_key_is_bound_twice_in_one_context() {
-        let mut seen = std::collections::HashSet::new();
-        for binding in bindings() {
-            let keys: Vec<String> = binding.keystrokes().iter().map(|k| k.to_string()).collect();
-            let predicate = binding.predicate().map(|p| p.to_string());
-            assert!(
-                seen.insert((keys.clone(), predicate.clone())),
-                "{keys:?} bound twice under {predicate:?}"
-            );
+        for host in [Host::Desktop, Host::Browser] {
+            let mut seen = std::collections::HashSet::new();
+            for binding in bindings(host) {
+                let keys: Vec<String> =
+                    binding.keystrokes().iter().map(|k| k.to_string()).collect();
+                let predicate = binding.predicate().map(|p| p.to_string());
+                assert!(
+                    seen.insert((keys.clone(), predicate.clone())),
+                    "{host:?}: {keys:?} bound twice under {predicate:?}"
+                );
+            }
         }
     }
 
@@ -2002,7 +2059,7 @@ mod tests {
     /// is one binding, which the keys help lists once.
     #[test]
     fn the_bars_keys_reaching_it_from_the_panel_are_bound_once() {
-        let bindings = bindings();
+        let bindings = bindings(Host::Desktop);
         let bound = |action: &dyn gpui::Action| {
             bindings
                 .iter()
@@ -2711,14 +2768,14 @@ mod tests {
 
     /// The graph read from `paths`, an aquery, a cquery and a query output in
     /// that order, as many of them as are given.
-    fn source(paths: &[&str]) -> GraphSource {
+    fn source(paths: &[&str]) -> GraphSource<Named> {
         use bviz_ui_graph_args::InputKind;
-        let mut args = GraphArgs::default();
+        let mut files = bviz_ui_graph_args::GraphFiles::default();
         let kinds = [InputKind::Aquery, InputKind::Cquery, InputKind::Query];
         for (kind, path) in kinds.into_iter().zip(paths) {
-            *args.file_mut(kind) = Some(path.into());
+            *files.file_mut(kind) = Some(std::path::PathBuf::from(path).into());
         }
-        args.source().expect("the paths name a graph")
+        files.source().expect("the paths name a graph")
     }
 
     /// One graph is drawn however many files it merges, so its title names the

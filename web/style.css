@@ -1,0 +1,79 @@
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  background: Canvas;
+  color: CanvasText;
+  font-family: system-ui, sans-serif;
+  margin: 0;
+}
+
+.app,
+.app body {
+  height: 100%;
+  overflow: hidden;
+}
+
+.status {
+  display: grid;
+  inset: 0;
+  margin: 0;
+  place-items: center;
+  pointer-events: none;
+  position: fixed;
+}
+
+.app body {
+  display: flex;
+  flex-direction: column;
+}
+
+/* gpui sizes its canvas to fill the body, which the banner shares. */
+.app body > canvas {
+  flex: 1 1 0;
+  height: auto !important;
+  min-height: 0;
+}
+
+.banner {
+  align-items: center;
+  border-top: 1px solid GrayText;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  order: 1;
+  padding: 0.5rem 1rem;
+}
+
+.ended {
+  align-items: center;
+  background: color-mix(in srgb, Canvas 85%, transparent);
+  display: flex;
+  flex-direction: column;
+  inset: 0;
+  justify-content: center;
+  padding: 1rem;
+  position: fixed;
+}
+
+.ended p {
+  max-width: 42rem;
+  white-space: pre-wrap;
+}
+
+.help {
+  line-height: 1.5;
+  margin: 2rem auto;
+  max-width: 42rem;
+  padding: 0 1rem;
+}
+
+.help pre {
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+.help [data-browser] code {
+  white-space: nowrap;
+}

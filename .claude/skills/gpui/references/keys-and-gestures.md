@@ -74,6 +74,11 @@ follows every rule below.
 | Escape | closes the topmost transient (completion, field, palette, menu, popup card), else clears the selection, else puts away a lens such as the why paths | — |
 | Close | secondary-W the panel, secondary-Alt-W its document where the app opens files, secondary-Shift-W the window | — |
 
+A browser keeps its own tab and window keys from the page, so there the panel closes by
+secondary-K W and the window by secondary-K Shift-W, nothing quits, and chords join the keys a
+browser may take: secondary-K Tab / Shift-Tab for the tabs, secondary-K [ / ] for a history.
+A binding that differs by host takes `Host` as a parameter, so keymap tests cover both.
+
 Secondary is Ctrl on Linux and Windows and ⌘ on macOS; a gesture's `Held::SECONDARY` also
 accepts Control on macOS. A transient takes Escape in a key context of its own while open, and
 hands focus back to where it came from as it closes. A window's dialog instead keeps focus

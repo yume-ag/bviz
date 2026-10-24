@@ -29,7 +29,13 @@ rust_binary(
         "//util/input",
         "@crates//:clap",
         "@crates//:gpui",
-    ],
+    ] + select({
+        "@platforms//cpu:wasm32": [
+            "//ui/web",
+            "//util/switches",
+        ],
+        "//conditions:default": [],
+    }),
 )
 
 rust_test(
@@ -69,6 +75,7 @@ platform_transition_filegroup(
     name = "third_party_notices_web",
     srcs = [":third_party_notices"],
     target_platform = "//platforms:wasm32_web_threads",
+    visibility = ["//web:__pkg__"],
 )
 
 [
@@ -76,6 +83,7 @@ platform_transition_filegroup(
         name = "bviz_" + platform,
         executable = ":bviz",
         platform = "//platforms:" + platform,
+        visibility = ["//web:__pkg__"],
     )
     for platform in [
         "wasm32_web",

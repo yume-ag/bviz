@@ -242,7 +242,12 @@ crate.annotation(
 crate.annotation(
     crate = "gpui_web",
     patch_args = ["-p1"],
-    patches = ["//patches/gpui_web:gpui_web-assert-unwind-safe-callbacks.patch"],
+    patches = [
+        "//patches/gpui_web:gpui_web-assert-unwind-safe-callbacks.patch",
+        "//patches/gpui_web:gpui_web-safe-area-probe-cssom.patch",
+        "//patches/gpui_web:gpui_web-graphics-unavailable-event.patch",
+        "//patches/gpui_web:gpui_web-shifted-symbol-keystroke.patch",
+    ],
 )
 crate.annotation(
     crate = "gpui_wgpu",
@@ -477,6 +482,10 @@ crate.annotation(
 crate.annotation(
     crate = "protoc-gen-prost",
     gen_binaries = ["protoc-gen-prost"],
+)
+crate.annotation(
+    crate = "wasm-bindgen-cli",
+    gen_binaries = ["wasm-bindgen"],
 )
 use_repo(crate, "crates")
 

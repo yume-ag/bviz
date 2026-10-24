@@ -172,10 +172,10 @@ impl Press {
         match self {
             Self::Center => viewport.center(),
             Self::Box => leaf_nearest_center(view).unwrap_or_else(|| {
-                eprintln!(
+                bviz_switches::report(format_args!(
                     "pan_bench: no leaf box on screen to press on; pressing the {}",
                     Self::Center.label()
-                );
+                ));
                 viewport.center()
             }),
         }
@@ -309,7 +309,7 @@ fn take_frame(interval: Duration) -> Sample {
     }
 }
 
-/// A benchmark asked for by the environment, not yet started.
+/// A benchmark asked for by its switches, not yet started.
 pub(crate) struct Bench {
     scenario: Scenario,
     frames: usize,
@@ -318,54 +318,54 @@ pub(crate) struct Bench {
 }
 
 impl Bench {
-    /// The benchmark the environment asks for, handed to the first panel to
+    /// The benchmark the switches ask for, handed to the first panel to
     /// ask.
-    pub(crate) fn from_env() -> Option<Self> {
-        let name = std::env::var(SCENARIO_VAR).ok()?;
+    pub(crate) fn from_switches() -> Option<Self> {
+        let name = bviz_switches::get(SCENARIO_VAR)?;
         if CLAIMED.swap(true, Relaxed) {
             return None;
         }
         let Some(scenario) = Scenario::named(&name) else {
             let known = Scenario::ALL.map(Scenario::label);
-            eprintln!(
+            bviz_switches::report(format_args!(
                 "pan_bench: unknown scenario {name:?}; expected one of {}",
                 known.join(", ")
-            );
+            ));
             return None;
         };
-        let frames = match std::env::var(FRAMES_VAR) {
-            Err(_) => DEFAULT_FRAMES,
-            Ok(frames) => frames.parse().unwrap_or_else(|_| {
-                eprintln!(
+        let frames = match bviz_switches::get(FRAMES_VAR) {
+            None => DEFAULT_FRAMES,
+            Some(frames) => frames.parse().unwrap_or_else(|_| {
+                bviz_switches::report(format_args!(
                     "pan_bench: {FRAMES_VAR}={frames:?} is not a frame count; \
                      recording {DEFAULT_FRAMES}"
-                );
+                ));
                 DEFAULT_FRAMES
             }),
         };
-        let motion = match std::env::var(MOTION_VAR) {
-            Err(_) => Motion::default(),
-            Ok(name) => Motion::named(&name).unwrap_or_else(|| {
+        let motion = match bviz_switches::get(MOTION_VAR) {
+            None => Motion::default(),
+            Some(name) => Motion::named(&name).unwrap_or_else(|| {
                 let known = Motion::ALL.map(Motion::label);
                 let fallback = Motion::default().label();
-                eprintln!(
+                bviz_switches::report(format_args!(
                     "pan_bench: unknown {MOTION_VAR}={name:?}; expected one of {}; \
                      recording {fallback}",
                     known.join(", ")
-                );
+                ));
                 Motion::default()
             }),
         };
-        let press = match std::env::var(PRESS_VAR) {
-            Err(_) => Press::default(),
-            Ok(name) => Press::named(&name).unwrap_or_else(|| {
+        let press = match bviz_switches::get(PRESS_VAR) {
+            None => Press::default(),
+            Some(name) => Press::named(&name).unwrap_or_else(|| {
                 let known = Press::ALL.map(Press::label);
                 let fallback = Press::default().label();
-                eprintln!(
+                bviz_switches::report(format_args!(
                     "pan_bench: unknown {PRESS_VAR}={name:?}; expected one of {}; \
                      pressing {fallback}",
                     known.join(", ")
-                );
+                ));
                 Press::default()
             }),
         };
@@ -483,7 +483,7 @@ impl Run {
             }
             Stage::Moving { press, frame } => {
                 if frame == WARMUP_FRAMES {
-                    eprintln!("pan_bench recording");
+                    bviz_switches::report(format_args!("pan_bench recording"));
                 }
                 if frame > WARMUP_FRAMES {
                     self.samples.push(sample);
@@ -551,7 +551,9 @@ impl Run {
     ) {
         let view = self.panel.read(cx);
         let Some(at) = crowded_point(view) else {
-            eprintln!("pan_bench: no box on screen to zoom toward; skipping a zoom step");
+            bviz_switches::report(format_args!(
+                "pan_bench: no box on screen to zoom toward; skipping a zoom step"
+            ));
             return;
         };
         let notches = notches(view);
@@ -575,7 +577,7 @@ impl Run {
                 || "-".to_owned(),
                 |l| format!("{}/{}", l.index + 1, l.count),
             );
-        eprintln!(
+        bviz_switches::report(format_args!(
             "pan_bench ready scenario={} motion={} viewport={}x{} zoom={:.4} pan={:.1},{:.1} level={level} \
              view_boxes={boxes} view_connectors={connectors} press={} hovered={} neighborhood={}",
             self.bench.scenario.label(),
@@ -588,7 +590,7 @@ impl Run {
             self.bench.press.label(),
             view.hovered.is_some(),
             view.neighborhood_enabled,
-        );
+        ));
     }
 
     fn report(&self) {
@@ -610,13 +612,13 @@ impl Run {
         values.sort_by(f64::total_cmp);
         let rank = |q: f64| ((frames as f64 * q).ceil() as usize).saturating_sub(1);
         let show = |v: Option<&f64>| v.map_or_else(|| "nan".to_owned(), |v| format!("{v:.3}"));
-        eprintln!(
+        bviz_switches::report(format_args!(
             "pan_bench scenario={scenario} motion={motion} press={press} metric={name} frames={frames} \
              median={} p90={} max={}",
             show(values.get(rank(0.5))),
             show(values.get(rank(0.9))),
             show(values.last()),
-        );
+        ));
     }
 }
 

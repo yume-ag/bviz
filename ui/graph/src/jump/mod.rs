@@ -259,14 +259,18 @@ impl JumpPalette {
         };
         let (candidates, scope) = (jump.candidates.clone(), jump.scope);
         let prepare = move || candidates.ready();
-        let feed = move |candidates: &Ready<Candidates>, feeder: &fuzzy::Feeder| {
-            for index in candidates.in_scope(scope) {
-                if !feeder.push(index, &candidates.get(index).text) {
-                    return;
-                }
-            }
-        };
-        fuzzy::inject(self, matching, take_up, prepare, feed, cx);
+        fuzzy::inject(
+            self,
+            matching,
+            take_up,
+            prepare,
+            move |candidates: &Ready<Candidates>| {
+                let offered =
+                    (candidates.in_scope(scope)).map(|index| (index, &*candidates.get(index).text));
+                Box::new(offered)
+            },
+            cx,
+        );
     }
 
     /// Hands the matcher the query the field holds.
@@ -814,8 +818,8 @@ mod tests {
     /// in every view holding one, so no hint drops out of it.
     #[test]
     fn every_footer_hint_names_keys() {
-        let mut bindings = crate::bindings();
-        bindings.extend(text_input::bindings());
+        let mut bindings = crate::bindings(bviz_ui_components::Host::Desktop);
+        bindings.extend(text_input::bindings(bviz_ui_components::Host::Desktop));
         let keymap = Keymap::new(bindings);
         for holder in Holder::ALL {
             for (actions, does) in KEY_HINTS.into_iter().flatten() {

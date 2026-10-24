@@ -4,7 +4,7 @@
 mod chrome;
 pub use chrome::{Chrome, title_bar_gestures};
 
-use bviz_ui_components::{KeyScope, declare_scopes};
+use bviz_ui_components::{Host, KeyScope, declare_scopes};
 use gpui::{
     App, Application, Bounds, Entity, KeyBinding, Pixels, Render, Result, Size, TitlebarOptions,
     Window, WindowBounds, WindowDecorations, WindowHandle, WindowOptions, actions, px,
@@ -50,14 +50,17 @@ pub fn application() -> Application {
 }
 
 /// gpui's web platform as `gpui_platform::application` builds it, logging and
-/// reporting panics to the browser console.
+/// reporting panics to the browser console, and leaving the end of the
+/// application to [`last_window_closed`].
 #[cfg(target_family = "wasm")]
 fn web_application() -> Application {
     gpui_web::init_logging();
     let allow_multi_threading = true;
     let platform = std::rc::Rc::new(gpui_web::WebPlatform::new(allow_multi_threading));
     let http_client = std::sync::Arc::new(platform.fetch_http_client());
-    Application::with_platform(platform).with_http_client(http_client)
+    Application::with_platform(platform)
+        .with_http_client(http_client)
+        .with_quit_mode(gpui::QuitMode::Explicit)
 }
 
 /// gpui's Linux platform is built for Wayland alone, and without a Wayland
@@ -75,31 +78,51 @@ fn exit_without_wayland() {
     std::process::exit(1);
 }
 
-/// Register fonts, the themes, global key bindings, and quit-on-last-window-close.
-/// Call once at startup before opening windows.
+/// Register fonts, the themes, global key bindings, and the end of the
+/// application with its last window. Call once at startup before opening
+/// windows.
 pub fn setup(cx: &mut App) {
     bviz_ui_assets::load_fonts(cx);
     bviz_ui_theme::init(cx).expect("the built-in themes load");
     declare_scopes(cx, [KEY_CONTEXT]);
-    cx.bind_keys(bindings());
+    cx.bind_keys(bindings(Host::CURRENT));
     bviz_ui_components::register_keys(cx);
     bviz_ui_components::place_tooltips(cx);
     cx.on_window_closed(|cx, _| {
         if cx.windows().is_empty() {
-            cx.quit();
+            last_window_closed(cx);
         }
     })
     .detach();
 }
 
-pub fn bindings() -> Vec<KeyBinding> {
+#[cfg(not(target_family = "wasm"))]
+fn last_window_closed(cx: &mut App) {
+    cx.quit();
+}
+
+/// A page cannot end the script running in it, so it is told the window is
+/// gone instead.
+#[cfg(target_family = "wasm")]
+fn last_window_closed(_: &mut App) {
+    bviz_ui_web::closed();
+}
+
+/// The window's bindings in an application running in `host`.
+pub fn bindings(host: Host) -> Vec<KeyBinding> {
     let window = Some(KEY_CONTEXT.id());
-    vec![
-        KeyBinding::new("secondary-q", Quit, None),
-        KeyBinding::new("secondary-shift-w", CloseWindow, None),
+    let mut bindings = match host {
+        Host::Desktop => vec![
+            KeyBinding::new("secondary-q", Quit, None),
+            KeyBinding::new("secondary-shift-w", CloseWindow, None),
+        ],
+        Host::Browser => vec![KeyBinding::new("secondary-k shift-w", CloseWindow, None)],
+    };
+    bindings.extend([
         KeyBinding::new("tab", Tab, window),
         KeyBinding::new("shift-tab", TabPrev, window),
-    ]
+    ]);
+    bindings
 }
 
 /// Open a decorated floating window of `window_size` whose root view comes from
@@ -153,9 +176,34 @@ mod tests {
     /// The action `keys` dispatch with focus in the innermost of `contexts`,
     /// under the window's bindings and a binding of tab in `Inner`.
     fn dispatched(keys: &str, contexts: &[&str]) -> Option<Box<dyn Action>> {
-        let mut bindings = bindings();
+        let mut bindings = bindings(Host::Desktop);
         bindings.push(KeyBinding::new("tab", Inner, Some("Inner")));
         keymap_probe::dispatched(bindings, keys, contexts)
+    }
+
+    #[test]
+    fn a_browser_closes_the_window_by_a_chord() {
+        let in_window = &[KEY_CONTEXT.id()];
+        let desktop = || bindings(Host::Desktop);
+        let browser = || bindings(Host::Browser);
+        assert!(is(
+            keymap_probe::dispatched(desktop(), "secondary-shift-w", in_window),
+            CloseWindow
+        ));
+        assert!(is(
+            keymap_probe::dispatched(desktop(), "secondary-q", in_window),
+            Quit
+        ));
+        assert!(is(
+            keymap_probe::dispatched(browser(), "secondary-k shift-w", in_window),
+            CloseWindow
+        ));
+        for keys in ["secondary-shift-w", "secondary-q"] {
+            assert!(
+                keymap_probe::dispatched(browser(), keys, in_window).is_none(),
+                "{keys}"
+            );
+        }
     }
 
     /// Tab cycles the focus wherever nothing inside the window binds it, and

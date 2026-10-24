@@ -1,0 +1,50 @@
+Tell the page when graphics are unavailable
+
+When neither WebGPU nor WebGL2 can be initialized, the platform never
+launches the application and only appends a line of text to the page, which a
+page that loads the application has no way to notice. Dispatching a
+gpui:graphicsunavailable event on the window, with the error as its message,
+lets such a page explain the failure in its own way.
+
+License: Apache-2.0 (Zed v1.24.3)
+
+diff --git a/crates/gpui_web/Cargo.toml b/crates/gpui_web/Cargo.toml
+--- a/crates/gpui_web/Cargo.toml
++++ b/crates/gpui_web/Cargo.toml
+@@ -55,6 +55,7 @@
+     "DomRect",
+     "DragEvent",
+     "Element",
++    "Event",
+     "EventTarget",
+     "File",
+     "FocusOptions",
+diff --git a/crates/gpui_web/src/platform.rs b/crates/gpui_web/src/platform.rs
+--- a/crates/gpui_web/src/platform.rs
++++ b/crates/gpui_web/src/platform.rs
+@@ -341,6 +341,7 @@
+                     window_lifecycle.set(WebWindowLifecycle::Unavailable);
+                     log::error!("Failed to initialize browser graphics: {error:#}");
+                     show_graphics_unavailable_message(&browser_window, &error);
++                    dispatch_graphics_unavailable(&browser_window, &error);
+                 }
+             }
+         });
+@@ -828,6 +829,17 @@
+     body.append_child(&message).ok();
+ }
+ 
++/// Tells the page, through a `gpui:graphicsunavailable` event on its window
++/// whose `message` is `error`, so that a page with a way of its own to explain
++/// the failure can take over.
++fn dispatch_graphics_unavailable(browser_window: &web_sys::Window, error: &anyhow::Error) {
++    let Ok(event) = web_sys::Event::new("gpui:graphicsunavailable") else {
++        return;
++    };
++    js_sys::Reflect::set(&event, &"message".into(), &format!("{error:#}").into()).ok();
++    browser_window.dispatch_event(&event).ok();
++}
++
+ fn set_body_cursor(browser_window: &web_sys::Window, css_cursor: &str) {
+     if let Some(document) = browser_window.document()
+         && let Some(body) = document.body()

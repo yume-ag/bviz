@@ -1,4 +1,4 @@
-"""The web build: compatibility with it, and Rust executables built for it."""
+"""The web build: compatibility with it, Rust executables built for it, and their bindings."""
 
 load("@rules_rs_rules_rust//rust:defs.bzl", "rust_clippy_aspect")
 
@@ -69,4 +69,41 @@ web_executable = rule(
         ),
     },
     doc = "The WebAssembly module of a Rust executable built for a web platform.",
+)
+
+def _web_bindgen_impl(ctx):
+    module = ctx.file.module
+    bindings = ctx.actions.declare_directory(ctx.label.name)
+    args = ctx.actions.args()
+    args.add("--target", "web")
+    args.add("--no-typescript")
+    args.add("--out-name", module.basename.removesuffix("." + module.extension))
+    args.add("--out-dir", bindings.path)
+    args.add(module)
+    ctx.actions.run(
+        executable = ctx.executable._wasm_bindgen,
+        arguments = [args],
+        inputs = [module],
+        outputs = [bindings],
+        mnemonic = "WasmBindgen",
+        progress_message = "Generating JavaScript bindings for %{label}",
+    )
+    return [DefaultInfo(files = depset([bindings]))]
+
+web_bindgen = rule(
+    implementation = _web_bindgen_impl,
+    attrs = {
+        "module": attr.label(
+            mandatory = True,
+            allow_single_file = [".wasm"],
+            doc = "The web_executable whose module to bind.",
+        ),
+        "_wasm_bindgen": attr.label(
+            default = "@crates//:wasm-bindgen-cli__wasm-bindgen",
+            executable = True,
+            cfg = "exec",
+        ),
+    },
+    doc = "A directory of a WebAssembly module as wasm-bindgen prepares it for a " +
+          "page to load, with the ES module that loads it, both named after the module.",
 )

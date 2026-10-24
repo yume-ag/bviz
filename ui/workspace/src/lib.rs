@@ -17,6 +17,7 @@ mod opener;
 mod pane;
 mod panel;
 mod panel_menu;
+#[cfg(not(target_family = "wasm"))]
 mod path_prompt;
 mod regions;
 #[cfg(test)]
@@ -37,7 +38,7 @@ pub use pane::{Pane, PaneEvent};
 pub(crate) use panel::DocumentOf;
 pub use panel::{
     AnyPanel, Document, Member, Panel, PanelEvent, PanelKind, Shared, Titled, ViewKind,
-    document_label, invocation_label,
+    document_label, invocation_label, named_label,
 };
 pub(crate) use regions::Regions;
 pub use regions::Role;
@@ -157,11 +158,25 @@ fn run(
         for register in panel_keys {
             register(cx);
         }
-        let window = bviz_ui_shell::open_window(&app_id, window_size, cx, |window, cx| {
+        let opening = bviz_ui_shell::open_window(&app_id, window_size, cx, |window, cx| {
             let opened = opened(window, cx);
             cx.new(|cx| Workspace::with_documents(app_id.clone(), opened, window, cx))
-        })
-        .unwrap();
+        });
+        #[cfg(not(target_family = "wasm"))]
+        let window = opening.unwrap();
+        #[cfg(target_family = "wasm")]
+        let Ok(window) = opening.inspect_err(|error| bviz_ui_web::failed(&format!("{error:#}")))
+        else {
+            return;
+        };
+        #[cfg(target_family = "wasm")]
+        if cx.has_global::<PathOpener>() {
+            window
+                .update(cx, |workspace, window, cx| {
+                    workspace.open_dropped_files(window, cx)
+                })
+                .ok();
+        }
         window
             .update(cx, |_, window, cx| arriving(cx.weak_entity(), window, cx))
             .unwrap();

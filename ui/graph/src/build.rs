@@ -4,6 +4,7 @@ use bviz_graph_layout::transition::Transitions;
 use bviz_graph_layout::{
     Anchor, Id, InputSet, Joint, LaidOut, Names, layout, quotient, streamed_proto,
 };
+use bviz_input::Named;
 use bviz_ui_graph_args::{GraphSource, Input, InputKind};
 use rustc_hash::FxHashSet;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -11,20 +12,22 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 /// Reads every input's streamed_proto file and merges them into one joint graph,
 /// before any group quotienting, returned with its transitive reduction. Cached
 /// so toggling a group needn't re-read or re-parse.
-pub(crate) fn build_graph(inputs: &[Input]) -> Result<(Joint, Graph), String> {
+pub(crate) fn build_graph(inputs: Vec<Input<Named>>) -> Result<(Joint, Graph), String> {
     let mut aq = None;
     let mut cq = None;
     let mut q = None;
-    for input in inputs {
-        let path = input.path.display();
-        let opened = bviz_input::Input::open(&input.path).map_err(|e| format!("{path}: {e}"))?;
+    for Input { kind, file } in inputs {
+        let name = file.name().into_owned();
+        let opened = (file.open())
+            .map_err(|(_, e)| format!("{name}: {e}"))?
+            .into_input();
         let size = opened.size();
         let stream = opened.into_reader();
         let unreadable = |e| match e {
-            ReadError::Io(e) => format!("{path}: {e}"),
-            e => undecodable(input, e),
+            ReadError::Io(e) => format!("{name}: {e}"),
+            e => undecodable(&name, kind, e),
         };
-        match input.kind {
+        match kind {
             InputKind::Aquery => {
                 aq = Some(
                     streamed_proto::read_action_graph_containers(stream, size)
@@ -47,20 +50,20 @@ pub(crate) fn build_graph(inputs: &[Input]) -> Result<(Joint, Graph), String> {
     Ok((joint, reduced))
 }
 
-/// Why `input` does not decode, worded for a reader who most often handed its
-/// flag some other file: another command's output, a format other than
-/// streamed_proto, or another tool's file altogether.
-fn undecodable(input: &Input, e: impl std::fmt::Display) -> String {
+/// Why the file `name` names, given as `kind`, does not decode, worded for a
+/// reader who most often handed its flag some other file: another command's
+/// output, a format other than streamed_proto, or another tool's file
+/// altogether.
+fn undecodable(name: &str, kind: InputKind, e: impl std::fmt::Display) -> String {
     format!(
-        "{} does not decode as the output of bazel {} --output=streamed_proto, the file --{} reads ({e})",
-        input.path.display(),
-        input.kind.command(),
-        input.kind.flag(),
+        "{name} does not decode as the output of bazel {} --output=streamed_proto, the file --{} reads ({e})",
+        kind.command(),
+        kind.flag(),
     )
 }
 
 /// The inputs `source` reads.
-pub(crate) fn loaded_inputs(source: &GraphSource) -> InputSet {
+pub(crate) fn loaded_inputs(source: &GraphSource<Named>) -> InputSet {
     let (first, rest) = source.first_and_rest();
     rest.iter().fold(input_of(first.kind).into(), |set, input| {
         set.with(input_of(input.kind))
@@ -177,6 +180,24 @@ mod tests {
     use bviz_graph_layout::{EdgeKind, Facets, Kind};
     use std::cmp::Ordering;
 
+    /// A query output held in memory, as a browser hands over a file, builds
+    /// a graph as the file at a path does.
+    #[test]
+    fn a_query_output_held_in_memory_builds_a_graph() {
+        /// A `bazel query --output=streamed_proto` stream of one rule, `//a`.
+        const QUERY_STREAM: &[u8] = &[9, 0x08, 1, 0x12, 5, 0x0a, 3, b'/', b'/', b'a'];
+        let file = Named::Memory {
+            name: "q.pb".into(),
+            bytes: QUERY_STREAM.to_vec(),
+        };
+        let input = Input {
+            kind: InputKind::Query,
+            file,
+        };
+        let (joint, _) = build_graph(vec![input]).expect("the stream builds a graph");
+        assert!(!joint.graph.nodes.is_empty());
+    }
+
     /// A file other than the streamed_proto output its flag reads is reported
     /// with the Bazel command that writes what the flag expects.
     #[test]
@@ -188,9 +209,9 @@ mod tests {
         for kind in [InputKind::Aquery, InputKind::Cquery, InputKind::Query] {
             let input = Input {
                 kind,
-                path: path.clone(),
+                file: path.clone().into(),
             };
-            let Err(why) = build_graph(&[input]) else {
+            let Err(why) = build_graph(vec![input]) else {
                 panic!("a profile reads as no {kind:?} output");
             };
             let command = format!("bazel {} --output=streamed_proto", kind.command());

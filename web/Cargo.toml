@@ -1,0 +1,17 @@
+[package]
+name = "bviz_web_serve"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "bviz_web_serve"
+path = "src/serve.rs"
+
+[dependencies]
+clap = { workspace = true }
+percent-encoding = { workspace = true }
+tiny_http = { workspace = true }
+wasm-bindgen-cli = { workspace = true }

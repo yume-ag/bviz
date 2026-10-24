@@ -12,6 +12,7 @@ mod dropdown;
 mod find_keys;
 pub mod gesture;
 mod hint;
+mod host;
 mod hover_card;
 mod key_scope;
 pub mod keymap_probe;
@@ -48,6 +49,7 @@ pub use drag::{DragEnd, track_drag};
 pub use dropdown::{Dropdown, DropdownEvent};
 pub use find_keys::find_key_bindings;
 pub use hint::Hint;
+pub use host::Host;
 pub use hover_card::{HoverCard, ShownCard, defer_hover_card, hover_card_canvas};
 pub use key_scope::{KeyScope, Nesting, UNSCOPED_LABEL, declare_scopes, declared_scopes};
 pub use keys::{

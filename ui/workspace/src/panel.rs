@@ -1,4 +1,5 @@
 use crate::{DocumentId, Documents, Pane, Regions, Role, ViewSpec};
+use bviz_input::Named;
 use bviz_invocation::{InvocationId, Session};
 use bviz_ui_components::KeyScope;
 use bviz_ui_components::gesture::GestureRow;
@@ -20,6 +21,12 @@ pub fn document_label(path: &Path) -> SharedString {
         .to_string_lossy()
         .into_owned()
         .into()
+}
+
+/// How a file named to bviz reads as a document's label, as its name would as
+/// a path.
+pub fn named_label(named: &Named) -> SharedString {
+    document_label(Path::new(named.name().as_ref()))
 }
 
 /// Which of a document's views a panel shows — its timeline, its flame graph,

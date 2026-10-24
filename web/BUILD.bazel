@@ -1,0 +1,69 @@
+load("@bazel_lib//lib:copy_to_directory.bzl", "copy_to_directory")
+load("@bazel_lib//lib:run_binary.bzl", "run_binary")
+load("@rules_rs//rs:rust_binary.bzl", "rust_binary")
+load("@rules_rs//rs:rust_test.bzl", "rust_test")
+load("//platforms:web.bzl", "NOT_WEB", "web_bindgen")
+
+rust_binary(
+    name = "serve",
+    srcs = ["src/serve.rs"],
+    crate_name = "bviz_web_serve",
+    data = [":site"],
+    rustc_env = {"SITE": "$(rlocationpath :site)"},
+    target_compatible_with = NOT_WEB,
+    deps = [
+        "@crates//:clap",
+        "@crates//:percent-encoding",
+        "@crates//:tiny_http",
+        "@rules_rs_rules_rust//rust/runfiles",
+    ],
+)
+
+rust_test(
+    name = "serve_test",
+    size = "small",
+    crate = ":serve",
+)
+
+web_bindgen(
+    name = "bindings",
+    module = "//bviz:bviz_wasm32_web",
+)
+
+run_binary(
+    name = "probes",
+    srcs = [
+        "probe/exceptions.wat",
+        "probe/simd.wat",
+    ],
+    outs = ["probes.js"],
+    args = [
+        "$(execpath probes.js)",
+        "EXCEPTIONS_PROBE=$(execpath probe/exceptions.wat)",
+        "SIMD_PROBE=$(execpath probe/simd.wat)",
+    ],
+    tool = "//tools/wat_js",
+)
+
+copy_to_directory(
+    name = "site",
+    srcs = [
+        "bootstrap.js",
+        "favicon.svg",
+        "help.html",
+        "help.js",
+        "index.html",
+        "style.css",
+        ":bindings",
+        ":probes",
+        "//:LICENSE",
+        "//:NOTICE",
+        "//bviz:third_party_notices_web",
+    ],
+    replace_prefixes = {
+        "bindings/": "",
+        "LICENSE": "LICENSE.txt",
+        "NOTICE": "NOTICE.txt",
+        "bviz/third_party_notices.txt": "THIRD_PARTY_NOTICES.txt",
+    },
+)

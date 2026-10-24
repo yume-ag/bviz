@@ -27,3 +27,7 @@ bviz_ui_graph_args = { path = "../ui/graph/args" }
 bviz_ui_session = { path = "../ui/session" }
 bviz_ui_trace = { path = "../ui/trace" }
 bviz_ui_workspace = { path = "../ui/workspace" }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+bviz_switches = { workspace = true }
+bviz_ui_web = { path = "../ui/web" }

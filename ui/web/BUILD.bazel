@@ -1,0 +1,23 @@
+load("@rules_rs//rs:rust_library.bzl", "rust_library")
+
+rust_library(
+    name = "web",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "bviz_ui_web",
+    visibility = [
+        "//bviz:__pkg__",
+        "//ui/shell:__pkg__",
+        "//ui/workspace:__pkg__",
+    ],
+    deps = select({
+        "@platforms//cpu:wasm32": [
+            "//util/input",
+            "@crates//:console_error_panic_hook",
+            "@crates//:js-sys",
+            "@crates//:wasm-bindgen",
+            "@crates//:wasm-bindgen-futures",
+            "@crates//:web-sys",
+        ],
+        "//conditions:default": [],
+    }),
+)

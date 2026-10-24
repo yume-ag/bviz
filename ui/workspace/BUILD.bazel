@@ -19,10 +19,14 @@ rust_library(
         "//ui/playback",
         "//ui/shell",
         "//ui/theme",
+        "//util/input",
         "@crates//:clap",
         "@crates//:gpui",
         "@crates//:shlex",
-    ],
+    ] + select({
+        "@platforms//cpu:wasm32": ["//ui/web"],
+        "//conditions:default": [],
+    }),
 )
 
 rust_test(

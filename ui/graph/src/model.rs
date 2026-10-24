@@ -25,6 +25,7 @@ use bviz_graph_layout::select;
 use bviz_graph_layout::select::labels::LabelIndex;
 use bviz_graph_layout::target_pattern::TargetIndex;
 use bviz_graph_layout::{Capabilities, Facets, Id, InputSet, Joint, MapLayout, Names, Provenance};
+use bviz_input::Named;
 use bviz_invocation::{ActionGraph, Chosen, Configurations, Revision, Session};
 use bviz_ui_components::{Pending, load_in_background};
 use bviz_ui_graph_args::GraphSource;
@@ -480,7 +481,7 @@ pub(crate) struct Read {
 }
 
 /// Reads `source` and builds the graph, and starts placing its map.
-pub(crate) fn build(source: GraphSource) -> Result<Read, String> {
+pub(crate) fn build(source: GraphSource<Named>) -> Result<Read, String> {
     let inputs = loaded_inputs(&source);
     let (
         Joint {
@@ -491,7 +492,7 @@ pub(crate) fn build(source: GraphSource) -> Result<Read, String> {
             provenance,
         },
         reduced_base,
-    ) = build_graph(&source.inputs())?;
+    ) = build_graph(source.inputs())?;
     // The map derives each of its views against these, so it holds a share in
     // them rather than a copy.
     let (base, reduced_base) = (Arc::new(graph), Arc::new(reduced_base));

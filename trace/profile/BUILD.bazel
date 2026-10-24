@@ -16,6 +16,7 @@ rust_library(
         "//invocation",
         "//util/input",
         "//util/parallel",
+        "//util/switches",
         "//util/time",
         "@crates//:crossbeam-channel",
         "@crates//:crossbeam-utils",

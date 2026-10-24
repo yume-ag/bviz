@@ -19,6 +19,7 @@ bviz_input = { workspace = true }
 bviz_invocation = { workspace = true }
 bviz_label = { workspace = true }
 bviz_parallel = { workspace = true }
+bviz_switches = { workspace = true }
 bviz_time = { workspace = true }
 bviz_ui_assets = { path = "../assets" }
 bviz_ui_components = { path = "../components" }
@@ -29,6 +30,7 @@ bviz_ui_theme = { path = "../theme" }
 bviz_ui_workspace = { path = "../workspace" }
 fixedbitset = { workspace = true }
 lyon_tessellation = { workspace = true }
+cfg-if = "1"
 nucleo = { workspace = true }
 rustc-hash = { workspace = true }
 

@@ -2,33 +2,32 @@
 //! kind, and for a file carrying one, the invocation that wrote it.
 
 use crate::group::{File, Kind};
-use bviz_input::Input;
+use bviz_input::{Input, Named, Opened};
 use bviz_invocation::InvocationId;
-use bviz_ui_graph_args::{GraphArgs, GraphSource, Input as GraphInput, InputKind};
+use bviz_ui_graph_args::{GraphFiles, GraphSource, Input as GraphInput, InputKind};
 use std::io;
-use std::path::PathBuf;
 
 /// The files named together, by what they were found to hold.
 pub(crate) struct Classified {
     /// The query outputs merging into one graph, the first named of each kind.
-    pub(crate) graph: GraphArgs,
+    pub(crate) graph: GraphFiles<Named>,
     /// Each query output of a kind `graph` holds a file of, a graph of its own.
-    pub(crate) further_graphs: Vec<GraphSource>,
+    pub(crate) further_graphs: Vec<GraphSource<Named>>,
     /// The files of a [`Kind`], in the order they were named.
     pub(crate) files: Vec<File<Input>>,
     /// The files whose head matches no kind bviz reads.
-    pub(crate) unknown: Vec<PathBuf>,
-    pub(crate) unreadable: Vec<(PathBuf, io::Error)>,
+    pub(crate) unknown: Vec<Named>,
+    pub(crate) unreadable: Vec<(Named, io::Error)>,
 }
 
-/// Reads the head of each of `paths`, once, to tell what it holds. Blocks on
+/// Reads the head of each of `files`, once, to tell what it holds. Blocks on
 /// the file system, so it runs off the UI thread.
-pub(crate) fn classify(paths: Vec<PathBuf>) -> Classified {
-    let mut classified = Classified::with_capacity(paths.len());
-    for path in paths {
-        if let Some((path, input)) = classified.open(path) {
-            let kind = input.head().and_then(bviz_sniff::kind_of);
-            classified.sort(path, input, holds(kind));
+pub(crate) fn classify(files: Vec<Named>) -> Classified {
+    let mut classified = Classified::with_capacity(files.len());
+    for named in files {
+        if let Some(opened) = classified.open(named) {
+            let kind = opened.head().and_then(bviz_sniff::kind_of);
+            classified.sort(opened, holds(kind));
         }
     }
     classified
@@ -36,11 +35,11 @@ pub(crate) fn classify(paths: Vec<PathBuf>) -> Classified {
 
 /// Opens each of `chosen` as the kind chosen for it, whatever its head
 /// tells. Blocks on the file system, so it runs off the UI thread.
-pub(crate) fn classify_as(chosen: Vec<(PathBuf, bviz_sniff::Kind)>) -> Classified {
+pub(crate) fn classify_as(chosen: Vec<(Named, bviz_sniff::Kind)>) -> Classified {
     let mut classified = Classified::with_capacity(chosen.len());
-    for (path, kind) in chosen {
-        if let Some((path, input)) = classified.open(path) {
-            classified.sort(path, input, holds(Some(kind)));
+    for (named, kind) in chosen {
+        if let Some(opened) = classified.open(named) {
+            classified.sort(opened, holds(Some(kind)));
         }
     }
     classified
@@ -68,40 +67,46 @@ pub(crate) const KINDS: [(bviz_sniff::Kind, &str); 6] = {
 };
 
 impl Classified {
-    fn with_capacity(paths: usize) -> Self {
+    fn with_capacity(files: usize) -> Self {
         Self {
-            graph: GraphArgs::default(),
+            graph: GraphFiles::default(),
             further_graphs: Vec::new(),
-            files: Vec::with_capacity(paths),
+            files: Vec::with_capacity(files),
             unknown: Vec::new(),
             unreadable: Vec::new(),
         }
     }
 
-    /// `path` opened, or recorded as unreadable where it does not open.
-    fn open(&mut self, path: PathBuf) -> Option<(PathBuf, Input)> {
-        match Input::open(&path) {
-            Ok(input) => Some((path, input)),
-            Err(error) => {
-                self.unreadable.push((path, error));
+    /// `named` opened, or recorded as unreadable where it does not open.
+    fn open(&mut self, named: Named) -> Option<Opened> {
+        match named.open() {
+            Ok(opened) => Some(opened),
+            Err(unopened) => {
+                self.unreadable.push(unopened);
                 None
             }
         }
     }
 
-    /// Files `input`, read from `path`, by what it `holds`.
-    fn sort(&mut self, path: PathBuf, input: Input, holds: Holds) {
+    /// Files `opened` by what it `holds`.
+    fn sort(&mut self, opened: Opened, holds: Holds) {
         match holds {
-            Holds::File(kind, probe) => self.files.push(File {
-                kind,
-                invocation: probe(&input),
-                file: input,
-            }),
-            Holds::Graph(kind) => match self.graph.file_mut(kind) {
-                slot @ None => *slot = Some(path),
-                Some(_) => (self.further_graphs).push(GraphInput { kind, path }.into()),
-            },
-            Holds::Unknown => self.unknown.push(path),
+            Holds::File(kind, probe) => {
+                let input = opened.into_input();
+                self.files.push(File {
+                    kind,
+                    invocation: probe(&input),
+                    file: input,
+                });
+            }
+            Holds::Graph(kind) => {
+                let named = opened.into_named();
+                match self.graph.file_mut(kind) {
+                    slot @ None => *slot = Some(named),
+                    Some(_) => (self.further_graphs).push(GraphInput { kind, file: named }.into()),
+                }
+            }
+            Holds::Unknown => self.unknown.push(opened.into_named()),
         }
     }
 }
@@ -131,7 +136,7 @@ fn holds(kind: Option<bviz_sniff::Kind>) -> Holds {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
+    use std::path::PathBuf;
 
     fn scratch() -> PathBuf {
         std::env::var_os("TEST_TMPDIR")
@@ -150,7 +155,7 @@ mod tests {
 
     #[test]
     fn a_build_event_stream_is_told_with_the_invocation_it_names() {
-        let classified = classify(vec![sample_bep()]);
+        let classified = classify(vec![sample_bep().into()]);
         let [file] = &classified.files[..] else {
             panic!("one file of a kind");
         };
@@ -165,15 +170,30 @@ mod tests {
         let unknown = dir.join("notes.txt");
         std::fs::write(&unknown, "not a build output").unwrap();
         let missing = dir.join("missing.bep");
-        let classified = classify(vec![unknown.clone(), missing.clone()]);
+        let classified = classify(vec![unknown.clone().into(), missing.clone().into()]);
         assert!(classified.files.is_empty() && classified.graph.source().is_none());
-        assert_eq!(classified.unknown, [unknown]);
-        let unreadable: Vec<&Path> = classified
-            .unreadable
-            .iter()
-            .map(|(path, _)| path.as_path())
+        let unknown_names: Vec<_> = classified.unknown.iter().map(Named::name).collect();
+        assert_eq!(unknown_names, [unknown.to_string_lossy()]);
+        let unreadable: Vec<_> = (classified.unreadable.iter())
+            .map(|(named, _)| named.name())
             .collect();
-        assert_eq!(unreadable, [missing.as_path()]);
+        assert_eq!(unreadable, [missing.to_string_lossy()]);
+    }
+
+    /// A file held in memory that is not opened is kept, bytes and all, to be
+    /// opened as the kind chosen for it.
+    #[test]
+    fn a_file_in_memory_of_no_kind_is_kept_whole() {
+        const NOTES: &[u8] = b"not a build output";
+        let notes = Named::Memory {
+            name: "notes.txt".into(),
+            bytes: NOTES.to_vec(),
+        };
+        let classified = classify(vec![notes]);
+        let [Named::Memory { name, bytes }] = &classified.unknown[..] else {
+            panic!("one file in memory of no kind");
+        };
+        assert_eq!((name.as_str(), &bytes[..]), ("notes.txt", NOTES));
     }
 
     /// A file chosen as a kind is opened as one, whatever its head tells.
@@ -181,7 +201,7 @@ mod tests {
     fn a_file_chosen_as_a_kind_opens_as_that_kind() {
         let unknown = scratch().join("chosen.txt");
         std::fs::write(&unknown, "not a build output").unwrap();
-        let classified = classify_as(vec![(unknown, bviz_sniff::Kind::Profile)]);
+        let classified = classify_as(vec![(unknown.into(), bviz_sniff::Kind::Profile)]);
         let [file] = &classified.files[..] else {
             panic!("one file of a kind");
         };
@@ -203,19 +223,18 @@ mod tests {
         for path in [&first, &second] {
             std::fs::write(path, QUERY_STREAM).unwrap();
         }
-        let classified = classify(vec![first.clone(), second.clone()]);
+        let classified = classify(vec![first.clone().into(), second.clone().into()]);
         let query = |path: &PathBuf| GraphInput {
             kind: InputKind::Query,
-            path: path.clone(),
+            file: path.to_string_lossy().into_owned(),
         };
+        let names = |graph: GraphSource<Named>| graph.map(|named| named.name().into_owned());
         let graph = classified
             .graph
             .source()
             .expect("a query output names a graph");
-        assert_eq!(graph.inputs(), [query(&first)]);
-        assert_eq!(
-            classified.further_graphs,
-            [GraphSource::from(query(&second))]
-        );
+        assert_eq!(names(graph).inputs(), [query(&first)]);
+        let further: Vec<_> = classified.further_graphs.into_iter().map(names).collect();
+        assert_eq!(further, [GraphSource::from(query(&second))]);
     }
 }

@@ -1,0 +1,32 @@
+Style the safe-area probes through the CSSOM
+
+The probes that measure the safe-area insets are styled by setting their style
+attribute, which a page whose content security policy forbids inline styles
+refuses, logging an error for each probe and leaving it unstyled. Setting the
+same declarations through the element's CSSOM style is not inline styling, so
+such a policy lets it through.
+
+License: Apache-2.0 (Zed v1.24.3)
+
+diff --git a/crates/gpui_web/src/viewport.rs b/crates/gpui_web/src/viewport.rs
+--- a/crates/gpui_web/src/viewport.rs
++++ b/crates/gpui_web/src/viewport.rs
+@@ -113,14 +113,9 @@
+         .map_err(|error| anyhow::anyhow!("Failed to create safe-area probe: {error:?}"))?
+         .dyn_into::<web_sys::HtmlElement>()
+         .map_err(|error| anyhow::anyhow!("Invalid safe-area probe element: {error:?}"))?;
+-    probe
+-        .set_attribute(
+-            "style",
+-            &format!(
+-                "position:fixed;left:0;top:0;width:0;padding:0;border:0;visibility:hidden;\
+-                 pointer-events:none;height:env(safe-area-inset-{edge},0px)"
+-            ),
+-        )
+-        .map_err(|error| anyhow::anyhow!("Failed to style safe-area probe: {error:?}"))?;
++    probe.style().set_css_text(&format!(
++        "position:fixed;left:0;top:0;width:0;padding:0;border:0;visibility:hidden;\
++         pointer-events:none;height:env(safe-area-inset-{edge},0px)"
++    ));
+     Ok(probe)
+ }

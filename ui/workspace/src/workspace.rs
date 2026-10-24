@@ -5,6 +5,7 @@ use crate::gestures::{CHROME_GESTURES, ChromeIntent, chrome_gestures};
 use crate::pane::Handover;
 use crate::panel::keys_focus;
 use crate::panel_menu::{Deed, Standing};
+#[cfg(not(target_family = "wasm"))]
 use crate::path_prompt::{PathPrompt, PathPromptEvent};
 use crate::regions::{Placement, placement};
 use crate::{
@@ -12,10 +13,11 @@ use crate::{
     Joinable, Layout, Maximize, Member, Pane, PaneEvent, PathOpener, Regions, Removal, Role,
     Shared, Side, Split, SplitSide, WindowsChanged, documents, drag_icon, drop, panel_menu,
 };
+use bviz_input::Named;
 use bviz_ui_components::dialog;
 use bviz_ui_components::gesture::Pointer;
 use bviz_ui_components::{
-    Button, Divider, DragEnd, GestureGroup, KeyScope, KeyStyle, KeysHelp, Menu, MenuEvent,
+    Button, Divider, DragEnd, GestureGroup, Host, KeyScope, KeyStyle, KeysHelp, Menu, MenuEvent,
     action_label, declare_scopes, declared_scopes, keys_in_effect, note_strip, overlay_canvas,
     text_input, track_drag,
 };
@@ -28,9 +30,9 @@ use bviz_ui_theme::ThemeColors;
 use gpui::{
     Action, AnyElement, AnyView, AnyWindowHandle, App, Axis, Bounds, Canvas, Div, ElementId,
     Entity, EntityId, EventEmitter, ExternalPaths, FocusHandle, Focusable, IconScale, IntoElement,
-    KeyBinding, KeyContext, MouseDownEvent, PathPromptOptions, Pixels, PlatformDragEvent, Point,
-    Rems, Render, SharedString, Size, Stateful, Subscription, WeakEntity, Window, actions,
-    deferred, div, point, prelude::*, px,
+    KeyBinding, KeyContext, MouseDownEvent, Pixels, PlatformDragEvent, Point, Rems, Render,
+    SharedString, Size, Stateful, Subscription, WeakEntity, Window, actions, deferred, div, point,
+    prelude::*, px,
 };
 use std::collections::{HashMap, VecDeque};
 use std::iter;
@@ -150,6 +152,7 @@ const MARK_FILL: f32 = 0.3;
 const MENU_LAYER: usize = 1;
 
 /// What a file chooser's control choosing the files says it does.
+#[cfg(not(target_family = "wasm"))]
 const OPEN: &str = "Open";
 
 /// How an empty window says that files dropped on it open.
@@ -181,10 +184,10 @@ pub(crate) fn register_keys(cx: &mut App, opens_files: bool) {
             documents_menu::KEY_CONTEXT,
         ],
     );
-    cx.bind_keys(bindings(opens_files));
+    cx.bind_keys(bindings(opens_files, Host::CURRENT));
 }
 
-fn bindings(opens_files: bool) -> Vec<KeyBinding> {
+fn bindings(opens_files: bool, host: Host) -> Vec<KeyBinding> {
     let workspace = Some(KEY_CONTEXT.id());
     let unless_typing = text_input::unless_typing(KEY_CONTEXT);
     let unless_typing = Some(unless_typing.as_str());
@@ -195,8 +198,19 @@ fn bindings(opens_files: bool) -> Vec<KeyBinding> {
         KeyBinding::new("f1", ShowKeysAndGestures, workspace),
         KeyBinding::new("ctrl-tab", NextTab, workspace),
         KeyBinding::new("ctrl-shift-tab", PreviousTab, workspace),
-        KeyBinding::new("secondary-w", ClosePanel, workspace),
-        KeyBinding::new("secondary-shift-n", DetachPanel, workspace),
+    ];
+    match host {
+        Host::Desktop => bindings.push(KeyBinding::new("secondary-w", ClosePanel, workspace)),
+        Host::Browser => bindings.extend([
+            KeyBinding::new("secondary-k tab", NextTab, workspace),
+            KeyBinding::new("secondary-k shift-tab", PreviousTab, workspace),
+            KeyBinding::new("secondary-k w", ClosePanel, workspace),
+        ]),
+    }
+    if host.opens_windows() {
+        bindings.push(KeyBinding::new("secondary-shift-n", DetachPanel, workspace));
+    }
+    bindings.extend([
         KeyBinding::new("secondary-shift-d", ToggleDocuments, workspace),
         KeyBinding::new(
             "escape",
@@ -225,7 +239,7 @@ fn bindings(opens_files: bool) -> Vec<KeyBinding> {
         KeyBinding::new("end", SeekEnd, playback),
         KeyBinding::new("]", SpeedUp, playback),
         KeyBinding::new("[", SpeedDown, playback),
-    ];
+    ]);
     if opens_files {
         bindings.push(KeyBinding::new("secondary-o", OpenFiles, workspace));
         bindings.push(KeyBinding::new("secondary-alt-w", CloseDocument, workspace));
@@ -788,11 +802,12 @@ impl Workspace {
     /// Asks which files to open, through the platform's file chooser or, where
     /// the platform offers none, the window's own dialog, and hands them to the
     /// app's [`PathOpener`].
+    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn open_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !cx.has_global::<PathOpener>() {
             return;
         }
-        let chosen = cx.prompt_for_paths(PathPromptOptions {
+        let chosen = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: true,
             directories: false,
             multiple: true,
@@ -810,7 +825,67 @@ impl Workspace {
         .detach();
     }
 
+    /// Asks which files to open through the browser's file chooser, and hands
+    /// them, once read, to the app's [`PathOpener`].
+    #[cfg(target_family = "wasm")]
+    pub(crate) fn open_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !cx.has_global::<PathOpener>() {
+            return;
+        }
+        let chosen = bviz_ui_web::choose_files();
+        cx.spawn_in(window, async move |this, cx| {
+            let read = bviz_ui_web::read_files(chosen.await).await;
+            this.update_in(cx, |workspace, window, cx| {
+                workspace.open_read(read, window, cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Opens the files dropped on the page into this window, as long as it
+    /// stands.
+    #[cfg(target_family = "wasm")]
+    pub(crate) fn open_dropped_files(&self, window: &Window, cx: &mut Context<Self>) {
+        let this = cx.weak_entity();
+        let async_cx = window.to_async(cx);
+        bviz_ui_web::on_files_dropped(move |files| {
+            let this = this.clone();
+            async_cx
+                .spawn(async move |cx| {
+                    let read = bviz_ui_web::read_files(files).await;
+                    this.update_in(cx, |workspace, window, cx| {
+                        workspace.open_read(read, window, cx)
+                    })
+                    .ok();
+                })
+                .detach();
+        });
+    }
+
+    /// Hands the files `read` holds to the app's [`PathOpener`], telling the
+    /// user of each the browser handed over unread.
+    #[cfg(target_family = "wasm")]
+    fn open_read(
+        &mut self,
+        read: Vec<Result<Named, bviz_ui_web::Unread>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut files = Vec::with_capacity(read.len());
+        for file in read {
+            match file {
+                Ok(named) => files.push(named),
+                Err(unread) => {
+                    self.tell(format!("Cannot open {}: {}", unread.name, unread.error), cx)
+                }
+            }
+        }
+        self.open_named(files, window, cx);
+    }
+
     /// Opens the window's own dialog asking for the paths of files to open.
+    #[cfg(not(target_family = "wasm"))]
     fn ask_for_paths(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let prompt = cx.new(PathPrompt::new);
         self.ask(
@@ -861,13 +936,20 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Hands `paths` to the app's [`PathOpener`] to open into this window.
+    /// Hands the files at `paths` to the app's [`PathOpener`] to open into
+    /// this window.
     fn open_paths(&mut self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
-        if paths.is_empty() {
+        let files = paths.into_iter().map(Named::Path).collect();
+        self.open_named(files, window, cx);
+    }
+
+    /// Hands `files` to the app's [`PathOpener`] to open into this window.
+    fn open_named(&mut self, files: Vec<Named>, window: &mut Window, cx: &mut Context<Self>) {
+        if files.is_empty() {
             return;
         }
         if let Some(opener) = cx.try_global::<PathOpener>().cloned() {
-            opener.open(paths, cx.weak_entity(), window, cx);
+            opener.open(files, cx.weak_entity(), window, cx);
         }
     }
 
@@ -1219,7 +1301,7 @@ impl Workspace {
             return false;
         };
         let alone = from.is_some_and(|pane| pane.read(cx).tab_count() == 1);
-        re_homes(to, from, alone, frame.arrangement.layout())
+        re_homes(to, from, alone, frame.arrangement.layout(), Host::CURRENT)
     }
 
     /// Takes `panel` out of `from` for a caller re-homing it, and takes `from`
@@ -2408,12 +2490,14 @@ fn framed_panes(
 /// that one stands — `from` itself, or an edge of the window `from` already
 /// spans — is refused: the move would take that pane out and build an equivalent
 /// one at an even share of its split, putting the dividers around it back where
-/// a drag had moved them from.
+/// a drag had moved them from. A window of its own is a destination only where
+/// `host` opens windows.
 pub(crate) fn re_homes<P: Clone + PartialEq>(
     to: &Destination<P>,
     from: Option<&P>,
     alone: bool,
     layout: &Layout<P>,
+    host: Host,
 ) -> bool {
     match to {
         Destination::Tab { pane, .. } | Destination::Beside { pane, .. } => {
@@ -2422,7 +2506,7 @@ pub(crate) fn re_homes<P: Clone + PartialEq>(
         Destination::WindowEdge(side) => {
             !(alone && from.is_some_and(|from| layout.spans_edge(from, *side)))
         }
-        Destination::NewWindow => true,
+        Destination::NewWindow => host.opens_windows(),
     }
 }
 
@@ -2509,9 +2593,18 @@ fn viewport(window: &Window) -> Bounds<Pixels> {
 /// among them — could make anything of, so the type names the process as well
 /// as the application: a window of another bviz then finds nothing it takes on
 /// offer, and refuses the drop rather than accepting one it cannot carry out.
+/// The browser exposes no process id, so a page's type names the application
+/// alone.
 fn panel_mime() -> &'static str {
     static MIME: OnceLock<String> = OnceLock::new();
-    MIME.get_or_init(|| format!("application/x-bviz-panel;pid={}", std::process::id()))
+    MIME.get_or_init(|| {
+        let application = "application/x-bviz-panel";
+        if cfg!(target_family = "wasm") {
+            application.to_string()
+        } else {
+            format!("{application};pid={}", std::process::id())
+        }
+    })
 }
 
 /// Whether a press carried from `pressed` to `at` has travelled far enough to be
@@ -3477,10 +3570,39 @@ mod tests {
             bounds,
             &[lone],
             Some(&"lone"),
-            |to| re_homes(to, Some(&"lone"), true, &layout),
+            |to| re_homes(to, Some(&"lone"), true, &layout, Host::Desktop),
         );
         assert_eq!(to, None);
         assert_eq!(joined_pane(to.as_ref()), None);
+    }
+
+    /// A drag past the tear-out margin asks for a window of its own on the
+    /// desktop, and marks nowhere in a browser, which opens none.
+    #[test]
+    fn a_drag_past_the_tear_out_margin_asks_for_a_window_only_where_one_opens() {
+        let bounds = at(0.0, 40.0, 1200.0, 720.0);
+        let pane = PaneGeometry {
+            pane: "pane",
+            bounds,
+            tab_count: 2,
+            band: Some(Band {
+                bounds: at(0.0, 40.0, 1200.0, 24.0),
+                tabs: vec![at(0.0, 40.0, 120.0, 23.0), at(120.0, 40.0, 120.0, 23.0)],
+            }),
+        };
+        let layout = Layout::Pane("pane");
+        let dropped = |host| {
+            drop::dropped_at(
+                point(px(-40.), px(300.)),
+                at(0.0, 0.0, 1200.0, 800.0),
+                bounds,
+                std::slice::from_ref(&pane),
+                Some(&"pane"),
+                |to| re_homes(to, Some(&"pane"), false, &layout, host),
+            )
+        };
+        assert_eq!(dropped(Host::Desktop), Some(Destination::NewWindow));
+        assert_eq!(dropped(Host::Browser), None);
     }
 
     /// A row of a menu names the window a move would put the panel in, so two
@@ -3501,10 +3623,41 @@ mod tests {
     #[test]
     fn a_window_closes_the_document_of_the_panel_with_focus_only_where_the_app_opens_files() {
         assert!(is(
-            dispatched(bindings(true), "secondary-alt-w", &in_a_panel()),
+            dispatched(
+                bindings(true, Host::Desktop),
+                "secondary-alt-w",
+                &in_a_panel()
+            ),
             CloseDocument
         ));
-        assert!(dispatched(bindings(false), "secondary-alt-w", &in_a_panel()).is_none());
+        assert!(
+            dispatched(
+                bindings(false, Host::Desktop),
+                "secondary-alt-w",
+                &in_a_panel()
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn a_window_moves_its_panel_to_a_new_window_only_where_the_host_opens_windows() {
+        assert!(is(
+            dispatched(
+                bindings(true, Host::Desktop),
+                "secondary-shift-n",
+                &in_a_panel()
+            ),
+            DetachPanel
+        ));
+        assert!(
+            dispatched(
+                bindings(true, Host::Browser),
+                "secondary-shift-n",
+                &in_a_panel()
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -3524,10 +3677,10 @@ mod tests {
     #[test]
     fn a_window_binds_its_open_files_key_only_where_the_app_opens_files() {
         assert!(is(
-            dispatched(bindings(true), "secondary-o", &in_a_panel()),
+            dispatched(bindings(true, Host::Desktop), "secondary-o", &in_a_panel()),
             OpenFiles
         ));
-        assert!(dispatched(bindings(false), "secondary-o", &in_a_panel()).is_none());
+        assert!(dispatched(bindings(false, Host::Desktop), "secondary-o", &in_a_panel()).is_none());
     }
 
     /// The path dialog is drawn outside the workspace's key context, so with
@@ -3539,23 +3692,48 @@ mod tests {
             bviz_ui_components::text_input::KEY_CONTEXT.id(),
         ];
         assert!(is(
-            dispatched(bindings(true), "secondary-w", &in_a_panel()),
+            dispatched(bindings(true, Host::Desktop), "secondary-w", &in_a_panel()),
             ClosePanel
         ));
-        for keys in [
-            "secondary-w",
-            "secondary-alt-w",
-            "secondary-o",
-            "ctrl-tab",
-            "secondary-shift-n",
-        ] {
-            let mut window_keys = bindings(true);
-            window_keys.extend(bviz_ui_shell::bindings());
-            assert!(
-                dispatched(window_keys, keys, &in_the_dialog).is_none(),
-                "{keys}"
-            );
+        for host in [Host::Desktop, Host::Browser] {
+            for keys in [
+                "secondary-w",
+                "secondary-alt-w",
+                "secondary-o",
+                "ctrl-tab",
+                "secondary-shift-n",
+                "secondary-k w",
+                "secondary-k tab",
+            ] {
+                let mut window_keys = bindings(true, host);
+                window_keys.extend(bviz_ui_shell::bindings(host));
+                assert!(
+                    dispatched(window_keys, keys, &in_the_dialog).is_none(),
+                    "{host:?} {keys}"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn a_browser_closes_and_cycles_panels_by_chords() {
+        let browser = || bindings(true, Host::Browser);
+        assert!(dispatched(browser(), "secondary-w", &in_a_panel()).is_none());
+        assert!(is(
+            dispatched(browser(), "secondary-k w", &in_a_panel()),
+            ClosePanel
+        ));
+        assert!(is(
+            dispatched(browser(), "secondary-k tab", &in_a_panel()),
+            NextTab
+        ));
+        assert!(is(
+            dispatched(browser(), "secondary-k shift-tab", &in_a_panel()),
+            PreviousTab
+        ));
+        let desktop = || bindings(true, Host::Desktop);
+        assert!(dispatched(desktop(), "secondary-k w", &in_a_panel()).is_none());
+        assert!(dispatched(desktop(), "secondary-k tab", &in_a_panel()).is_none());
     }
 
     /// The keys help of a panel the last frame's path to focus left out still
@@ -3563,7 +3741,7 @@ mod tests {
     #[test]
     fn the_stack_around_a_panel_reaches_the_window_frames_keys() {
         const PANEL: KeyScope = KeyScope::new("Panel", "Panel");
-        let keymap = gpui::Keymap::new(bviz_ui_shell::bindings());
+        let keymap = gpui::Keymap::new(bviz_ui_shell::bindings(Host::Desktop));
         let groups = keys_in_effect(
             &keymap,
             &[KEY_CONTEXT, bviz_ui_shell::KEY_CONTEXT, PANEL],

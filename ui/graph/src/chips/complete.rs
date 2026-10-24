@@ -6,7 +6,7 @@
 
 use super::{AcceptCompletion, ChipBar, command, completion_stack};
 use crate::Palette;
-use crate::fuzzy::{self, Feeder, Matching, Row, Standing, TEXT_SIZE};
+use crate::fuzzy::{self, Matching, Row, Standing, TEXT_SIZE};
 use crate::holder::Holder;
 use crate::jump::{Candidates, bring_into_view, labelled, package_of};
 use crate::model::{Prepared, Ready};
@@ -420,14 +420,18 @@ pub(super) fn follow(view: &mut ChipBar, cx: &mut Context<ChipBar>) {
             aimed: None,
         });
         let prepare = move || completions.ready();
-        let feed = |completions: &Ready<Completions>, feeder: &Feeder| {
-            for index in 0..completions.len() {
-                if !feeder.push(index, completions.get(index).text) {
-                    return;
-                }
-            }
-        };
-        fuzzy::inject(view, matching, take_up, prepare, feed, cx);
+        fuzzy::inject(
+            view,
+            matching,
+            take_up,
+            prepare,
+            |completions: &Ready<Completions>| {
+                let offered =
+                    (0..completions.len()).map(|index| (index, completions.get(index).text));
+                Box::new(offered)
+            },
+            cx,
+        );
     }
     let field = view.field.read(cx);
     let text = field.text(cx);
@@ -894,8 +898,8 @@ mod tests {
     /// committing the field as typed, and Enter accepts a row aimed at.
     #[test]
     fn the_keys_named_for_accepting_follow_the_aim() {
-        let mut bindings = crate::bindings();
-        bindings.extend(text_input::bindings());
+        let mut bindings = crate::bindings(bviz_ui_components::Host::Desktop);
+        bindings.extend(text_input::bindings(bviz_ui_components::Host::Desktop));
         let keymap = Keymap::new(bindings);
         for holder in Holder::ALL {
             let keys = |accepts: Accepts| {
