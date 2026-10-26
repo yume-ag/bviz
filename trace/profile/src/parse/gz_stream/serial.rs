@@ -73,7 +73,9 @@ struct FoldSink<'i> {
 impl FoldSink<'_> {
     /// Folds the builder parsed from `text_bytes` decoded bytes. The first
     /// reserves the merged args pool for the whole stream at its args density.
-    fn fold(&mut self, builder: Builder, text_bytes: usize) {
+    fn fold(&mut self, mut builder: Builder, text_bytes: usize) {
+        // The folded run holds the staging buffer until the seal.
+        builder.staging.shrink_to_fit();
         if self.sent == 0 {
             let projected = builder.args_pool.len() as u128 * self.decoded_size as u128
                 / text_bytes.max(1) as u128;
