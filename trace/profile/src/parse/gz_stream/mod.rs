@@ -1,17 +1,21 @@
 use std::borrow::Cow;
-use std::io::Read;
+use std::io::{BufReader, Read};
 
+use bviz_input::Input;
 use flate2::read::MultiGzDecoder;
 
 use crate::concurrent_interner::{ConcurrentInterner, PoolOverflow};
 use crate::model::Profile;
 
 use super::build::{Merge, seal};
-use super::decode::{latin1_cow, latin1_to_utf8};
+use super::decode::{gzip_size_hint_at, latin1_cow, latin1_to_utf8};
 use super::pipeline::{Chunk, TraceEventsArray, array_close, find_trace_events_array};
-use super::{merge_other_data, recover_other_data, timed};
+use super::{GZIP_MAGIC, merge_other_data, recover_other_data, timed};
 
+#[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
 pub(super) mod pipelined;
+#[cfg(any(test, all(target_family = "wasm", not(target_feature = "atomics"))))]
+pub(super) mod serial;
 
 /// Read-buffer capacity for the compressed input, sized to amortize read
 /// syscalls over the streamed inflate of a large profile.
@@ -22,6 +26,18 @@ const GZIP_READ_BUFFER_BYTES: usize = 1 << 20;
 /// one-event-per-line would otherwise grow one piece without bound. The
 /// whole-buffer fallback parses such input instead.
 const STREAM_MAX_EVENT_BYTES: usize = 64 << 20;
+
+/// A seekable gzipped `input` read from its start, and the decoded size its
+/// trailer hints at. `None` for an input that is not gzip, is read only once,
+/// or carries no usable trailer.
+fn gzip_input(input: &Input) -> Option<(impl Read + Send + '_, usize)> {
+    if !input.head()?.starts_with(&GZIP_MAGIC) {
+        return None;
+    }
+    let decoded_size = gzip_size_hint_at(input.seekable()?, input.size()?)?;
+    let reader = BufReader::with_capacity(GZIP_READ_BUFFER_BYTES, input.reader()?);
+    Some((reader, decoded_size))
+}
 
 /// The bytes behind a piece: normally a buffer from the ring, carrying its
 /// filled length; a run too long for a ring buffer (an event line longer than a
@@ -86,28 +102,44 @@ struct StreamEnds {
     pieces: usize,
 }
 
-/// Reads until `buf` is full or the stream ends; returns the filled length
-/// (short of `buf.len()` exactly at end of stream).
-fn fill(dec: &mut impl Read, buf: &mut [u8], mut filled: usize) -> std::io::Result<usize> {
+/// The length a [`fill`] reached.
+enum Filled {
+    /// Short of the buffer's end exactly at end of stream.
+    To(usize),
+    /// Where the decode found its input cut off before the stream's end, as
+    /// an interrupted Bazel leaves a gzipped profile.
+    CutOff(usize),
+}
+
+/// Reads until `buf` is full, the stream ends, or the decode finds its input
+/// cut off.
+fn fill(dec: &mut impl Read, buf: &mut [u8], mut filled: usize) -> std::io::Result<Filled> {
     while filled < buf.len() {
         match dec.read(&mut buf[filled..]) {
             Ok(0) => break,
             Ok(n) => filled += n,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Ok(Filled::CutOff(filled));
+            }
             Err(e) => return Err(e),
         }
     }
-    Ok(filled)
+    Ok(Filled::To(filled))
 }
 
 /// Decodes until the `traceEvents` array opens, doubling the buffer while it
 /// has not, and returns the bytes before the array's contents together with
-/// those decoded past them. `None` on a decode error, on a stream that ends
-/// before the array opens, and on a preamble reaching
+/// those decoded past them. `None` on a decode error, on a stream that ends or
+/// is cut off before the array opens, and on a preamble reaching
 /// [`STREAM_MAX_EVENT_BYTES`].
 fn read_to_array_start(dec: &mut impl Read, chunk_bytes: usize) -> Option<(Vec<u8>, Vec<u8>)> {
+    let fill_whole = |dec: &mut _, buf: &mut [u8], filled| match fill(dec, buf, filled).ok()? {
+        Filled::To(filled) => Some(filled),
+        Filled::CutOff(_) => None,
+    };
     let mut buf = vec![0u8; chunk_bytes];
-    let mut filled = fill(dec, &mut buf, 0).ok()?;
+    let mut filled = fill_whole(dec, &mut buf, 0)?;
     let array_start = loop {
         if let TraceEventsArray::Found { content_start, .. } =
             find_trace_events_array(&buf[..filled])
@@ -118,7 +150,7 @@ fn read_to_array_start(dec: &mut impl Read, chunk_bytes: usize) -> Option<(Vec<u
             return None;
         }
         buf.resize(buf.len() * 2, 0);
-        filled = fill(dec, &mut buf, filled).ok()?;
+        filled = fill_whole(dec, &mut buf, filled)?;
     };
     Some((
         buf[..array_start].to_vec(),
@@ -156,14 +188,15 @@ impl BufferPool {
     /// A buffer sized for `carry_len` carried bytes and a decode after them. A
     /// carry past half a ring buffer leaves too little room to decode into, so
     /// it moves to a one-off buffer of twice its length. `None` once the stash
-    /// is empty and the ring is closed.
-    fn take(&mut self, carry_len: usize) -> Option<PieceBuf> {
+    /// is empty and the ring is closed, or, unless `wait`, holds no buffer.
+    fn take(&mut self, carry_len: usize, wait: bool) -> Option<PieceBuf> {
         if carry_len * 2 > self.chunk_bytes {
             return Some(PieceBuf::OneOff(vec![0u8; carry_len * 2]));
         }
         let data = match self.stash.pop() {
             Some(data) => data,
-            None => self.pool.recv().ok()?,
+            None if wait => self.pool.recv().ok()?,
+            None => self.pool.try_recv().ok()?,
         };
         Some(PieceBuf::Ring { data, len: 0 })
     }
@@ -175,16 +208,29 @@ impl BufferPool {
     }
 }
 
+/// Where a piece's fill stopped.
+enum PieceEnd {
+    /// The buffer is full.
+    Full,
+    /// The stream ended.
+    Finished,
+    /// The decode found its input cut off.
+    CutOff,
+}
+
 /// Copies `carry` to the front of `buf` and decodes after it until the buffer
-/// is full or the stream ends, setting the filled length. `true` when the fill
-/// ran short, which happens exactly at end of stream.
-fn fill_piece(dec: &mut impl Read, buf: &mut PieceBuf, carry: &[u8]) -> std::io::Result<bool> {
+/// is full, the stream ends, or its input is found cut off, setting the filled
+/// length.
+fn fill_piece(dec: &mut impl Read, buf: &mut PieceBuf, carry: &[u8]) -> std::io::Result<PieceEnd> {
     let region = buf.region();
     region[..carry.len()].copy_from_slice(carry);
-    let filled = fill(dec, region, carry.len())?;
-    let end_of_stream = filled < region.len();
+    let (filled, end) = match fill(dec, region, carry.len())? {
+        Filled::To(filled) if filled == region.len() => (filled, PieceEnd::Full),
+        Filled::To(filled) => (filled, PieceEnd::Finished),
+        Filled::CutOff(filled) => (filled, PieceEnd::CutOff),
+    };
     buf.set_len(filled);
-    Ok(end_of_stream)
+    Ok(end)
 }
 
 /// Splits the array's closing bracket and the trailing otherData that may
@@ -213,6 +259,11 @@ fn cut_at_newline(buf: &mut PieceBuf, carry: &mut Vec<u8>) -> bool {
 
 /// Where [`stream_pieces`] delivers the pieces it cuts, in array order.
 trait PieceSink {
+    /// Whether [`Self::send`] has released its piece's buffer by the time it
+    /// returns. Then a buffer not back when the next piece is cut never will
+    /// be, so the stream fails rather than waits for it.
+    const RELEASES_ON_SEND: bool;
+
     /// `None` when the piece cannot be taken, which ends the stream.
     fn send(&mut self, buf: PieceBuf) -> Option<()>;
 
@@ -220,33 +271,65 @@ trait PieceSink {
     fn sent(&self) -> usize;
 }
 
+/// How the `traceEvents` array of a stream [`stream_pieces`] cut ended.
+#[cfg_attr(
+    not(any(test, all(target_family = "wasm", not(target_feature = "atomics")))),
+    expect(dead_code, reason = "only the serial decode recovers a cut-off stream")
+)]
+enum StreamEnd {
+    Closed(StreamEnds),
+    /// The decoded text stops inside the array: its input was cut off, or it
+    /// holds no `]`. `rest` is the text past the last piece sent, `head` the
+    /// text before the array's contents.
+    CutOff {
+        head: Vec<u8>,
+        rest: PieceBuf,
+    },
+}
+
+impl StreamEnd {
+    /// The ends of an array that closed.
+    #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+    fn closed(self) -> Option<StreamEnds> {
+        match self {
+            StreamEnd::Closed(ends) => Some(ends),
+            StreamEnd::CutOff { .. } => None,
+        }
+    }
+}
+
 /// Streams the inflate of `reader` and sends newline-aligned pieces of the
 /// `traceEvents` array to `sink`, each decoded into one of a ring of `ring`
 /// buffers that return through `pool` once their piece is parsed. `None` on a
-/// decode error, an input the chunker can't navigate (no array, no closing
-/// bracket, an over-long line), or a piece the sink refuses.
-fn stream_pieces(
+/// decode error, an input the chunker can't navigate (no array, an over-long
+/// line), or a piece the sink refuses.
+fn stream_pieces<S: PieceSink>(
     reader: impl Read,
     chunk_bytes: usize,
     ring: usize,
-    sink: &mut impl PieceSink,
+    sink: &mut S,
     pool: std::sync::mpsc::Receiver<Vec<u8>>,
-) -> Option<StreamEnds> {
+) -> Option<StreamEnd> {
     let mut bufs = BufferPool::new(pool, ring, chunk_bytes);
     let mut dec = MultiGzDecoder::new(reader);
     let (head, mut carry) = read_to_array_start(&mut dec, chunk_bytes)?;
     loop {
-        let mut buf = bufs.take(carry.len())?;
-        if fill_piece(&mut dec, &mut buf, &carry).ok()? {
-            let tail = split_off_tail(&mut buf)?;
+        let mut buf = bufs.take(carry.len(), !S::RELEASES_ON_SEND)?;
+        let end = fill_piece(&mut dec, &mut buf, &carry).ok()?;
+        if let PieceEnd::Finished = end
+            && let Some(tail) = split_off_tail(&mut buf)
+        {
             if !buf.bytes().is_empty() {
                 sink.send(buf)?;
             }
-            return Some(StreamEnds {
+            return Some(StreamEnd::Closed(StreamEnds {
                 head,
                 tail,
                 pieces: sink.sent(),
-            });
+            }));
+        }
+        if !matches!(end, PieceEnd::Full) {
+            return Some(StreamEnd::CutOff { head, rest: buf });
         }
         if cut_at_newline(&mut buf, &mut carry) {
             sink.send(buf)?;

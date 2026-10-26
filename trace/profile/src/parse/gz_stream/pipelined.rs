@@ -1,19 +1,18 @@
 use std::collections::BTreeMap;
-use std::io::{BufReader, Read};
+use std::io::Read;
 
 use bviz_input::Input;
 use bviz_parallel::worker_count;
 
 use super::{
-    GZIP_READ_BUFFER_BYTES, PieceBuf, PieceSink, StreamChunk, StreamEnds, seal_stream,
-    stream_pieces,
+    PieceBuf, PieceSink, StreamChunk, StreamEnd, StreamEnds, gzip_input, seal_stream, stream_pieces,
 };
 use crate::concurrent_interner::ConcurrentInterner;
 use crate::model::Profile;
 use crate::parse::build::{Builder, Merge};
-use crate::parse::decode::{gzip_size_hint, gzip_size_hint_at};
+use crate::parse::decode::gzip_size_hint;
 use crate::parse::pipeline::{CHUNKS_PER_WORKER, MIN_CHUNK_BYTES, MIN_PARALLEL_BYTES, parse_chunk};
-use crate::parse::{BYTES_PER_DISTINCT, GZIP_MAGIC, intern_prefault_bytes, timed};
+use crate::parse::{BYTES_PER_DISTINCT, intern_prefault_bytes, timed};
 
 /// Ceiling on a pipelined chunk buffer, bounding the memory the bounded queue
 /// plus in-flight worker chunks can hold on an arbitrarily large profile.
@@ -30,13 +29,10 @@ pub(crate) fn parse_gz_pipelined(bytes: &[u8]) -> Option<Profile> {
 }
 
 /// The pipelined decode streamed from a seekable gzipped `input`, sized from
-/// its trailer. `None` for an input the pipeline declines.
+/// its trailer. `None` for plain JSON, and for an input [`parse_gz_pipelined`]
+/// declines.
 pub(crate) fn parse_gz_pipelined_input(input: &Input) -> Option<Profile> {
-    if !input.head()?.starts_with(&GZIP_MAGIC) {
-        return None;
-    }
-    let decoded_size = gzip_size_hint_at(input.seekable()?, input.size()?)?;
-    let reader = BufReader::with_capacity(GZIP_READ_BUFFER_BYTES, input.reader()?);
+    let (reader, decoded_size) = gzip_input(input)?;
     timed("decode+parse (pipelined, streamed)", || {
         parse_gz_pipelined_reader(reader, decoded_size)
     })
@@ -85,6 +81,8 @@ struct PieceQueue {
 }
 
 impl PieceSink for PieceQueue {
+    const RELEASES_ON_SEND: bool = false;
+
     /// `None` once the consumers are gone.
     fn send(&mut self, buf: PieceBuf) -> Option<()> {
         self.tx
@@ -201,6 +199,7 @@ fn decode_parse_fold(
             let producer = scope.spawn(move || {
                 let mut queue = PieceQueue { tx, sent: 0 };
                 stream_pieces(reader, chunk_bytes, ring, &mut queue, pool_rx)
+                    .and_then(StreamEnd::closed)
             });
             for shard in 0..workers {
                 let builder_tx = builder_tx.clone();
