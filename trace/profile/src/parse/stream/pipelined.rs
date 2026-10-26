@@ -3,6 +3,7 @@ use std::io::Read;
 
 use bviz_input::Input;
 use bviz_parallel::worker_count;
+use flate2::read::MultiGzDecoder;
 
 use super::{
     PieceBuf, PieceSink, StreamChunk, StreamEnd, StreamEnds, gzip_input, seal_stream, stream_pieces,
@@ -198,8 +199,14 @@ fn decode_parse_fold(
             let ring = 2 * workers + 1;
             let producer = scope.spawn(move || {
                 let mut queue = PieceQueue { tx, sent: 0 };
-                stream_pieces(reader, chunk_bytes, ring, &mut queue, pool_rx)
-                    .and_then(StreamEnd::closed)
+                stream_pieces(
+                    MultiGzDecoder::new(reader),
+                    chunk_bytes,
+                    ring,
+                    &mut queue,
+                    pool_rx,
+                )
+                .and_then(StreamEnd::closed)
             });
             for shard in 0..workers {
                 let builder_tx = builder_tx.clone();

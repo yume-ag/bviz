@@ -2,7 +2,6 @@ use std::borrow::Cow;
 use std::io::{BufReader, Read};
 
 use bviz_input::Input;
-use flate2::read::MultiGzDecoder;
 
 use crate::concurrent_interner::{ConcurrentInterner, PoolOverflow};
 use crate::model::Profile;
@@ -298,24 +297,23 @@ impl StreamEnd {
     }
 }
 
-/// Streams the inflate of `reader` and sends newline-aligned pieces of the
-/// `traceEvents` array to `sink`, each decoded into one of a ring of `ring`
+/// Streams the decoded profile `text` and sends newline-aligned pieces of its
+/// `traceEvents` array to `sink`, each read into one of a ring of `ring`
 /// buffers that return through `pool` once their piece is parsed. `None` on a
 /// decode error, an input the chunker can't navigate (no array, an over-long
 /// line), or a piece the sink refuses.
 fn stream_pieces<S: PieceSink>(
-    reader: impl Read,
+    mut text: impl Read,
     chunk_bytes: usize,
     ring: usize,
     sink: &mut S,
     pool: std::sync::mpsc::Receiver<Vec<u8>>,
 ) -> Option<StreamEnd> {
     let mut bufs = BufferPool::new(pool, ring, chunk_bytes);
-    let mut dec = MultiGzDecoder::new(reader);
-    let (head, mut carry) = read_to_array_start(&mut dec, chunk_bytes)?;
+    let (head, mut carry) = read_to_array_start(&mut text, chunk_bytes)?;
     loop {
         let mut buf = bufs.take(carry.len(), !S::RELEASES_ON_SEND)?;
-        let end = fill_piece(&mut dec, &mut buf, &carry).ok()?;
+        let end = fill_piece(&mut text, &mut buf, &carry).ok()?;
         if let PieceEnd::Finished = end
             && let Some(tail) = split_off_tail(&mut buf)
         {

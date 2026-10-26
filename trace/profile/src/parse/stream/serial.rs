@@ -2,13 +2,14 @@ use std::io::Read;
 
 use bviz_input::Input;
 use bviz_invocation::Recorded;
+use flate2::read::MultiGzDecoder;
 
 use crate::concurrent_interner::{ConcurrentInterner, PoolOverflow, Writer};
 use crate::model::Profile;
 use crate::parse::build::{Builder, Merge, seal};
 use crate::parse::decode::{gzip_size_hint, latin1_cow, latin1_to_utf8};
 use crate::parse::pipeline::{MIN_PARALLEL_BYTES, parse_chunk};
-use crate::parse::{BYTES_PER_DISTINCT, recover_events, recover_other_data, timed};
+use crate::parse::{BYTES_PER_DISTINCT, GZIP_MAGIC, recover_events, recover_other_data, timed};
 
 use super::{PieceBuf, PieceSink, StreamChunk, StreamEnd, gzip_input, seal_stream, stream_pieces};
 
@@ -39,39 +40,52 @@ fn streamed(decoded_size: usize) -> Option<usize> {
 const POOL_SHARE_NUM: usize = 1;
 const POOL_SHARE_DEN: usize = 2;
 
-/// The serial decode of a gzipped profile held whole in memory, sized from
-/// that buffer's own [`gzip_size_hint`]. `None` — leaving the input to the
-/// whole-buffer path — for a missing or zero trailer, a profile decoding to
-/// under [`MIN_STREAMED_BYTES`], or what [`parse_gz_serial_into`] declines.
-pub(crate) fn parse_gz_serial(bytes: &[u8]) -> Option<Recorded<Profile>> {
-    let decoded_size = streamed(gzip_size_hint(bytes)?)?;
-    timed("decode+parse (serial)", || {
-        parse_gz_serial_from(bytes, || Some(bytes), decoded_size)
+/// The serial decode of a profile held whole in memory: gzipped, sized from
+/// that buffer's own [`gzip_size_hint`], or plain. `None` — leaving the input
+/// to the whole-buffer path — for a missing or zero trailer, a profile decoding
+/// to under [`MIN_STREAMED_BYTES`], or what [`parse_serial_into`] declines.
+pub(crate) fn parse_serial(bytes: &[u8]) -> Option<Recorded<Profile>> {
+    if bytes.starts_with(&GZIP_MAGIC) {
+        let decoded_size = streamed(gzip_size_hint(bytes)?)?;
+        let inflate = || Some(MultiGzDecoder::new(bytes));
+        return timed("decode+parse (serial)", || {
+            parse_serial_from(inflate()?, inflate, decoded_size)
+        });
+    }
+    let size = streamed(bytes.len())?;
+    timed("parse (serial)", || {
+        parse_serial_from(bytes, || Some(bytes), size)
     })
 }
 
-/// The serial decode streamed from a seekable gzipped `input`, sized from its
-/// trailer. `None` for an input it declines, as [`parse_gz_serial`] declines
-/// one.
-pub(crate) fn parse_gz_serial_input(input: &Input) -> Option<Recorded<Profile>> {
-    let (reader, decoded_size) = gzip_input(input)?;
-    let decoded_size = streamed(decoded_size)?;
-    let reopen = || Some(gzip_input(input)?.0);
-    timed("decode+parse (serial, streamed)", || {
-        parse_gz_serial_from(reader, reopen, decoded_size)
+/// The serial decode streamed from a seekable `input`: gzipped, sized from its
+/// trailer, or plain. `None` for an input it declines, as [`parse_serial`]
+/// declines one.
+pub(crate) fn parse_serial_input(input: &Input) -> Option<Recorded<Profile>> {
+    if input.head()?.starts_with(&GZIP_MAGIC) {
+        let (reader, decoded_size) = gzip_input(input)?;
+        let decoded_size = streamed(decoded_size)?;
+        let reopen = || Some(MultiGzDecoder::new(gzip_input(input)?.0));
+        return timed("decode+parse (serial, streamed)", || {
+            parse_serial_from(MultiGzDecoder::new(reader), reopen, decoded_size)
+        });
+    }
+    let size = streamed(usize::try_from(input.size()?).ok()?)?;
+    timed("parse (serial, streamed)", || {
+        parse_serial_from(input.reader()?, || input.reader(), size)
     })
 }
 
-/// Parses `reader`, a stream declaring `decoded_size` uncompressed bytes, into
-/// a string pool holding [`POOL_SHARE_NUM`]/[`POOL_SHARE_DEN`] of them, and
-/// the stream `reopen` gives into one holding them all when that outgrows it.
-fn parse_gz_serial_from<R: Read>(
-    reader: R,
+/// Parses `text`, a decoded stream of `decoded_size` bytes, into a string pool
+/// holding [`POOL_SHARE_NUM`]/[`POOL_SHARE_DEN`] of them, and the stream
+/// `reopen` gives into one holding them all when that outgrows it.
+fn parse_serial_from<R: Read>(
+    text: R,
     reopen: impl FnOnce() -> Option<R>,
     decoded_size: usize,
 ) -> Option<Recorded<Profile>> {
-    parse_gz_serial_retrying(
-        reader,
+    parse_serial_retrying(
+        text,
         reopen,
         first_pool(decoded_size)?,
         || pool(decoded_size, decoded_size),
@@ -90,19 +104,19 @@ fn pool(text_bytes: usize, decoded_size: usize) -> Option<ConcurrentInterner> {
     ConcurrentInterner::new(text_bytes, decoded_size / BYTES_PER_DISTINCT).ok()
 }
 
-/// Parses `reader` into the `first` pool and, if its distinct text outgrows
-/// that, the stream `reopen` gives into the pool `full` makes.
-pub(crate) fn parse_gz_serial_retrying<R: Read>(
-    reader: R,
+/// Parses the decoded `text` into the `first` pool and, if its distinct text
+/// outgrows that, the stream `reopen` gives into the pool `full` makes.
+pub(crate) fn parse_serial_retrying<R: Read>(
+    text: R,
     reopen: impl FnOnce() -> Option<R>,
     first: ConcurrentInterner,
     full: impl FnOnce() -> Option<ConcurrentInterner>,
     chunk_bytes: usize,
     decoded_size: usize,
 ) -> Option<Recorded<Profile>> {
-    match parse_gz_serial_into(reader, first, chunk_bytes, decoded_size) {
+    match parse_serial_into(text, first, chunk_bytes, decoded_size) {
         Err(Declined::PoolExhausted) => {
-            parse_gz_serial_into(reopen()?, full()?, chunk_bytes, decoded_size).ok()
+            parse_serial_into(reopen()?, full()?, chunk_bytes, decoded_size).ok()
         }
         parsed => parsed.ok(),
     }
@@ -196,14 +210,13 @@ impl PieceSink for FoldSink<'_> {
     }
 }
 
-/// Decodes, parses and folds a stream declaring `decoded_size` uncompressed
-/// bytes in turn on the calling thread, in pieces of about `chunk_bytes`
-/// decoded into one reused buffer, so no more of the decoded text than one
-/// piece is held at a time. Text that stops inside the `traceEvents` array
-/// loads cut off, with the whole events before the cut, as the whole-buffer
-/// path recovers it.
-pub(crate) fn parse_gz_serial_into(
-    reader: impl Read,
+/// Reads, parses and folds the decoded `text`, a stream of `decoded_size`
+/// bytes, in turn on the calling thread, in pieces of about `chunk_bytes` read
+/// into one reused buffer, so no more of the text than one piece is held at a
+/// time. Text that stops inside the `traceEvents` array loads cut off, with the
+/// whole events before the cut, as the whole-buffer path recovers it.
+pub(crate) fn parse_serial_into(
+    text: impl Read,
     interner: ConcurrentInterner,
     chunk_bytes: usize,
     decoded_size: usize,
@@ -220,7 +233,7 @@ pub(crate) fn parse_gz_serial_into(
     // Each piece is parsed, returning its buffer, before the next is cut.
     let ring = 1;
     let streamed = timed("  decode+parse+fold chunks", || {
-        stream_pieces(reader, chunk_bytes, ring, &mut sink, pool_rx)
+        stream_pieces(text, chunk_bytes, ring, &mut sink, pool_rx)
     });
     let Some(end) = streamed else {
         return Err(Declined::stopped(&interner));
