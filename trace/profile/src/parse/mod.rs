@@ -22,14 +22,14 @@ mod serde_events;
 use build::{Builder, Merge, seal};
 use decode::{decode, latin1_cow};
 #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
-use gz_stream::{parse_gz_pipelined, parse_gz_pipelined_input};
+use gz_stream::pipelined::{parse_gz_pipelined, parse_gz_pipelined_input};
 use pipeline::{TraceEventsArray, find_trace_events_array, find_trace_events_key, parse_parallel};
 use scanner::object_end;
 use serde_events::{ArgEntry, ProfileVisitor, RawEventSeed};
 
 pub use decode::gzip_size_hint;
 #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
-pub use gz_stream::pipeline_chunk_bytes;
+pub use gz_stream::pipelined::pipeline_chunk_bytes;
 
 /// Estimated distinct-string density of a Bazel profile — about one interned
 /// string per this many decoded bytes — used to pre-size the shared interner's
@@ -415,7 +415,7 @@ pub(crate) fn build_for_test(
 mod tests {
     use super::decode::{MAX_PLAUSIBLE_GZIP_RATIO, latin1_to_utf8};
     #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
-    use super::gz_stream::{parse_gz_stream, parse_gz_stream_into};
+    use super::gz_stream::pipelined::{parse_gz_stream, parse_gz_stream_into};
     use super::pipeline::parse_chunks;
     use super::scanner::{find_special, scan_event};
     use super::serde_events::{arg_i64, arg_str};
