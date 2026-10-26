@@ -941,6 +941,7 @@ dependencies = [
  "bviz_time",
  "crossbeam-channel",
  "crossbeam-utils",
+ "fastrand",
  "flate2",
  "hashbrown 0.16.1",
  "rustc-hash 2.1.3",
