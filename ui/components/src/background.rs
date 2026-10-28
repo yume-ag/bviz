@@ -26,15 +26,15 @@ where
 /// result from here. Built with threads, the work runs on a thread of its own,
 /// overlapping the application shell's own startup (font-database scan, window
 /// and GPU-surface setup), so the UI thread waits on it only once it has a
-/// frame to draw. Built without, it runs to its end as it starts.
+/// frame to draw. Built without, it runs where it is first joined, so the task
+/// that starts it does not also run it.
 pub struct Pending<T>(Started<T>);
 
 #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
 type Started<T> = std::thread::JoinHandle<Result<T, String>>;
 
-/// Boxed, so a `Pending` stays pointer-sized however large its outcome.
 #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
-type Started<T> = Box<std::thread::Result<Result<T, String>>>;
+type Started<T> = Deferred<T>;
 
 impl<T: Send + 'static> Pending<T> {
     #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
@@ -42,13 +42,9 @@ impl<T: Send + 'static> Pending<T> {
         Self(bviz_parallel::spawn(work))
     }
 
-    /// The work's panic is caught as a thread's would be, so a caller sees it
-    /// the same way where the work ran on a thread of its own.
     #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
     pub fn start(work: impl FnOnce() -> Result<T, String> + Send + 'static) -> Self {
-        Self(Box::new(std::panic::catch_unwind(
-            std::panic::AssertUnwindSafe(work),
-        )))
+        Self(Deferred::new(work))
     }
 
     /// Blocks until the work finishes, reporting a panic in it the way the work
@@ -57,7 +53,53 @@ impl<T: Send + 'static> Pending<T> {
         #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
         let finished = self.0.join();
         #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
-        let finished = *self.0;
+        let finished = self.0.run();
         finished.unwrap_or_else(|_| Err("the loader thread panicked".into()))
+    }
+}
+
+/// Work held until it is asked for, then run by the thread that asks.
+#[cfg(any(test, all(target_family = "wasm", not(target_feature = "atomics"))))]
+struct Deferred<T>(Box<dyn FnOnce() -> Result<T, String> + Send>);
+
+#[cfg(any(test, all(target_family = "wasm", not(target_feature = "atomics"))))]
+impl<T> Deferred<T> {
+    fn new(work: impl FnOnce() -> Result<T, String> + Send + 'static) -> Self {
+        Self(Box::new(work))
+    }
+
+    /// The work's outcome, its panic caught as a thread's would be, so a
+    /// caller sees it the same way where the work ran on a thread of its own.
+    fn run(self) -> std::thread::Result<Result<T, String>> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(self.0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn deferred_work_runs_only_once_run() {
+        let ran = Arc::new(AtomicBool::new(false));
+        let deferred = Deferred::new({
+            let ran = Arc::clone(&ran);
+            move || {
+                ran.store(true, Ordering::Relaxed);
+                Ok(7)
+            }
+        });
+        assert!(!ran.load(Ordering::Relaxed));
+
+        assert_eq!(deferred.run().ok(), Some(Ok(7)));
+        assert!(ran.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn a_panic_in_deferred_work_is_caught() {
+        let deferred = Deferred::<()>::new(|| panic!("reading the file"));
+        assert!(deferred.run().is_err());
     }
 }
