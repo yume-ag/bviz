@@ -27,7 +27,7 @@ use bviz_graph_layout::target_pattern::TargetIndex;
 use bviz_graph_layout::{Capabilities, Facets, Id, InputSet, Joint, MapLayout, Names, Provenance};
 use bviz_input::Named;
 use bviz_invocation::{ActionGraph, Chosen, Configurations, Revision, Session};
-use bviz_ui_components::{Pending, load_in_background};
+use bviz_ui_components::{Pending, load_future_in_background, load_in_background};
 use bviz_ui_graph_args::GraphSource;
 use bviz_ui_playback::Clock;
 use bviz_ui_session::{Reports, Sharing};
@@ -863,10 +863,10 @@ impl GraphModel {
             reports: Reports::new(session, cx),
         };
         let shares = sharing == Sharing::Invocation;
-        let work = load_in_background(
+        let work = load_future_in_background(
             cx,
-            move || {
-                let read = load.join()?;
+            async move {
+                let read = load.finished().await?;
                 let shared = &read.loaded.shared;
                 let described = configurations(&shared.facets);
                 let actions = shares
@@ -929,17 +929,15 @@ impl GraphModel {
         landing: Landing,
         cx: &mut Context<Self>,
     ) -> Task<()> {
-        load_in_background(
-            cx,
-            move || placing.join(),
-            |model, placed, cx| match land(&mut model.source, placed, landing) {
+        load_future_in_background(cx, placing.finished(), |model, placed, cx| {
+            match land(&mut model.source, placed, landing) {
                 Some(map) => {
                     derive_levels(map, cx.background_executor());
                     cx.emit(MapPlaced);
                 }
                 None => model.replaced(cx),
-            },
-        )
+            }
+        })
     }
 
     /// Lands what placing the loaded graph's map came to: the map, through

@@ -1,7 +1,7 @@
 use bviz_input::Input;
 use bviz_invocation::{Configurations, EpochMicros, Outcomes, Recorded, ReporterId, Session};
 use bviz_terminal::{BuildOutput, Replay};
-use bviz_ui_components::{Pending, load_in_background};
+use bviz_ui_components::{Pending, load_future_in_background};
 use bviz_ui_playback::{Alignment, Clock, OnClock, Span};
 use bviz_ui_session::Reports;
 use gpui::{App, Context, Entity, Task};
@@ -72,20 +72,16 @@ impl ConsoleModel {
         clock: Entity<Clock>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let load = load_in_background(
-            cx,
-            move || stream.join(),
-            move |model, result, cx| {
-                model.source = match result {
-                    Ok(stream) => Source::Loaded(model.reports.report(cx, |session, by, cx| {
-                        cx.notify();
-                        stream.replay_telling(session, by)
-                    })),
-                    Err(err) => Source::Failed(err),
-                };
-                model.place_on_clock(cx);
-            },
-        );
+        let load = load_future_in_background(cx, stream.finished(), move |model, result, cx| {
+            model.source = match result {
+                Ok(stream) => Source::Loaded(model.reports.report(cx, |session, by, cx| {
+                    cx.notify();
+                    stream.replay_telling(session, by)
+                })),
+                Err(err) => Source::Failed(err),
+            };
+            model.place_on_clock(cx);
+        });
         Self {
             source: Source::Loading,
             on_clock: OnClock::new(clock, cx, Self::place_on_clock),

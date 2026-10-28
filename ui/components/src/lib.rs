@@ -39,7 +39,7 @@ mod tooltip;
 mod truncating_label;
 mod zoom_keys;
 
-pub use background::{Pending, load_in_background};
+pub use background::{Pending, load_future_in_background, load_in_background};
 pub use button::Button;
 pub use by_room::ByRoom;
 pub use canvas::{Inked, LabelBoxStyle, paint_labeled_box, shape_truncated};

@@ -16,7 +16,7 @@ use bviz_trace_layout::{
     FlameMode, LaneLayout, ScopeAggregate, TimeSelection, TrackFlamer, WorkingLanes, lay_out_lanes,
 };
 use bviz_trace_profile::{LaneClass, Profile, SliceAt, Str, TimeSpan};
-use bviz_ui_components::{Pending, load_in_background};
+use bviz_ui_components::{Pending, load_future_in_background};
 use bviz_ui_playback::{Alignment, Clock, OnClock, Span};
 use bviz_ui_session::Reports;
 use gpui::{App, Context, Entity, EventEmitter, Subscription, Task};
@@ -537,10 +537,10 @@ impl TraceModel {
             reports: Reports::new(session, cx),
             on_clock: OnClock::new(clock, cx, Self::place_on_clock),
         };
-        let load = load_in_background(
+        let load = load_future_in_background(
             cx,
-            move || {
-                let profile = profile.join()?;
+            async move {
+                let profile = profile.finished().await?;
                 let presentation = Presentation::of(profile.get());
                 Ok((profile, presentation))
             },

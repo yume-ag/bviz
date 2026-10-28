@@ -3,7 +3,7 @@ use bviz_execlog::ExecLog;
 use bviz_input::Reopener;
 use bviz_invocation::spawn::LoggedSpawns;
 use bviz_invocation::{InvocationId, Recorded, Session};
-use bviz_ui_components::{Pending, load_in_background};
+use bviz_ui_components::{Pending, load_future_in_background, load_in_background};
 use bviz_ui_playback::{Alignment, BecameJoined, Clock};
 use bviz_ui_session::{Reports, Sharing};
 use gpui::{App, Context, Entity, Subscription, Task};
@@ -72,30 +72,26 @@ impl ExecLogModel {
             clock,
             awaiting: None,
             _rereading: None,
-            _load: load_in_background(
-                cx,
-                move || log.join(),
-                move |model, result, cx| {
-                    model.source = match result {
-                        Ok(Read {
-                            summary,
-                            spawns,
-                            reread,
-                        }) => {
-                            if model.joined(cx) {
-                                model.report(spawns, cx);
-                            } else if sharing == Sharing::Invocation {
-                                model.awaiting = Some(match reread {
-                                    Some(reread) => Awaiting::Reread(reread),
-                                    None => Awaiting::Kept(spawns),
-                                });
-                            }
-                            Source::Loaded(summary)
+            _load: load_future_in_background(cx, log.finished(), move |model, result, cx| {
+                model.source = match result {
+                    Ok(Read {
+                        summary,
+                        spawns,
+                        reread,
+                    }) => {
+                        if model.joined(cx) {
+                            model.report(spawns, cx);
+                        } else if sharing == Sharing::Invocation {
+                            model.awaiting = Some(match reread {
+                                Some(reread) => Awaiting::Reread(reread),
+                                None => Awaiting::Kept(spawns),
+                            });
                         }
-                        Err(why) => Source::Failed(why),
-                    };
-                },
-            ),
+                        Source::Loaded(summary)
+                    }
+                    Err(why) => Source::Failed(why),
+                };
+            }),
         }
     }
 
