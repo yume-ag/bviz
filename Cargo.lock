@@ -1041,6 +1041,7 @@ dependencies = [
  "bviz_ui_playback",
  "bviz_ui_session",
  "bviz_ui_theme",
+ "bviz_ui_web",
  "bviz_ui_workspace",
  "cfg-if",
  "clap",

@@ -33,7 +33,10 @@ rust_library(
         "@crates//:lyon_tessellation",
         "@crates//:nucleo",
         "@crates//:rustc-hash",
-    ],
+    ] + select({
+        "@platforms//cpu:wasm32": ["//ui/web"],
+        "//conditions:default": [],
+    }),
 )
 
 rust_binary(

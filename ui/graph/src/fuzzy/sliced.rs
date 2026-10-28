@@ -4,6 +4,8 @@
 
 use super::rank::MAX_WINDOW;
 use super::{Engine, Offered, Sink, config};
+#[cfg(target_family = "wasm")]
+use bviz_ui_web::cede;
 use gpui::BackgroundExecutor;
 use nucleo::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo::{Matcher, Status, Utf32Str, Utf32String};
@@ -20,6 +22,10 @@ const SLICE: Duration = Duration::from_millis(6);
 
 /// How many candidates are matched or handed over between reads of the clock.
 const CLOCK_STRIDE: usize = 128;
+
+/// Natively the engine runs only under test, where no page shares its thread.
+#[cfg(not(target_family = "wasm"))]
+async fn cede() {}
 
 /// A candidate: the index it was handed by, and its text.
 pub(super) struct Item {
@@ -195,14 +201,17 @@ impl Engine for Sliced {
         Arc::clone(&self.inbox)
     }
 
+    #[expect(
+        clippy::manual_async_fn,
+        reason = "the feed outlives the executor an async fn's future would borrow"
+    )]
     fn feed<S: Send + 'static>(
         sink: Inbox,
         source: S,
         offer: impl Fn(&S) -> Offered<'_> + Send + 'static,
         stopped: Arc<AtomicBool>,
-        executor: &BackgroundExecutor,
+        _: &BackgroundExecutor,
     ) -> impl Future<Output = ()> + 'static {
-        let executor = executor.clone();
         async move {
             let mut offered = offer(&source);
             loop {
@@ -218,7 +227,7 @@ impl Engine for Sliced {
                         sink.hand(index, text);
                     }
                 }
-                executor.timer(Duration::ZERO).await;
+                cede().await;
             }
         }
     }
