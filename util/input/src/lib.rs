@@ -75,7 +75,7 @@ pub enum Access {
     Seekable { source: Box<dyn ReadAt>, size: u64 },
     /// Bytes read once, in order.
     Stream {
-        reader: Box<dyn Read + Send>,
+        reader: Box<dyn Read + Send + Sync>,
         size: Option<u64>,
     },
     /// Bytes held in memory, read at any offset.

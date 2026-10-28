@@ -32,6 +32,7 @@ rust_test(
     name = "profile_test",
     size = "small",
     crate = ":profile",
+    deps = ["@crates//:fastrand"],
 )
 
 rust_binary(

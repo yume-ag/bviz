@@ -30,3 +30,6 @@ bviz_ui_spawn_phase = { path = "../spawn_phase" }
 bviz_ui_theme = { path = "../theme" }
 bviz_ui_trace_args = { path = "args" }
 bviz_ui_workspace = { path = "../workspace" }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+bviz_ui_web = { path = "../web" }

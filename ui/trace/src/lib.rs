@@ -1771,6 +1771,7 @@ pub fn invocation_id(input: &bviz_input::Input) -> Option<InvocationId> {
 }
 
 impl From<bviz_input::Input> for Load {
+    #[cfg(not(target_family = "wasm"))]
     fn from(input: bviz_input::Input) -> Self {
         let title = document_label(std::path::Path::new(input.name()));
         Self {
@@ -1778,7 +1779,23 @@ impl From<bviz_input::Input> for Load {
             title,
         }
     }
+
+    #[cfg(target_family = "wasm")]
+    fn from(input: bviz_input::Input) -> Self {
+        let title = document_label(std::path::Path::new(input.name()));
+        let decoding = Profile::from_input_ceding(input, DECODE_SLICE, bviz_ui_web::cede);
+        Self {
+            profile: Pending::start_future(async { decoding.await.map_err(|e| e.to_string()) }),
+            title,
+        }
+    }
 }
+
+/// How long the profile decode holds the page's one thread before it cedes it:
+/// long enough that ceding costs the decode little, short enough that input and
+/// the spinners of files opening keep pace.
+#[cfg(target_family = "wasm")]
+const DECODE_SLICE: std::time::Duration = std::time::Duration::from_millis(40);
 
 impl From<TraceSource> for Load {
     fn from(source: TraceSource) -> Self {

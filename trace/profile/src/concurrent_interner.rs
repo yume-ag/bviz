@@ -494,6 +494,11 @@ impl ConcurrentInterner {
         interner.arena.page_size = page_bytes;
         interner
     }
+
+    /// The bytes of text the pool holds before it runs out.
+    pub(crate) fn pool_bytes(&self) -> usize {
+        self.arena.cap
+    }
 }
 
 #[cfg(test)]

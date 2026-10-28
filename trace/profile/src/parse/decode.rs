@@ -37,7 +37,7 @@ fn gunzip(bytes: &[u8]) -> Result<Recorded<Vec<u8>>, LoadError> {
 const GZIP_FRAMING_MIN: usize = 18;
 
 /// Width of the gzip ISIZE trailer field (RFC 1952).
-const GZIP_ISIZE_BYTES: usize = 4;
+pub(crate) const GZIP_ISIZE_BYTES: usize = 4;
 
 /// Ceiling on the ratio of decoded to compressed bytes a gzipped profile is
 /// taken to reach, bounding its ISIZE trailer as a sizing hint. Bazel profiles
@@ -76,7 +76,6 @@ pub fn gzip_size_hint(bytes: &[u8]) -> Option<usize> {
 
 /// [`gzip_size_hint`] of a gzip stream of `compressed_len` bytes, read from
 /// `source` without pulling the whole stream into memory.
-#[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
 pub(crate) fn gzip_size_hint_at(
     source: &dyn bviz_input::ReadAt,
     compressed_len: u64,

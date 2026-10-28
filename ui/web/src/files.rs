@@ -4,6 +4,7 @@
 use bviz_input::Named;
 use js_sys::{Promise, Uint8Array};
 use std::io;
+use std::ops::ControlFlow;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
@@ -102,21 +103,33 @@ fn files_of(list: FileList) -> Vec<File> {
     files
 }
 
-/// Each of `files` read whole, under its name.
-pub async fn read_files(files: Vec<File>) -> Vec<Result<Named, Unread>> {
+/// Each of `files` read whole, under its name, telling `progress` the place
+/// among `files` of the file being read and how many of its bytes are read
+/// as each slice of it arrives; `None` where `progress` breaks off the
+/// reading.
+pub async fn read_files(
+    files: Vec<File>,
+    mut progress: impl FnMut(usize, u64) -> ControlFlow<()>,
+) -> Option<Vec<Result<Named, Unread>>> {
     let mut read = Vec::with_capacity(files.len());
-    for file in files {
+    for (at, file) in files.into_iter().enumerate() {
         let name = file.name();
-        read.push(match read_file(&file).await {
-            Ok(bytes) => Ok(Named::Memory { name, bytes }),
+        read.push(match read_file(&file, |bytes| progress(at, bytes)).await {
+            Ok(ControlFlow::Continue(bytes)) => Ok(Named::Memory { name, bytes }),
+            Ok(ControlFlow::Break(())) => return None,
             Err(error) => Err(Unread { name, error }),
         });
     }
-    read
+    Some(read)
 }
 
-/// `file`'s bytes, in a buffer sized for them before the first is read.
-async fn read_file(file: &File) -> io::Result<Vec<u8>> {
+/// `file`'s bytes, in a buffer sized for them before the first is read,
+/// telling `progress` how many are read as each slice arrives, unless it
+/// breaks off the reading.
+async fn read_file(
+    file: &File,
+    mut progress: impl FnMut(u64) -> ControlFlow<()>,
+) -> io::Result<ControlFlow<(), Vec<u8>>> {
     let size = file.size();
     let mut bytes = Vec::new();
     (bytes.try_reserve_exact(size as usize))
@@ -132,9 +145,12 @@ async fn read_file(file: &File) -> io::Result<Vec<u8>> {
         let start = bytes.len();
         bytes.resize(start + chunk.length() as usize, 0);
         chunk.copy_to(&mut bytes[start..]);
+        if progress(bytes.len() as u64).is_break() {
+            return Ok(ControlFlow::Break(()));
+        }
         at = end;
     }
-    Ok(bytes)
+    Ok(ControlFlow::Continue(bytes))
 }
 
 fn js_error(error: JsValue) -> io::Error {

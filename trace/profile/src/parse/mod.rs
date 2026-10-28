@@ -13,23 +13,26 @@ use crate::model::Profile;
 
 mod build;
 mod decode;
-#[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
-mod gz_stream;
 mod pipeline;
 mod scanner;
 mod serde_events;
+mod stream;
 
 use build::{Builder, Merge, seal};
 use decode::{decode, latin1_cow};
-#[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
-use gz_stream::{parse_gz_pipelined, parse_gz_pipelined_input};
 use pipeline::{TraceEventsArray, find_trace_events_array, find_trace_events_key, parse_parallel};
 use scanner::object_end;
 use serde_events::{ArgEntry, ProfileVisitor, RawEventSeed};
+#[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+use stream::pipelined::{parse_gz_pipelined, parse_gz_pipelined_input};
+#[cfg(any(test, all(target_family = "wasm", not(target_feature = "atomics"))))]
+use stream::serial::{Ceding, parse_serial_input};
+#[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
+use stream::{Unpaused, run_here, serial::parse_serial};
 
 pub use decode::gzip_size_hint;
 #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
-pub use gz_stream::pipeline_chunk_bytes;
+pub use stream::pipelined::pipeline_chunk_bytes;
 
 /// Estimated distinct-string density of a Bazel profile — about one interned
 /// string per this many decoded bytes — used to pre-size the shared interner's
@@ -141,16 +144,35 @@ pub const TIMING_SWITCH: &str = "BVIZ_TRACE_TIMING";
 /// Wall-clock timing of a load stage, reported when [`TIMING_SWITCH`] is set.
 /// Returns the closure's value so a stage can be wrapped inline.
 fn timed<T>(label: &str, f: impl FnOnce() -> T) -> T {
-    if !bviz_switches::is_set(TIMING_SWITCH) {
+    let Some(start) = timing_start() else {
         return f();
-    }
-    let start = bviz_time::now();
+    };
     let out = f();
+    report_timing(label, start);
+    out
+}
+
+/// [`timed`] of a stage that awaits, timed from its first poll to its last.
+#[cfg(any(test, all(target_family = "wasm", not(target_feature = "atomics"))))]
+async fn timed_future<T>(label: &str, stage: impl Future<Output = T>) -> T {
+    let Some(start) = timing_start() else {
+        return stage.await;
+    };
+    let out = stage.await;
+    report_timing(label, start);
+    out
+}
+
+/// Now, where [`TIMING_SWITCH`] is set.
+fn timing_start() -> Option<bviz_time::Instant> {
+    bviz_switches::is_set(TIMING_SWITCH).then(bviz_time::now)
+}
+
+fn report_timing(label: &str, start: bviz_time::Instant) {
     bviz_switches::report(format_args!(
         "[timing] {label}: {:.3}s",
         start.elapsed().as_secs_f64()
     ));
-    out
 }
 
 impl Profile {
@@ -159,14 +181,12 @@ impl Profile {
         Profile::from_input(Input::open(path).map_err(LoadError::Io)?)
     }
 
-    /// Loads a profile. Built with threads, it streams a seekable input through
-    /// the pipelined gzip decode, so the read overlaps decompression and
-    /// parsing, sized from [`gzip_size_hint`] read from the input's trailer
-    /// without pulling the whole input in. A seekable input it does not stream
-    /// — on a build without threads, or one the pipeline declines: plain JSON, a
-    /// small or oddly shaped stream, a decode or parse failure — is read whole
-    /// and goes through [`from_whole_buffer`]; a stream, which cannot be read
-    /// twice, is read whole and goes through [`from_bytes`](Self::from_bytes).
+    /// Loads a profile. A seekable input goes first to this build's streamed
+    /// decode — `parse_gz_pipelined_input` built with threads,
+    /// `parse_serial_input` built without — which reads it without pulling
+    /// it in whole; what that declines is read whole and goes through
+    /// [`from_whole_buffer`]. A stream, which cannot be read twice, is read
+    /// whole and goes through [`from_bytes`](Self::from_bytes).
     pub fn from_input(input: Input) -> Result<Recorded<Profile>, LoadError> {
         if input.seekable().is_none() {
             let bytes = timed("read input", || input.read_all().map_err(LoadError::Io))?;
@@ -176,15 +196,45 @@ impl Profile {
         if let Some(profile) = parse_gz_pipelined_input(&input) {
             return Ok(Recorded::Complete(profile));
         }
-        let bytes = timed("read input", || input.read_all().map_err(LoadError::Io))?;
-        from_whole_buffer(&bytes)
+        #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
+        if let Some(recorded) = run_here(parse_serial_input(&input, &mut Unpaused)) {
+            return Ok(recorded);
+        }
+        from_whole_input(input)
     }
 
-    /// Parses a profile. Built with threads, it prefers the pipelined gzip
-    /// decode, which overlaps decompression with the parallel parse. Built
-    /// without, and for anything the pipeline declines — plain JSON, a small or
-    /// oddly shaped stream, a decode or parse failure — it goes through
-    /// [`from_whole_buffer`].
+    /// [`from_input`](Self::from_input) built without threads, handing the
+    /// thread back to whatever shares it: the serial decode awaits `cede`
+    /// between its pieces once it has run for `every` since it last did.
+    #[cfg(any(test, all(target_family = "wasm", not(target_feature = "atomics"))))]
+    pub async fn from_input_ceding<F: Future<Output = ()> + Send>(
+        input: Input,
+        every: std::time::Duration,
+        cede: impl FnMut() -> F + Send,
+    ) -> Result<Recorded<Profile>, LoadError> {
+        if input.seekable().is_none() {
+            return Profile::from_input(input);
+        }
+        if let Some(recorded) = parse_serial_input(&input, &mut Ceding::new(every, cede)).await {
+            return Ok(recorded);
+        }
+        from_whole_input(input)
+    }
+
+    /// [`from_input`](Self::from_input), whose decode built with threads runs
+    /// on threads of its own and so never cedes.
+    #[cfg(all(target_family = "wasm", target_feature = "atomics"))]
+    pub async fn from_input_ceding<F: Future<Output = ()> + Send>(
+        input: Input,
+        _every: std::time::Duration,
+        _cede: impl FnMut() -> F + Send,
+    ) -> Result<Recorded<Profile>, LoadError> {
+        Profile::from_input(input)
+    }
+
+    /// Parses a profile. It goes first to this build's decode —
+    /// `parse_gz_pipelined` built with threads, `parse_serial` built without
+    /// — and what that declines goes through [`from_whole_buffer`].
     pub fn from_bytes(bytes: &[u8]) -> Result<Recorded<Profile>, LoadError> {
         #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
         if bytes.starts_with(&GZIP_MAGIC)
@@ -192,8 +242,18 @@ impl Profile {
         {
             return Ok(Recorded::Complete(profile));
         }
+        #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
+        if let Some(recorded) = parse_serial(bytes) {
+            return Ok(recorded);
+        }
         from_whole_buffer(bytes)
     }
+}
+
+/// [`from_whole_buffer`] of all of `input`, read into memory.
+fn from_whole_input(input: Input) -> Result<Recorded<Profile>, LoadError> {
+    let bytes = timed("read input", || input.read_all().map_err(LoadError::Io))?;
+    from_whole_buffer(&bytes)
 }
 
 /// Decodes a profile whole into memory and parses that text: the parser works
@@ -413,12 +473,17 @@ pub(crate) fn build_for_test(
 
 #[cfg(test)]
 mod tests {
-    use super::decode::{MAX_PLAUSIBLE_GZIP_RATIO, latin1_to_utf8};
-    #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
-    use super::gz_stream::{parse_gz_stream, parse_gz_stream_into};
+    use super::decode::{GZIP_ISIZE_BYTES, MAX_PLAUSIBLE_GZIP_RATIO, latin1_to_utf8};
     use super::pipeline::parse_chunks;
     use super::scanner::{find_special, scan_event};
     use super::serde_events::{arg_i64, arg_str};
+    #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+    use super::stream::pipelined::{parse_gz_stream, parse_gz_stream_into};
+    use super::stream::serial::{
+        Declined, MIN_STREAMED_BYTES, first_pool, parse_serial, parse_serial_into,
+        parse_serial_retrying,
+    };
+    use super::stream::{Unpaused, run_here};
     use super::*;
     use bviz_invocation::EpochMicros;
     use std::io::Write;
@@ -720,6 +785,8 @@ mod tests {
             assert!(parse_gz_stream(&gzip(&profile("abc")), 2, 64).is_some());
             assert!(parse_gz_stream(&gzip(&json), 2, 64).is_none());
         }
+        assert!(parse_gz_serial_chunked(&gzip(&profile("abc")), 64).is_some());
+        assert!(parse_gz_serial_chunked(&gzip(&json), 64).is_none());
 
         // Read whole, the profile parses intact — events and the
         // bracket-bearing metadata alike.
@@ -894,6 +961,250 @@ mod tests {
         assert_eq!(semantic(&serial), semantic(&pipelined));
     }
 
+    /// The serial decode of `gz` in pieces of about `chunk_bytes`, into a pool
+    /// sized from the stream's own [`gzip_size_hint`].
+    fn parse_gz_serial_chunked(gz: &[u8], chunk_bytes: usize) -> Option<Profile> {
+        let decoded_size = gzip_size_hint(gz).unwrap_or(0);
+        let interner =
+            ConcurrentInterner::new(decoded_size, decoded_size / BYTES_PER_DISTINCT).unwrap();
+        match run_here(parse_serial_into(
+            MultiGzDecoder::new(gz),
+            interner,
+            chunk_bytes,
+            decoded_size,
+            &mut Unpaused,
+        ))
+        .ok()?
+        {
+            Recorded::Complete(profile) => Some(profile),
+            Recorded::CutOff(_) => None,
+        }
+    }
+
+    /// A profile of at least [`MIN_STREAMED_BYTES`] and `min_bytes`, one event
+    /// per line, each named by a distinct run of `name_bytes` pseudo-random
+    /// alphanumerics, which compress about as poorly as real names.
+    fn streamable_profile_json(name_bytes: usize, min_bytes: usize) -> String {
+        use std::fmt::Write;
+        // An event line's bytes besides its name, rounded up.
+        const LINE_FRAMING_BYTES: usize = 128;
+        const THREADS: usize = 4;
+        const TARGETS: usize = 64;
+        const SEED: u64 = 7;
+        let len = MIN_STREAMED_BYTES.max(min_bytes);
+        // The last event line overshoots the length, and a closing line follows.
+        let mut json = String::with_capacity(len + name_bytes + 2 * LINE_FRAMING_BYTES);
+        json.push_str("{\"otherData\":{\"bazel_version\":\"9.0.0\"},\"traceEvents\":[\n");
+        let mut rng = fastrand::Rng::with_seed(SEED);
+        let mut i = 0usize;
+        while json.len() < len {
+            json.push_str("{\"cat\":\"c\",\"name\":\"");
+            let name_start = json.len();
+            write!(json, "{i:x}-").unwrap();
+            let fill = name_bytes.saturating_sub(json.len() - name_start);
+            json.extend(std::iter::repeat_with(|| rng.alphanumeric()).take(fill));
+            writeln!(
+                json,
+                "\",\"ph\":\"X\",\"ts\":{i},\"dur\":1,\"tid\":{},\"args\":{{\"target\":\"//p:t{}\"}}}},",
+                i % THREADS,
+                i % TARGETS,
+            )
+            .unwrap();
+            i += 1;
+        }
+        json.push_str(
+            "{\"cat\":\"c\",\"name\":\"last\",\"ph\":\"X\",\"ts\":0,\"dur\":1,\"tid\":0}\n]}",
+        );
+        json
+    }
+
+    #[test]
+    fn serially_streamed_matches_serial() {
+        let json = chunkable_profile_json();
+        let serial = parse_streaming(&json).expect("serial");
+        // Chunks far smaller than an event line force many pieces, boundary
+        // carries, and the no-newline buffer doubling.
+        let streamed = parse_gz_serial_chunked(&gzip(&json), 64).expect("serially streamed");
+        assert_eq!(semantic(&serial), semantic(&streamed));
+    }
+
+    #[test]
+    fn serially_streamed_transcodes_latin1() {
+        // 0xe9 is Latin-1 'é', as Bazel writes it.
+        let mut raw = b"{\"traceEvents\":[\n".to_vec();
+        raw.extend(
+            b"{\"cat\":\"c\",\"name\":\"caf\xe9\",\"ph\":\"X\",\"ts\":0,\"dur\":1,\"tid\":1}\n",
+        );
+        raw.extend(b"]}");
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(&raw).unwrap();
+        let gz = enc.finish().unwrap();
+        let p = parse_gz_serial_chunked(&gz, 64).expect("serially streamed");
+        assert_eq!(p.str(p.slices(&p.threads()[0])[0].name), "café");
+    }
+
+    fn memory_input(bytes: Vec<u8>) -> Input {
+        Input::new("memory".into(), bviz_input::Access::Memory(bytes))
+            .expect("an in-memory input reads")
+    }
+
+    #[test]
+    fn an_input_held_in_memory_streams_serially() {
+        let json = streamable_profile_json(8, 0);
+        let whole = semantic(&parse_streaming(&json).expect("serial"));
+        for bytes in [gzip(&json), json.clone().into_bytes()] {
+            let Some(Recorded::Complete(streamed)) = run_here(parse_serial_input(
+                &memory_input(bytes.clone()),
+                &mut Unpaused,
+            )) else {
+                panic!("serially streamed whole");
+            };
+            assert_eq!(semantic(&streamed), whole);
+            let Some(Recorded::Complete(from_bytes)) = parse_serial(&bytes) else {
+                panic!("serially streamed whole");
+            };
+            assert_eq!(semantic(&from_bytes), whole);
+        }
+    }
+
+    #[test]
+    fn a_short_profile_is_left_to_the_whole_buffer_parse() {
+        let json = chunkable_profile_json();
+        for bytes in [gzip(&json), json.into_bytes()] {
+            assert!(parse_serial(&bytes).is_none());
+            assert!(run_here(parse_serial_input(&memory_input(bytes), &mut Unpaused)).is_none());
+        }
+    }
+
+    /// Returns pending on its first poll, woken at once, as handing a thread
+    /// back does.
+    #[cfg(not(target_family = "wasm"))]
+    async fn pend_once() {
+        let mut pended = false;
+        std::future::poll_fn(|cx| match std::mem::replace(&mut pended, true) {
+            true => std::task::Poll::Ready(()),
+            false => {
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+        })
+        .await
+    }
+
+    // Ceding reads the clock, which a WebAssembly test runs without.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn a_ceding_decode_cedes_between_pieces_and_reads_alike() {
+        let json = chunkable_profile_json();
+        let mut cedes = 0;
+        let mut ceding = Ceding::new(std::time::Duration::ZERO, || {
+            cedes += 1;
+            pend_once()
+        });
+        let interner = ConcurrentInterner::new(json.len(), 1).unwrap();
+        let Ok(Recorded::Complete(streamed)) = run_here(parse_serial_into(
+            json.as_bytes(),
+            interner,
+            64,
+            json.len(),
+            &mut ceding,
+        )) else {
+            panic!("serially streamed whole");
+        };
+        assert_eq!(
+            semantic(&streamed),
+            semantic(&parse_streaming(&json).expect("serial"))
+        );
+        assert!(cedes > 1);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn an_input_read_ceding_reads_as_one_read_whole() {
+        let json = streamable_profile_json(8, 0);
+        let whole = semantic(&parse_streaming(&json).expect("serial"));
+        for bytes in [gzip(&json), json.clone().into_bytes()] {
+            let Ok(Recorded::Complete(p)) = run_here(Profile::from_input_ceding(
+                memory_input(bytes),
+                std::time::Duration::ZERO,
+                pend_once,
+            )) else {
+                panic!("read whole");
+            };
+            assert_eq!(semantic(&p), whole);
+        }
+    }
+
+    #[test]
+    fn plain_text_streams_serially() {
+        let json = chunkable_profile_json();
+        let interner = ConcurrentInterner::new(json.len(), 1).unwrap();
+        let Ok(Recorded::Complete(streamed)) = run_here(parse_serial_into(
+            json.as_bytes(),
+            interner,
+            64,
+            json.len(),
+            &mut Unpaused,
+        )) else {
+            panic!("serially streamed whole");
+        };
+        assert_eq!(
+            semantic(&streamed),
+            semantic(&parse_streaming(&json).expect("serial"))
+        );
+    }
+
+    #[test]
+    fn a_cut_off_stream_recovers_as_the_whole_buffer_does() {
+        let json = chunkable_profile_json();
+        let gz = gzip(&json);
+        let unclosed = gzip(json.trim_end_matches("]}"));
+        let cuts = [
+            &gz[..gz.len() / 2],
+            &gz[..gz.len() * 3 / 4],
+            // Every decoded byte, short of the length field that checks them.
+            &gz[..gz.len() - GZIP_ISIZE_BYTES],
+            // A whole stream whose array never closes.
+            &unclosed[..],
+        ];
+        let recovers_alike = |bytes: &[u8], text: &mut dyn Read| {
+            let Ok(Recorded::CutOff(whole)) = from_whole_buffer(bytes) else {
+                panic!("the whole-buffer path recovers it cut off");
+            };
+            let interner = ConcurrentInterner::new(json.len(), 1).unwrap();
+            let Ok(Recorded::CutOff(streamed)) = run_here(parse_serial_into(
+                text,
+                interner,
+                64,
+                json.len(),
+                &mut Unpaused,
+            )) else {
+                panic!("the serial decode recovers it cut off");
+            };
+            assert_eq!(semantic(&streamed), semantic(&whole));
+        };
+        for cut in cuts {
+            recovers_alike(cut, &mut MultiGzDecoder::new(cut));
+        }
+        let unclosed = json.trim_end_matches("]}").as_bytes();
+        recovers_alike(unclosed, &mut &unclosed[..]);
+        // Cut before its events start, a stream is left to the whole-buffer
+        // path, which reports why it fails.
+        const GZIP_HEADER_BYTES: usize = 10;
+        let interner = ConcurrentInterner::new(json.len(), 1).unwrap();
+        let header_only = &gz[..GZIP_HEADER_BYTES + 2];
+        assert!(
+            run_here(parse_serial_into(
+                MultiGzDecoder::new(header_only),
+                interner,
+                64,
+                json.len(),
+                &mut Unpaused,
+            ))
+            .is_err()
+        );
+    }
+
     #[test]
     fn merge_keeps_event_order_for_equal_keys() {
         // One thread with several slices sharing an identical (ts, dur) key,
@@ -932,6 +1243,8 @@ mod tests {
             let pipelined = parse_gz_stream(&gzip(&json), 4, 64).expect("pipelined");
             assert_eq!(semantic(&serial), semantic(&pipelined));
         }
+        let streamed = parse_gz_serial_chunked(&gzip(&json), 64).expect("serially streamed");
+        assert_eq!(semantic(&serial), semantic(&streamed));
     }
 
     #[test]
@@ -968,6 +1281,7 @@ mod tests {
         check(&parse_chunks(&json, 4, 0).expect("parallel"));
         #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
         check(&parse_gz_stream(&gzip(&json), 2, 64).expect("pipelined"));
+        check(&parse_gz_serial_chunked(&gzip(&json), 64).expect("serially streamed"));
     }
 
     #[test]
@@ -1121,6 +1435,7 @@ mod tests {
         check(&parse_chunks(&json, 4, 0).expect("parallel"));
         #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
         check(&parse_gz_stream(&gzip(&json), 4, 64).expect("pipelined"));
+        check(&parse_gz_serial_chunked(&gzip(&json), 64).expect("serially streamed"));
     }
 
     #[test]
@@ -1457,7 +1772,7 @@ mod tests {
 
     /// `gz` with its ISIZE trailer replaced by `isize`.
     fn with_trailer(mut gz: Vec<u8>, isize: u32) -> Vec<u8> {
-        let at = gz.len() - 4;
+        let at = gz.len() - GZIP_ISIZE_BYTES;
         gz[at..].copy_from_slice(&isize.to_le_bytes());
         gz
     }
@@ -1489,16 +1804,80 @@ mod tests {
         gz.extend(gzip(&json[last_member_at..]));
         assert_eq!(gzip_size_hint(&gz), Some(json.len() - last_member_at));
         // A pool as short as that hint runs out mid-parse.
+        const PAGE: usize = 16;
+        let short_pool = || ConcurrentInterner::with_exact_pool(4 * PAGE, PAGE);
         #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
-        {
-            const PAGE: usize = 16;
-            let pool = ConcurrentInterner::with_exact_pool(4 * PAGE, PAGE);
-            assert!(parse_gz_stream_into(&gz[..], pool, 2, 64, 0).is_none());
-        }
+        assert!(parse_gz_stream_into(&gz[..], short_pool(), 2, 64, 0).is_none());
+        assert!(matches!(
+            run_here(parse_serial_into(
+                MultiGzDecoder::new(&gz[..]),
+                short_pool(),
+                64,
+                0,
+                &mut Unpaused,
+            )),
+            Err(Declined::PoolExhausted)
+        ));
         let loaded = Profile::from_bytes(&gz)
             .expect("the fallback loads it")
             .into_inner();
         assert_eq!(semantic(&loaded), serial);
+    }
+
+    #[test]
+    fn a_serial_decode_whose_pool_runs_out_decodes_again_into_a_full_one() {
+        let json = chunkable_profile_json();
+        const PAGE: usize = 16;
+        let mut reopened = false;
+        let Some(Recorded::Complete(p)) = run_here(parse_serial_retrying(
+            json.as_bytes(),
+            || {
+                reopened = true;
+                Some(json.as_bytes())
+            },
+            ConcurrentInterner::with_exact_pool(4 * PAGE, PAGE),
+            || ConcurrentInterner::new(json.len(), 1).ok(),
+            64,
+            json.len(),
+            &mut Unpaused,
+        )) else {
+            panic!("the full pool holds it");
+        };
+        assert!(reopened);
+        assert_eq!(
+            semantic(&p),
+            semantic(&parse_streaming(&json).expect("serial"))
+        );
+    }
+
+    #[test]
+    fn a_streamed_input_whose_pool_runs_out_is_read_again() {
+        // Text nearly all distinct, and long enough beside the pool's fixed
+        // padding that it outgrows the first pool.
+        const NAME_BYTES: usize = 2000;
+        const PADDINGS: usize = 3;
+        let padding = first_pool(0).unwrap().pool_bytes();
+        let json = streamable_profile_json(NAME_BYTES, PADDINGS * padding);
+        let decoded_size = json.len();
+        assert!(matches!(
+            run_here(parse_serial_into(
+                json.as_bytes(),
+                first_pool(decoded_size).unwrap(),
+                MIN_STREAMED_BYTES,
+                decoded_size,
+                &mut Unpaused,
+            )),
+            Err(Declined::PoolExhausted)
+        ));
+        let whole = semantic(&parse_streaming(&json).expect("serial"));
+        for bytes in [gzip(&json), json.into_bytes()] {
+            let Some(Recorded::Complete(p)) =
+                run_here(parse_serial_input(&memory_input(bytes), &mut Unpaused))
+            else {
+                panic!("read again into a full pool");
+            };
+            assert_eq!(semantic(&p), whole);
+        }
     }
 
     #[test]

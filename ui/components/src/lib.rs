@@ -39,7 +39,7 @@ mod tooltip;
 mod truncating_label;
 mod zoom_keys;
 
-pub use background::{Pending, load_in_background};
+pub use background::{Pending, load_future_in_background, load_in_background};
 pub use button::Button;
 pub use by_room::ByRoom;
 pub use canvas::{Inked, LabelBoxStyle, paint_labeled_box, shape_truncated};
@@ -69,7 +69,9 @@ pub use legend::{
 pub use list_scroll::{ListScroll, list_scrollbar};
 pub use menu::{Menu, MenuEvent, MenuItem, SubmenuItem, over_window};
 pub use multi_select::{MultiOption, MultiSelect, MultiSelectEvent};
-pub use notice::{Source, centered_notice, centered_spinner, cut_off_note, note_strip};
+pub use notice::{
+    NOTE_TEXT_SIZE, Source, centered_notice, centered_spinner, cut_off_note, note_frame, note_strip,
+};
 pub use query_field::{QueryField, QueryFieldEvent};
 pub use scrollbar::{Axis, DEFAULT_MIN_THUMB, SCROLLBAR_THICKNESS, Scrollbar, ScrollbarColors};
 pub use scrubber::{ScrubberColors, ScrubberState, scrubber};

@@ -277,6 +277,15 @@ impl Merge {
         }
     }
 
+    /// Reserves the args pool for `total` entries in all. A reservation the
+    /// allocator refuses leaves the pool to grow as it fills.
+    #[cfg(any(test, all(target_family = "wasm", not(target_feature = "atomics"))))]
+    pub(crate) fn reserve_args(&mut self, total: usize) {
+        let _ = self
+            .args_pool
+            .try_reserve_exact(total.saturating_sub(self.args_pool.len()));
+    }
+
     /// Absorbs one builder. The builder's slices must already be sealed into
     /// per-thread lane order ([`Builder::seal_slices`]): [`finish_merge`]
     /// k-way merges the folded runs rather than re-sorting whole lanes.

@@ -1,7 +1,7 @@
 use crate::panel::{FileName, Members, numbered};
 use crate::{
-    AnyPanel, Document, DocumentOf, Member, Panel, Regions, Role, Shared, ViewKind, Workspace,
-    invocation_label,
+    AnyPanel, Document, DocumentOf, FileIdentity, Member, Panel, Regions, Role, Shared, ViewKind,
+    Workspace, invocation_label,
 };
 use bviz_invocation::InvocationId;
 use bviz_ui_playback::Clock;
@@ -309,6 +309,7 @@ pub(crate) struct Held<V> {
     pub(crate) file: FileName,
     pub(crate) first: V,
     pub(crate) rest: Vec<V>,
+    pub(crate) read_from: Vec<FileIdentity>,
 }
 
 impl<V> Held<V> {
@@ -332,6 +333,7 @@ impl Held<ViewSpec> {
             file: self.file.clone(),
             first: self.first.registered(),
             rest: self.rest.iter().map(ViewSpec::registered).collect(),
+            read_from: self.read_from.clone(),
         }
     }
 }
@@ -848,6 +850,13 @@ impl<S> Registry<S> {
         self.registered_mut(document)?.view_mut(view)
     }
 
+    /// The files the session's open documents were read from.
+    pub(crate) fn read_from(&self) -> impl Iterator<Item = &FileIdentity> {
+        (self.documents.iter())
+            .flat_map(Registered::members)
+            .flat_map(|held| &held.read_from)
+    }
+
     /// Whether the session holds no document.
     pub(crate) fn is_empty(&self) -> bool {
         self.documents.is_empty()
@@ -894,6 +903,7 @@ fn numbered_file(files: &mut Numbering, member: Member) -> Held<ViewSpec> {
         },
         first: member.first,
         rest: member.rest,
+        read_from: member.read_from,
     }
 }
 
@@ -1081,6 +1091,7 @@ mod tests {
             file,
             first: views.next().expect("a file brings a view"),
             rest: views.collect(),
+            read_from: Vec::new(),
         }
     }
 
@@ -1528,6 +1539,7 @@ mod tests {
             },
             first: view(TIMELINE),
             rest: Vec::new(),
+            read_from: Vec::new(),
         };
         let (id, ()) = documents.register(file_name(), (), |_| ((file(1), vec![file(2)]), ()));
         let ordinals: Vec<Option<NonZeroUsize>> = (0..2)
@@ -1657,6 +1669,51 @@ mod tests {
     fn names(document: &str, files: &[&str]) -> (String, Vec<String>) {
         let files = files.iter().map(|file| file.to_string()).collect();
         (document.to_string(), files)
+    }
+
+    /// Opens `document` into `registry`, with no panel showing it.
+    fn opened_unshown(registry: &mut TestRegistry, document: DocumentOf<()>) -> DocumentId {
+        let Registration {
+            name, first, rest, ..
+        } = registry.numbered(document);
+        let held = (
+            first.registered(),
+            rest.iter().map(Held::registered).collect(),
+        );
+        registry.register(name, (), |_| (held, ())).0
+    }
+
+    fn read_from(names: &[&str]) -> Vec<FileIdentity> {
+        let file = |name: &&str| FileIdentity::of_browser_file(name.to_string(), 1, 0.0);
+        names.iter().map(file).collect()
+    }
+
+    fn files_read(registry: &TestRegistry) -> Vec<FileIdentity> {
+        registry.read_from().cloned().collect()
+    }
+
+    #[test]
+    fn a_document_closing_forgets_only_the_files_it_was_read_from() {
+        let mut registry = TestRegistry::new();
+        let graph = member("graph", &[GRAPH]).read_from(read_from(&["query.pb", "aquery.pb"]));
+        let graph = opened_unshown(&mut registry, lone(graph));
+        let joined = DocumentOf::join(
+            id("a5f7f3e6"),
+            profile_member("build.profile.gz").read_from(read_from(&["build.profile.gz"])),
+            member("build.bep", &[CONSOLE]).read_from(read_from(&["build.bep"])),
+            Vec::new(),
+            (),
+        );
+        opened_unshown(&mut registry, joined);
+        assert_eq!(
+            files_read(&registry),
+            read_from(&["query.pb", "aquery.pb", "build.profile.gz", "build.bep"])
+        );
+        registry.remove(graph);
+        assert_eq!(
+            files_read(&registry),
+            read_from(&["build.profile.gz", "build.bep"])
+        );
     }
 
     /// A joined document holds each file as the file's viewer opened it: under
