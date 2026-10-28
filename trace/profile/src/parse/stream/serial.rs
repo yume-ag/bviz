@@ -1,4 +1,5 @@
 use std::io::Read;
+use std::time::Duration;
 
 use bviz_input::Input;
 use bviz_invocation::Recorded;
@@ -9,9 +10,14 @@ use crate::model::Profile;
 use crate::parse::build::{Builder, Merge, seal};
 use crate::parse::decode::{gzip_size_hint, latin1_cow, latin1_to_utf8};
 use crate::parse::pipeline::{MIN_PARALLEL_BYTES, parse_chunk};
-use crate::parse::{BYTES_PER_DISTINCT, GZIP_MAGIC, recover_events, recover_other_data, timed};
+use crate::parse::{
+    BYTES_PER_DISTINCT, GZIP_MAGIC, recover_events, recover_other_data, timed, timed_future,
+};
 
-use super::{PieceBuf, PieceSink, StreamChunk, StreamEnd, gzip_input, seal_stream, stream_pieces};
+use super::{
+    Pause, PieceBuf, PieceSink, StreamChunk, StreamEnd, Unpaused, gzip_input, run_here,
+    seal_stream, stream_pieces,
+};
 
 /// A profile decoding to fewer bytes is parsed whole, as the builds with
 /// threads parse one under their parallel threshold: the whole-buffer parse
@@ -49,40 +55,86 @@ pub(crate) fn parse_serial(bytes: &[u8]) -> Option<Recorded<Profile>> {
         let decoded_size = streamed(gzip_size_hint(bytes)?)?;
         let inflate = || Some(MultiGzDecoder::new(bytes));
         return timed("decode+parse (serial)", || {
-            parse_serial_from(inflate()?, inflate, decoded_size)
+            run_here(parse_serial_from(
+                inflate()?,
+                inflate,
+                decoded_size,
+                &mut Unpaused,
+            ))
         });
     }
     let size = streamed(bytes.len())?;
     timed("parse (serial)", || {
-        parse_serial_from(bytes, || Some(bytes), size)
+        run_here(parse_serial_from(
+            bytes,
+            || Some(bytes),
+            size,
+            &mut Unpaused,
+        ))
     })
 }
 
 /// The serial decode streamed from a seekable `input`: gzipped, sized from its
-/// trailer, or plain. `None` for an input it declines, as [`parse_serial`]
-/// declines one.
-pub(crate) fn parse_serial_input(input: &Input) -> Option<Recorded<Profile>> {
+/// trailer, or plain, awaiting `pause` between its pieces. `None` for an input
+/// it declines, as [`parse_serial`] declines one.
+pub(crate) async fn parse_serial_input(
+    input: &Input,
+    pause: &mut impl Pause,
+) -> Option<Recorded<Profile>> {
     if input.head()?.starts_with(&GZIP_MAGIC) {
         let (reader, decoded_size) = gzip_input(input)?;
         let decoded_size = streamed(decoded_size)?;
         let reopen = || Some(MultiGzDecoder::new(gzip_input(input)?.0));
-        return timed("decode+parse (serial, streamed)", || {
-            parse_serial_from(MultiGzDecoder::new(reader), reopen, decoded_size)
-        });
+        return timed_future(
+            "decode+parse (serial, streamed)",
+            parse_serial_from(MultiGzDecoder::new(reader), reopen, decoded_size, pause),
+        )
+        .await;
     }
     let size = streamed(usize::try_from(input.size()?).ok()?)?;
-    timed("parse (serial, streamed)", || {
-        parse_serial_from(input.reader()?, || input.reader(), size)
-    })
+    let text = input.reader()?;
+    timed_future(
+        "parse (serial, streamed)",
+        parse_serial_from(text, || input.reader(), size, pause),
+    )
+    .await
+}
+
+/// Paces a serial decode that shares its thread: between pieces, once it has
+/// run for `every` since it last ceded, it awaits `cede`.
+pub(crate) struct Ceding<C> {
+    cede: C,
+    every: Duration,
+    due: bviz_time::Instant,
+}
+
+impl<C> Ceding<C> {
+    pub(crate) fn new(every: Duration, cede: C) -> Self {
+        Self {
+            cede,
+            every,
+            due: bviz_time::now() + every,
+        }
+    }
+}
+
+impl<C: FnMut() -> F + Send, F: Future<Output = ()> + Send> Pause for Ceding<C> {
+    async fn pause(&mut self) {
+        if bviz_time::now() >= self.due {
+            (self.cede)().await;
+            self.due = bviz_time::now() + self.every;
+        }
+    }
 }
 
 /// Parses `text`, a decoded stream of `decoded_size` bytes, into a string pool
 /// holding [`POOL_SHARE_NUM`]/[`POOL_SHARE_DEN`] of them, and the stream
 /// `reopen` gives into one holding them all when that outgrows it.
-fn parse_serial_from<R: Read>(
+async fn parse_serial_from<R: Read>(
     text: R,
     reopen: impl FnOnce() -> Option<R>,
     decoded_size: usize,
+    pause: &mut impl Pause,
 ) -> Option<Recorded<Profile>> {
     parse_serial_retrying(
         text,
@@ -91,7 +143,9 @@ fn parse_serial_from<R: Read>(
         || pool(decoded_size, decoded_size),
         SERIAL_PIECE_BYTES,
         decoded_size,
+        pause,
     )
+    .await
 }
 
 /// The pool a serial decode of `decoded_size` bytes interns into first.
@@ -106,17 +160,20 @@ fn pool(text_bytes: usize, decoded_size: usize) -> Option<ConcurrentInterner> {
 
 /// Parses the decoded `text` into the `first` pool and, if its distinct text
 /// outgrows that, the stream `reopen` gives into the pool `full` makes.
-pub(crate) fn parse_serial_retrying<R: Read>(
+pub(crate) async fn parse_serial_retrying<R: Read>(
     text: R,
     reopen: impl FnOnce() -> Option<R>,
     first: ConcurrentInterner,
     full: impl FnOnce() -> Option<ConcurrentInterner>,
     chunk_bytes: usize,
     decoded_size: usize,
+    pause: &mut impl Pause,
 ) -> Option<Recorded<Profile>> {
-    match parse_serial_into(text, first, chunk_bytes, decoded_size) {
+    match parse_serial_into(text, first, chunk_bytes, decoded_size, pause).await {
         Err(Declined::PoolExhausted) => {
-            parse_serial_into(reopen()?, full()?, chunk_bytes, decoded_size).ok()
+            parse_serial_into(reopen()?, full()?, chunk_bytes, decoded_size, pause)
+                .await
+                .ok()
         }
         parsed => parsed.ok(),
     }
@@ -213,13 +270,15 @@ impl PieceSink for FoldSink<'_> {
 /// Reads, parses and folds the decoded `text`, a stream of `decoded_size`
 /// bytes, in turn on the calling thread, in pieces of about `chunk_bytes` read
 /// into one reused buffer, so no more of the text than one piece is held at a
-/// time. Text that stops inside the `traceEvents` array loads cut off, with the
-/// whole events before the cut, as the whole-buffer path recovers it.
-pub(crate) fn parse_serial_into(
+/// time, awaiting `pause` between them. Text that stops inside the
+/// `traceEvents` array loads cut off, with the whole events before the cut, as
+/// the whole-buffer path recovers it.
+pub(crate) async fn parse_serial_into(
     text: impl Read,
     interner: ConcurrentInterner,
     chunk_bytes: usize,
     decoded_size: usize,
+    pause: &mut impl Pause,
 ) -> Result<Recorded<Profile>, Declined> {
     let (pool_tx, pool_rx) = std::sync::mpsc::channel::<Vec<u8>>();
     let mut sink = FoldSink {
@@ -232,9 +291,11 @@ pub(crate) fn parse_serial_into(
     };
     // Each piece is parsed, returning its buffer, before the next is cut.
     let ring = 1;
-    let streamed = timed("  decode+parse+fold chunks", || {
-        stream_pieces(text, chunk_bytes, ring, &mut sink, pool_rx)
-    });
+    let streamed = timed_future(
+        "  decode+parse+fold chunks",
+        stream_pieces(text, chunk_bytes, ring, &mut sink, pool_rx, pause),
+    )
+    .await;
     let Some(end) = streamed else {
         return Err(Declined::stopped(&interner));
     };

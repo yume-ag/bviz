@@ -7,6 +7,7 @@ rust_library(
     visibility = [
         "//bviz:__pkg__",
         "//ui/shell:__pkg__",
+        "//ui/trace:__pkg__",
         "//ui/workspace:__pkg__",
     ],
     deps = select({

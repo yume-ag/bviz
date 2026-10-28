@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::io::{BufReader, Read};
+use std::task::{Context, Poll, Waker};
 
 use bviz_input::Input;
 
@@ -297,17 +298,45 @@ impl StreamEnd {
     }
 }
 
+/// Where a streamed decode may hand its thread back to whatever shares it:
+/// awaited after each piece [`stream_pieces`] sends.
+pub(crate) trait Pause {
+    fn pause(&mut self) -> impl Future<Output = ()> + Send;
+}
+
+/// A decode that keeps its thread to its end.
+pub(crate) struct Unpaused;
+
+impl Pause for Unpaused {
+    fn pause(&mut self) -> impl Future<Output = ()> + Send {
+        std::future::ready(())
+    }
+}
+
+/// Runs `decode` to its end on the calling thread, polling it again whenever
+/// it pauses.
+pub(crate) fn run_here<T>(decode: impl Future<Output = T>) -> T {
+    let mut decode = std::pin::pin!(decode);
+    let mut cx = Context::from_waker(Waker::noop());
+    loop {
+        if let Poll::Ready(output) = decode.as_mut().poll(&mut cx) {
+            return output;
+        }
+    }
+}
+
 /// Streams the decoded profile `text` and sends newline-aligned pieces of its
 /// `traceEvents` array to `sink`, each read into one of a ring of `ring`
-/// buffers that return through `pool` once their piece is parsed. `None` on a
-/// decode error, an input the chunker can't navigate (no array, an over-long
-/// line), or a piece the sink refuses.
-fn stream_pieces<S: PieceSink>(
+/// buffers that return through `pool` once their piece is parsed, awaiting
+/// `pause` after each. `None` on a decode error, an input the chunker can't
+/// navigate (no array, an over-long line), or a piece the sink refuses.
+async fn stream_pieces<S: PieceSink>(
     mut text: impl Read,
     chunk_bytes: usize,
     ring: usize,
     sink: &mut S,
     pool: std::sync::mpsc::Receiver<Vec<u8>>,
+    pause: &mut impl Pause,
 ) -> Option<StreamEnd> {
     let mut bufs = BufferPool::new(pool, ring, chunk_bytes);
     let (head, mut carry) = read_to_array_start(&mut text, chunk_bytes)?;
@@ -331,6 +360,7 @@ fn stream_pieces<S: PieceSink>(
         }
         if cut_at_newline(&mut buf, &mut carry) {
             sink.send(buf)?;
+            pause.pause().await;
         } else if buf.bytes().len() >= STREAM_MAX_EVENT_BYTES {
             return None;
         } else {

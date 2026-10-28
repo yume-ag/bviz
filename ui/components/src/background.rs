@@ -66,6 +66,13 @@ impl<T: Send + 'static> Pending<T> {
         Self(Deferred::new(work))
     }
 
+    /// [`start`](Self::start) of work that awaits as it goes, run to its end on
+    /// the thread of its own.
+    #[cfg(all(target_family = "wasm", target_feature = "atomics"))]
+    pub fn start_future(work: impl Future<Output = Result<T, String>> + Send + 'static) -> Self {
+        Self::start(move || block_on(work))
+    }
+
     /// Blocks until the work finishes, reporting a panic in it the way the work
     /// reports a failure of its own.
     #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
@@ -85,6 +92,26 @@ impl<T: Send + 'static> Pending<T> {
     #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
     pub async fn finished(self) -> Result<T, String> {
         self.0.run().await.unwrap_or_else(|_| Err(PANICKED.into()))
+    }
+}
+
+/// The output of `work`, the calling thread parked while it waits.
+#[cfg(any(test, all(target_family = "wasm", target_feature = "atomics")))]
+fn block_on<F: Future>(work: F) -> F::Output {
+    struct Unpark(std::thread::Thread);
+    impl std::task::Wake for Unpark {
+        fn wake(self: std::sync::Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    let waker = std::sync::Arc::new(Unpark(std::thread::current())).into();
+    let mut cx = std::task::Context::from_waker(&waker);
+    let mut work = std::pin::pin!(work);
+    loop {
+        if let std::task::Poll::Ready(output) = work.as_mut().poll(&mut cx) {
+            return output;
+        }
+        std::thread::park();
     }
 }
 
@@ -137,14 +164,29 @@ mod tests {
         }
     }
 
-    /// Returns pending on its first poll, as work handing its thread back does.
+    /// Returns pending on its first poll, woken at once, as work handing its
+    /// thread back does.
     async fn pend_once() {
         let mut pended = false;
-        std::future::poll_fn(|_| match std::mem::replace(&mut pended, true) {
+        std::future::poll_fn(|cx| match std::mem::replace(&mut pended, true) {
             true => Poll::Ready(()),
-            false => Poll::Pending,
+            false => {
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
         })
         .await
+    }
+
+    #[test]
+    fn blocking_on_work_resumes_it_where_it_awaited() {
+        assert_eq!(
+            block_on(async {
+                pend_once().await;
+                7
+            }),
+            7
+        );
     }
 
     #[test]

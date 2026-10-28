@@ -6,7 +6,8 @@ use bviz_parallel::worker_count;
 use flate2::read::MultiGzDecoder;
 
 use super::{
-    PieceBuf, PieceSink, StreamChunk, StreamEnd, StreamEnds, gzip_input, seal_stream, stream_pieces,
+    PieceBuf, PieceSink, StreamChunk, StreamEnd, StreamEnds, Unpaused, gzip_input, run_here,
+    seal_stream, stream_pieces,
 };
 use crate::concurrent_interner::ConcurrentInterner;
 use crate::model::Profile;
@@ -199,13 +200,14 @@ fn decode_parse_fold(
             let ring = 2 * workers + 1;
             let producer = scope.spawn(move || {
                 let mut queue = PieceQueue { tx, sent: 0 };
-                stream_pieces(
+                run_here(stream_pieces(
                     MultiGzDecoder::new(reader),
                     chunk_bytes,
                     ring,
                     &mut queue,
                     pool_rx,
-                )
+                    &mut Unpaused,
+                ))
                 .and_then(StreamEnd::closed)
             });
             for shard in 0..workers {
