@@ -1,9 +1,6 @@
 common --enable_platform_specific_config
 common:linux --host_platform=//platforms:local_gnu
 
-# Provide a libgcc_s stub for Rust's `-lgcc_s` link arg (hermetic-llvm "Usage with Rust").
-build --@llvm//config:experimental_stub_libgcc_s=True
-
 # Builds for a platform other than the host. Naming the output directory after
 # the platform keeps them from overwriting the host build's artifacts, which are
 # otherwise reached by the same paths.
