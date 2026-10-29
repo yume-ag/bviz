@@ -1,0 +1,29 @@
+Build Cargo build scripts in the plain tool configuration
+
+A build script is compiled in a tool configuration that takes the
+compilation mode of the crate it serves, so in any mode but the one tools are
+built in, build scripts get a tool configuration of their own, and with it
+another analysis of the toolchains and crates they depend on. In the plain
+tool configuration they share the one the other tools use. A script still
+learns the crate's mode: cargo_build_script sets PROFILE, DEBUG and OPT_LEVEL
+from its own configuration, which is the crate's.
+
+The transition that applied the crate's mode stays defined, unused, to keep
+the patch to one line.
+
+The patch changes one line of the file and carries the six around it, too
+little of the file to attribute.
+
+License: Apache-2.0 (hermeticbuild/rules_rust source-fd521efe16c03e4cd169453eb44fb98d73ebb7aa)
+
+--- a/cargo/private/cargo_build_script.bzl
++++ b/cargo/private/cargo_build_script.bzl
+@@ -881,7 +881,7 @@
+             doc = "The binary script to run, generally a `rust_binary` target.",
+             executable = True,
+             mandatory = True,
+-            cfg = _cargo_build_script_cfg,
++            cfg = "exec",
+             providers = [rust_common.crate_info, DepInfo],
+         ),
+         "tools": attr.label_list(
