@@ -1,0 +1,26 @@
+Register no Rust toolchains
+
+The module registers a toolchain for every host and target triple its rust
+extension provides, and each build configuration analyses all of them during
+toolchain resolution. It is reached only through protobuf, and this build
+compiles Rust with the toolchains rules_rs registers, whose toolchain type
+belongs to rules_rs's own copy of rules_rust.
+
+The patch removes four lines from the module's MODULE.bazel and carries the
+six around them, too little of the file to attribute.
+
+License: Apache-2.0 (rules_rust 0.69.0)
+
+--- a/MODULE.bazel
++++ b/MODULE.bazel
+@@ -47,10 +47,6 @@
+ rust.toolchain(edition = "2021")
+ use_repo(rust, "rust_toolchains")
+ 
+-register_toolchains(
+-    "@rust_toolchains//:all",
+-)
+-
+ rust_host_tools = use_extension("//rust:extensions.bzl", "rust_host_tools")
+ rust_host_tools.host_tools(
+     name = "rust_host_tools",

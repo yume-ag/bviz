@@ -1,0 +1,20 @@
+Register only the sha256sum toolchains
+
+The module registers a toolchain for every coreutils tool and every way it
+can provide one, and each build configuration analyses all of them during
+toolchain resolution. bazel_env.bzl, through which the module is
+reached, resolves only the sha256sum toolchain type.
+
+The patch changes one line of the module's MODULE.bazel and carries the three
+around it, too little of the file to attribute.
+
+License: MIT (rules_coreutils 1.0.1)
+
+--- a/MODULE.bazel
++++ b/MODULE.bazel
+@@ -200,4 +200,4 @@
+     )
+ ]
+ 
+-register_toolchains("//coreutils/toolchain/...")
++register_toolchains("//coreutils/toolchain/sha256sum:all")

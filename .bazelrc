@@ -1,9 +1,6 @@
 common --enable_platform_specific_config
 common:linux --host_platform=//platforms:local_gnu
 
-# Provide a libgcc_s stub for Rust's `-lgcc_s` link arg (hermetic-llvm "Usage with Rust").
-build --@llvm//config:experimental_stub_libgcc_s=True
-
 # Builds for a platform other than the host. Naming the output directory after
 # the platform keeps them from overwriting the host build's artifacts, which are
 # otherwise reached by the same paths.
@@ -47,6 +44,12 @@ build:remote --@rules_rs_rules_rust//rust/settings:pipelined_compilation
 common:ci --loading_phase_threads=32
 
 build --@rules_rs_rules_rust//rust/settings:clippy.toml=//:clippy.toml
+
+# Tools are built without the target's Starlark flags: each distinct value would
+# fork a tool configuration that re-analyses the toolchains and crates. Clippy
+# lints tool crates too, so they keep the project's clippy.toml.
+build --incompatible_exclude_starlark_flags_from_exec_config
+build --experimental_propagate_custom_flag=@rules_rs_rules_rust//rust/settings:clippy.toml
 
 # Style and lint checks; both report a finding rather than rewriting the source.
 build:rustfmt --aspects=@rules_rs_rules_rust//rust:defs.bzl%rustfmt_aspect
