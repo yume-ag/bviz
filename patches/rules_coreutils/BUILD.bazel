@@ -1,0 +1,1 @@
+exports_files(["rules_coreutils-register-sha256sum-only.patch"])
