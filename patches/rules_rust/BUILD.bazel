@@ -1,1 +1,4 @@
-exports_files(["rules-rust-export-licence.patch"])
+exports_files([
+    "rules-rust-export-licence.patch",
+    "rules-rust-register-no-toolchains.patch",
+])
