@@ -50,6 +50,15 @@ single_version_override(
 )
 
 single_version_override(
+    module_name = "rules_go",
+    patch_strip = 1,
+    patches = ["//patches/rules_go:rules_go-register-no-toolchains.patch"],
+    # The resolved version: unpinned, the patch also meets the module files of
+    # the earlier versions other modules request, which it does not fit.
+    version = "0.62.0",
+)
+
+single_version_override(
     module_name = "rules_rs",
     patch_strip = 1,
     patches = [
