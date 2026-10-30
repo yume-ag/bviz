@@ -1,0 +1,101 @@
+Pass a thread's stack size to the worker that runs it
+
+Builder::stack_size is accepted and dropped, so every thread gets the stack
+size wasm-bindgen gives a thread by default, however deep the recursion it
+runs. The size travels with the module and memory in the worker's
+initialization message, rounded up to whole WebAssembly pages as
+wasm-bindgen requires, and the worker templates hand it to the shim's init
+as thread_stack_size. A size of zero, which wasm-bindgen refuses, leaves
+the thread that default.
+
+License: Apache-2.0 (wasm_thread 0cf96c7708dfb97ccf3da50347e25edcf75d6937)
+
+diff --git a/src/wasm32/js/web_worker.js b/src/wasm32/js/web_worker.js
+index 710ac7b..bb3e927 100644
+--- a/src/wasm32/js/web_worker.js
++++ b/src/wasm32/js/web_worker.js
+@@ -5,9 +5,9 @@ importScripts('WASM_BINDGEN_SHIM_URL');
+ // Once we've got it, initialize it all with the `wasm_bindgen` global we imported via
+ // `importScripts`.
+ self.onmessage = event => {
+-    const [module_or_path, memory, work] = event.data;
++    const [module_or_path, memory, work, thread_stack_size] = event.data;
+ 
+-    wasm_bindgen({ module_or_path, memory }).catch(err => {
++    wasm_bindgen({ module_or_path, memory, thread_stack_size }).catch(err => {
+         console.log(err);
+ 
+         // Propagate to main `onerror`:
+diff --git a/src/wasm32/js/web_worker_module.js b/src/wasm32/js/web_worker_module.js
+index 64d9af2..ba9ff6a 100644
+--- a/src/wasm32/js/web_worker_module.js
++++ b/src/wasm32/js/web_worker_module.js
+@@ -5,9 +5,9 @@ import init, { wasm_thread_entry_point } from "WASM_BINDGEN_SHIM_URL";
+ // Once we've got it, initialize it all with the `wasm_bindgen` global we imported via
+ // `importScripts`.
+ self.onmessage = event => {
+-    const [module_or_path, memory, work] = event.data;
++    const [module_or_path, memory, work, thread_stack_size] = event.data;
+ 
+-    init({ module_or_path, memory }).catch(err => {
++    init({ module_or_path, memory, thread_stack_size }).catch(err => {
+         console.log(err);
+ 
+         // Propagate to main `onerror`:
+diff --git a/src/wasm32/mod.rs b/src/wasm32/mod.rs
+index 1a4147b..169b19c 100644
+--- a/src/wasm32/mod.rs
++++ b/src/wasm32/mod.rs
+@@ -65,6 +65,9 @@ impl WorkerMessage {
+     }
+ }
+ 
++/// The unit WebAssembly memory grows by, which a thread's stack size must be a multiple of.
++const WASM_PAGE_SIZE: usize = 64 << 10;
++
+ static DEFAULT_BUILDER: Mutex<Option<Builder>> = Mutex::new(None);
+ 
+ /// Thread factory, which can be used in order to configure the properties of a new thread.
+@@ -129,11 +132,11 @@ impl Builder {
+         self
+     }
+ 
+-    /// Sets the size of the stack (in bytes) for the new thread.
+-    ///
+-    /// # Warning
++    /// Sets the size of the stack (in bytes) for the new thread, rounded up to a whole number of WebAssembly pages; a
++    /// size of zero leaves the thread the stack size wasm-bindgen gives it by default.
+     ///
+-    /// This is currently not supported by wasm, but provided for API consistency with [std::thread].
++    /// A worker script given by [Self::worker_script_url] honours it by passing the fourth element of its
++    /// initialization message to the `wasm_bindgen` shim's init as `thread_stack_size`.
+     pub fn stack_size(mut self, size: usize) -> Builder {
+         self.stack_size = Some(size);
+         self
+@@ -271,14 +274,13 @@ impl Builder {
+             name,
+             prefix,
+             worker_script_url,
++            stack_size,
+             wasm_bindgen_shim_url,
+-            ..
+         } = self;
+ 
+         // Get worker script as URL encoded blob
+         let script = worker_script_url.unwrap_or_else(|| get_worker_script(wasm_bindgen_shim_url));
+ 
+-        // Todo: figure out how to set stack size
+         let options = WorkerOptions::new();
+         match (name, prefix) {
+             (Some(name), Some(prefix)) => {
+@@ -335,6 +337,10 @@ impl Builder {
+         init.push(&wasm_bindgen::module());
+         init.push(&wasm_bindgen::memory());
+         init.push(&JsValue::from(ctx_ptr as u32));
++        init.push(&match stack_size {
++            Some(size) if size > 0 => JsValue::from(size.next_multiple_of(WASM_PAGE_SIZE) as f64),
++            _ => JsValue::UNDEFINED,
++        });
+ 
+         // Send initialization message
+         match worker.post_message(&init) {

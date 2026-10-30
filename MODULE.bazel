@@ -346,6 +346,7 @@ crate.annotation(
     patches = [
         "//patches/wasm_thread:wasm_thread-assert-unwind-safe-handler.patch",
         "//patches/wasm_thread:wasm_thread-no-eval.patch",
+        "//patches/wasm_thread:wasm_thread-stack-size.patch",
     ],
 )
 
