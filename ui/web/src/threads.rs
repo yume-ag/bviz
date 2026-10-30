@@ -7,7 +7,8 @@
 const WORKER_SCRIPT: &str = "bvizWorkerScript";
 
 /// Runs `start` once bviz's threads can start: every thread wasm_thread spawns
-/// from then on starts in the script the page names by [`WORKER_SCRIPT`].
+/// from then on starts in the script the page names by [`WORKER_SCRIPT`], and
+/// rayon's global pool stands on such threads.
 #[cfg(target_feature = "atomics")]
 pub fn when_threads_start(start: impl FnOnce() + 'static) {
     let script = js_sys::Reflect::get(&js_sys::global(), &WORKER_SCRIPT.into())
@@ -17,7 +18,13 @@ pub fn when_threads_start(start: impl FnOnce() + 'static) {
     wasm_thread::Builder::new()
         .worker_script_url(script)
         .set_default();
-    start();
+    let global_pool = bviz_parallel::build_global_pool();
+    wasm_bindgen_futures::spawn_local(async move {
+        if global_pool.finished().await.is_err() {
+            panic!("rayon's global pool could not be built");
+        }
+        start();
+    });
 }
 
 /// Runs `start` at once, as a build without threads starts none.

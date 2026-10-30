@@ -12,6 +12,7 @@ rust_library(
         "//trace/profile:__pkg__",
         "//ui/components:__pkg__",
         "//ui/graph:__pkg__",
+        "//ui/web:__pkg__",
         "//util/input:__pkg__",
     ],
     deps = ["@crates//:rayon"] + select({

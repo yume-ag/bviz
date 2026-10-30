@@ -3,13 +3,16 @@
 //! through rayon's own pool builder.
 //!
 //! In the browser a thread is a Web Worker, which wasm32-unknown-unknown's
-//! standard library cannot start even with the atomics feature: built with
-//! atomics, `spawn` and `scope` start their threads through wasm_thread, and
-//! building either pool panics. Built without, the crate has neither `spawn`
-//! nor `scope`, and runs its fan-outs and pools on the calling thread.
+//! standard library cannot start even with the atomics feature. Built with
+//! atomics, the crate starts its threads and its pools' workers through
+//! wasm_thread, and [`build_global_pool`] gives rayon's global pool workers
+//! the same way. Built without, the crate has neither `spawn` nor `scope`, and
+//! runs its fan-outs and pools on the calling thread.
 
 #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
 mod threads;
+#[cfg(all(target_family = "wasm", target_feature = "atomics"))]
+pub use threads::build_global_pool;
 #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
 pub use threads::{
     JoinHandle, Pool, Scope, ScopedJoinHandle, background_workers, fan_out, scope, spawn, workers,

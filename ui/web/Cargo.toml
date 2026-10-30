@@ -12,6 +12,7 @@ path = "src/lib.rs"
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 bviz_input = { workspace = true }
+bviz_parallel = { workspace = true }
 console_error_panic_hook = "0.1"
 js-sys = { workspace = true }
 wasm-bindgen = "0.2"
