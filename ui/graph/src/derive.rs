@@ -312,6 +312,7 @@ impl RestrictedMap {
     /// thread has yet. Placing is linear in the graph and waits on any other
     /// thread placing it, so call this only off the UI thread.
     fn wait_placed(&self) -> Option<&Arc<MapLayout>> {
+        bviz_parallel::assert_can_block();
         let whole = self.placement.placed()?;
         Some(self.map.get_or_init(|| {
             Arc::new(whole.restricted(

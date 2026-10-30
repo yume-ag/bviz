@@ -180,8 +180,10 @@ impl MapLayout {
             .partition_point(|&(from, _)| from <= scale as f64)
     }
 
-    /// The view at `index`, deriving it if this is the first call for it.
+    /// The view at `index`, deriving it if this is the first call for it, and
+    /// waiting on a thread deriving it.
     pub fn level(&self, index: usize) -> &LaidOut {
+        bviz_parallel::assert_can_block();
         let level = self.level_at(index);
         &level.view.get_or_init(|| self.view_of(&level.open)).view
     }

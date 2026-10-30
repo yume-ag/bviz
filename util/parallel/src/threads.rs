@@ -7,7 +7,7 @@ use wasm_thread as platform;
 
 pub use platform::{Scope, ScopedJoinHandle};
 
-use crate::worker_count;
+use crate::{assert_can_block, worker_count};
 
 /// A thread [`spawn`] started, waited on for what its work returns.
 pub struct JoinHandle<T>(platform::JoinHandle<T>);
@@ -16,6 +16,7 @@ impl<T> JoinHandle<T> {
     /// Blocks until the thread finishes, with what its work returned or the
     /// panic that ended it.
     pub fn join(self) -> std::thread::Result<T> {
+        assert_can_block();
         self.0.join()
     }
 
@@ -45,6 +46,7 @@ pub fn spawn<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Jo
 /// Runs `work` with a scope whose threads may borrow from the caller, returning
 /// once every thread spawned in it has finished.
 pub fn scope<'env, T>(work: impl for<'scope> FnOnce(&'scope Scope<'scope, 'env>) -> T) -> T {
+    assert_can_block();
     #[cfg_attr(
         not(target_family = "wasm"),
         expect(clippy::disallowed_methods, reason = "the one start of a thread scope")
@@ -70,7 +72,20 @@ pub fn fan_out<T: Send>(workers: usize, work: impl Fn(usize) -> T + Sync) -> Vec
 const LAYOUT_RECURSION_STACK: usize = 8 << 20;
 
 /// A pool of threads of its own.
-pub type Pool = rayon::ThreadPool;
+pub struct Pool(rayon::ThreadPool);
+
+impl Pool {
+    /// Runs `op` on the pool, blocking the caller until it returns, as rayon's
+    /// [`ThreadPool::install`](rayon::ThreadPool::install) does.
+    pub fn install<OP, R>(&self, op: OP) -> R
+    where
+        OP: FnOnce() -> R + Send,
+        R: Send,
+    {
+        assert_can_block();
+        self.0.install(op)
+    }
+}
 
 /// The process's one pool for parallel passes over bulk data that the reader
 /// waits on, [`worker_count`] wide. Every such rayon entry point runs inside an
@@ -78,6 +93,7 @@ pub type Pool = rayon::ThreadPool;
 /// wide and no wider: a parallel iterator left outside runs instead on rayon's
 /// global pool, a second set of workers, sized natively by logical threads.
 pub fn workers() -> &'static Pool {
+    assert_can_block();
     static POOL: OnceLock<Pool> = OnceLock::new();
     POOL.get_or_init(|| {
         let builder = rayon::ThreadPoolBuilder::new().num_threads(worker_count());
@@ -96,6 +112,7 @@ pub fn workers() -> &'static Pool {
 /// too, as a map is drawn only once placed, so the pool gives up a single
 /// worker: that bounds the oversubscription at little cost to the pass.
 pub fn background_workers() -> &'static Pool {
+    assert_can_block();
     static POOL: OnceLock<Pool> = OnceLock::new();
     POOL.get_or_init(|| {
         let builder = rayon::ThreadPoolBuilder::new()
@@ -107,12 +124,12 @@ pub fn background_workers() -> &'static Pool {
 
 #[cfg(not(target_family = "wasm"))]
 fn build(builder: rayon::ThreadPoolBuilder) -> Result<Pool, rayon::ThreadPoolBuildError> {
-    builder.build()
+    builder.build().map(Pool)
 }
 
 #[cfg(target_family = "wasm")]
 fn build(builder: rayon::ThreadPoolBuilder) -> Result<Pool, rayon::ThreadPoolBuildError> {
-    builder.spawn_handler(start_worker).build()
+    builder.spawn_handler(start_worker).build().map(Pool)
 }
 
 /// Builds rayon's global pool, [`worker_count`] wide, on threads that the

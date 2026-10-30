@@ -142,6 +142,7 @@ impl Judgement {
     /// that evaluation. Evaluation passes over every node of the graph, so
     /// this belongs off the UI thread.
     pub(crate) fn verdicts(&self) -> Arc<Verdicts> {
+        bviz_parallel::assert_can_block();
         let evaluate = || {
             let verdicts = self.filter.evaluate(&self.graph);
             let mut tally: FxHashMap<Kind, Shown> = FxHashMap::default();

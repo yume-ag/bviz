@@ -23,6 +23,24 @@ mod one_thread;
 #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
 pub use one_thread::{Pool, background_workers, fan_out, workers};
 
+/// Panics on the browser's window thread, which must never wait on another
+/// thread: the wait traps there, and only when the other thread has not yet
+/// finished, so an unchecked wait fails at random.
+#[cfg(all(target_family = "wasm", target_feature = "atomics"))]
+#[track_caller]
+pub fn assert_can_block() {
+    assert!(
+        wasm_thread::is_web_worker_thread(),
+        "the browser's window thread cannot wait on another thread"
+    );
+}
+
+/// Any thread may wait on another natively, and a build without threads has no
+/// other to wait on.
+#[cfg(not(all(target_family = "wasm", target_feature = "atomics")))]
+#[inline(always)]
+pub fn assert_can_block() {}
+
 /// Worker count for a parallel pass over bulk data: the machine's physical core
 /// count rather than its logical (SMT) thread count, because such a pass is
 /// memory-bandwidth bound, so threads past the cores that own the memory
