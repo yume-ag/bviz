@@ -30,6 +30,11 @@ web_bindgen(
     module = "//bviz:bviz_wasm32_web",
 )
 
+web_bindgen(
+    name = "threads_bindings",
+    module = "//bviz:bviz_wasm32_web_threads",
+)
+
 run_binary(
     name = "probes",
     srcs = [
@@ -54,14 +59,18 @@ copy_to_directory(
         "help.js",
         "index.html",
         "style.css",
+        "worker.js",
         ":bindings",
         ":probes",
+        ":threads_bindings",
         "//:LICENSE",
         "//:NOTICE",
         "//bviz:third_party_notices_web",
     ],
     replace_prefixes = {
         "bindings/": "",
+        "threads_bindings/": "threads/",
+        "worker.js": "threads/worker.js",
         "LICENSE": "LICENSE.txt",
         "NOTICE": "NOTICE.txt",
         "bviz/third_party_notices.txt": "THIRD_PARTY_NOTICES.txt",
