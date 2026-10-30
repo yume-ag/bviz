@@ -5,8 +5,11 @@ self.onmessage = async (event) => {
   try {
     const { default: init, wasm_thread_entry_point } = await import("./bviz.js");
     const [module_or_path, memory, work, thread_stack_size] = event.data;
-    await init({ module_or_path, memory, thread_stack_size });
+    const { __wbindgen_thread_destroy } = await init({ module_or_path, memory, thread_stack_size });
     wasm_thread_entry_point(work);
+    // The stack and thread-locals live in the shared memory, which outlives
+    // the worker.
+    __wbindgen_thread_destroy();
     close();
   } catch (error) {
     // Thrown from a task of its own, the error reaches the worker's error
