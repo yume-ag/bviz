@@ -1,6 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="#5b7be0" stroke="#5b7be0" stroke-width="3">
-  <path d="M8 8 24 8M8 8 16 24M24 8 16 24" fill="none"/>
-  <circle cx="8" cy="8" r="5"/>
-  <circle cx="24" cy="8" r="5"/>
-  <circle cx="16" cy="24" r="5"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <style>@media (prefers-color-scheme: dark) { g { fill: #74ade8; stroke: #74ade8; } }</style>
+  <g fill="#5874e1" stroke="#5874e1" stroke-width="3">
+    <path d="M8 8 24 8M8 8 16 24M24 8 16 24" fill="none"/>
+    <circle cx="8" cy="8" r="5"/>
+    <circle cx="24" cy="8" r="5"/>
+    <circle cx="16" cy="24" r="5"/>
+  </g>
 </svg>
