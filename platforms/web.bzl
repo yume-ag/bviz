@@ -1,5 +1,7 @@
 """The web build: compatibility with it, Rust executables built for it, and their bindings."""
 
+load("@bazel_lib//lib:copy_to_directory.bzl", "copy_to_directory_bin_action")
+load("@multitool//:tools.bzl", MULTITOOL_TOOLS = "TOOLS")
 load("@rules_rs_rules_rust//rust:defs.bzl", "rust_clippy_aspect")
 
 # The target_compatible_with of a target that runs on the build's host, or
@@ -71,13 +73,11 @@ web_executable = rule(
     doc = "The WebAssembly module of a Rust executable built for a web platform.",
 )
 
-def _web_bindgen_impl(ctx):
-    module = ctx.file.module
-    bindings = ctx.actions.declare_directory(ctx.label.name)
+def _bind(ctx, module, stem, bindings):
     args = ctx.actions.args()
     args.add("--target", "web")
     args.add("--no-typescript")
-    args.add("--out-name", module.basename.removesuffix("." + module.extension))
+    args.add("--out-name", stem)
     args.add("--out-dir", bindings.path)
     args.add(module)
     ctx.actions.run(
@@ -87,6 +87,47 @@ def _web_bindgen_impl(ctx):
         outputs = [bindings],
         mnemonic = "WasmBindgen",
         progress_message = "Generating JavaScript bindings for %{label}",
+    )
+
+def _optimise(ctx, bindings, module, optimised):
+    args = ctx.actions.args()
+    args.add("-Oz")
+    args.add(bindings.path + "/" + module)
+    args.add("-o", optimised)
+    ctx.actions.run(
+        executable = ctx.executable._wasm_opt,
+        arguments = [args],
+        inputs = [bindings],
+        outputs = [optimised],
+        mnemonic = "WasmOpt",
+        progress_message = "Optimising the WebAssembly module of %{label}",
+    )
+
+def _web_bindgen_impl(ctx):
+    module = ctx.file.module
+    stem = module.basename.removesuffix("." + module.extension)
+    bindings = ctx.actions.declare_directory(ctx.label.name)
+    if ctx.var["COMPILATION_MODE"] != "opt":
+        _bind(ctx, module, stem, bindings)
+        return [DefaultInfo(files = depset([bindings]))]
+
+    bound = ctx.actions.declare_directory(ctx.label.name + "_unoptimised")
+    _bind(ctx, module, stem, bound)
+    bound_module = stem + "_bg.wasm"
+    optimised_dir = ctx.label.name + "_optimised"
+    optimised = ctx.actions.declare_file(optimised_dir + "/" + bound_module)
+    _optimise(ctx, bound, bound_module, optimised)
+    copy_to_directory_bin_action(
+        ctx,
+        name = ctx.label.name,
+        dst = bindings,
+        copy_to_directory_bin = ctx.toolchains["@bazel_lib//lib:copy_to_directory_toolchain_type"].copy_to_directory_info.bin,
+        files = [bound, optimised],
+        exclude_srcs_patterns = [bound.basename + "/" + bound_module],
+        replace_prefixes = {
+            bound.basename + "/": "",
+            optimised_dir + "/": "",
+        },
     )
     return [DefaultInfo(files = depset([bindings]))]
 
@@ -103,7 +144,14 @@ web_bindgen = rule(
             executable = True,
             cfg = "exec",
         ),
+        "_wasm_opt": attr.label(
+            default = MULTITOOL_TOOLS["wasm-opt"],
+            executable = True,
+            cfg = "exec",
+        ),
     },
+    toolchains = ["@bazel_lib//lib:copy_to_directory_toolchain_type"],
     doc = "A directory of a WebAssembly module as wasm-bindgen prepares it for a " +
-          "page to load, with the ES module that loads it, both named after the module.",
+          "page to load, with the ES module that loads it, both named after the module. " +
+          "Under -c opt, wasm-opt shrinks the module.",
 )
