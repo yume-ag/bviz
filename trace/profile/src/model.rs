@@ -970,6 +970,12 @@ impl Profile {
         self.distinct_strings
     }
 
+    /// How many workers a pass over every lane's slices fans out across: one
+    /// for a profile too small to repay starting threads.
+    pub fn pass_workers(&self) -> usize {
+        crate::parse::slice_pass_workers(self.slice_pool.len())
+    }
+
     /// Every distinct Bazel `cat` of the profile's slices, in the order of
     /// their text.
     pub fn categories(&self) -> impl ExactSizeIterator<Item = Str> + '_ {

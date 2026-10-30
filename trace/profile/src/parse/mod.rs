@@ -4,6 +4,7 @@ use std::path::Path;
 
 use bviz_input::Input;
 use bviz_invocation::{InvocationId, Recorded};
+use bviz_parallel::worker_count;
 use flate2::bufread::MultiGzDecoder;
 use serde::de::DeserializeSeed;
 use serde_json::{Map, Value};
@@ -50,6 +51,21 @@ const BYTES_PER_DISTINCT: usize = 160;
 /// densest chunk stages. The extra capacity an average chunk over-reserves is
 /// transient, freed at the merge, in exchange for no regrowth.
 const BYTES_PER_SLICE: usize = 100;
+
+/// The fewest slices worth spreading a pass over them across threads: as many
+/// as the smallest input the parse splits across threads holds at its densest.
+/// Below it, starting the threads costs more than they save, all the more in a
+/// browser, where each is a Web Worker that is slow to start.
+const MIN_PARALLEL_SLICES: usize = pipeline::MIN_PARALLEL_BYTES / BYTES_PER_SLICE;
+
+/// How many workers a pass over `slices` slices fans out across.
+pub(crate) fn slice_pass_workers(slices: usize) -> usize {
+    if slices < MIN_PARALLEL_SLICES {
+        1
+    } else {
+        worker_count()
+    }
+}
 
 /// Fraction of decoded bytes to pre-fault into the interner arena, as
 /// [`INTERN_PREFAULT_NUM`]/[`INTERN_PREFAULT_DEN`]: distinct text measures about
