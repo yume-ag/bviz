@@ -2,6 +2,7 @@
 //! thread where the build has threads and in time slices on it where it has
 //! none, and the rows it ranks drawn with the matched characters picked out.
 
+mod narrow;
 mod rank;
 
 cfg_if::cfg_if! {

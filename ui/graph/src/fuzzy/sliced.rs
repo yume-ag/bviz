@@ -2,12 +2,13 @@
 //! a slice of the candidates per tick, so that typing stays responsive while
 //! a large list is matched.
 
+use super::narrow::narrows;
 use super::rank::MAX_WINDOW;
 use super::{Engine, Offered, Sink, config};
 #[cfg(target_family = "wasm")]
 use bviz_ui_web::cede;
 use gpui::BackgroundExecutor;
-use nucleo::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
+use nucleo::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo::{Matcher, Status, Utf32Str, Utf32String};
 use std::cmp::Reverse;
 use std::mem;
@@ -271,44 +272,14 @@ impl Sink for Inbox {
     }
 }
 
-/// Whether every candidate `new` matches is one `old` matches, as far as their
-/// atoms tell: `new` repeats every atom of `old` but the last, then extends
-/// its needle where a longer needle can only match less, and may add atoms.
-fn narrows(old: &Pattern, new: &Pattern) -> bool {
-    let Some((last, before)) = old.atoms.split_last() else {
-        return true;
-    };
-    let Some(extended) = new.atoms.get(before.len()) else {
-        return false;
-    };
-    let extends = matches!(
-        last.kind,
-        AtomKind::Fuzzy | AtomKind::Substring | AtomKind::Prefix
-    ) && extended.kind == last.kind
-        && !last.negative
-        && !extended.negative
-        && extended.needle_text().len() >= last.needle_text().len()
-        && extended.needle_text().slice(..last.needle_text().len()) == last.needle_text();
-    extends && new.atoms.starts_with(before)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fuzzy::narrow::{TEXTS, TYPED};
 
     fn parse(query: &str) -> Pattern {
         Pattern::parse(query, CaseMatching::Smart, Normalization::Smart)
     }
-
-    fn narrowing(old: &str, new: &str) -> bool {
-        narrows(&parse(old), &parse(new))
-    }
-
-    /// Texts with the characters the queries below turn on.
-    const TEXTS: &[&str] = &[
-        "foo", "foox", "foo$x", "a\\", "a\\ b", "a b", "a$", "a\\$", "ab", "b", "^a", "'a", "Abc",
-        "aBc", "abc", "xa", "x'a",
-    ];
 
     /// How many times the candidates repeat [`TEXTS`], enough that a pass
     /// stopped after its first stride is left part way.
@@ -363,63 +334,10 @@ mod tests {
     }
 
     #[test]
-    fn a_longer_needle_narrows() {
-        assert!(narrowing("fo", "foo"));
-        assert!(narrowing("'fo", "'foo"));
-        assert!(narrowing("^fo", "^foo"));
-        assert!(narrowing("a", "a b"));
-        assert!(narrowing("a b", "a bc"));
-        finds_as_typed_alone("fo", "foo");
-        finds_as_typed_alone("a", "a b");
-    }
-
-    #[test]
-    fn a_postfix_extended_past_its_end_does_not_narrow() {
-        assert!(!narrowing("foo$", "foo$x"));
-        finds_as_typed_alone("foo$", "foo$x");
-    }
-
-    #[test]
-    fn an_escape_completed_does_not_narrow() {
-        assert!(!narrowing("a\\", "a\\ b"));
-        assert!(!narrowing("a\\", "a\\$"));
-        finds_as_typed_alone("a\\", "a\\ b");
-        finds_as_typed_alone("a\\", "a\\$");
-    }
-
-    #[test]
-    fn a_negation_extended_does_not_narrow() {
-        assert!(!narrowing("!a", "!ab"));
-        finds_as_typed_alone("!a", "!ab");
-    }
-
-    #[test]
-    fn a_bare_operator_matches_everything_and_so_narrows() {
-        assert!(narrowing("^", "^a"));
-        assert!(narrowing("'", "'a"));
-        assert!(narrowing("!", "!a"));
-        finds_as_typed_alone("^", "^a");
-        finds_as_typed_alone("'", "'a");
-        finds_as_typed_alone("!", "!a");
-    }
-
-    #[test]
-    fn an_operator_typed_after_a_needle_does_not_narrow() {
-        assert!(!narrowing("a", "a$"));
-        finds_as_typed_alone("a", "a$");
-    }
-
-    #[test]
-    fn an_earlier_atom_changed_does_not_narrow() {
-        assert!(!narrowing("a b", "ax b"));
-        assert!(!narrowing("abc", "ab"));
-        finds_as_typed_alone("abc", "ab");
-    }
-
-    #[test]
-    fn an_uppercase_letter_typed_narrows_to_its_case() {
-        assert!(narrowing("a", "aB"));
-        finds_as_typed_alone("a", "aB");
+    fn each_query_typed_after_another_finds_as_typed_alone() {
+        for &(old, new) in TYPED {
+            finds_as_typed_alone(old, new);
+        }
     }
 
     /// A query typed leaves the result of the last before it standing until
