@@ -1,1 +1,4 @@
-exports_files(["wasm_thread-assert-unwind-safe-handler.patch"])
+exports_files([
+    "wasm_thread-assert-unwind-safe-handler.patch",
+    "wasm_thread-no-eval.patch",
+])

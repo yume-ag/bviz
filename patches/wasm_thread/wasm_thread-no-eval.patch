@@ -1,0 +1,67 @@
+Reach the worker scope and start a worker without eval
+
+A page whose content security policy leaves out 'unsafe-eval' refuses
+JavaScript's eval, and wasm_thread evaluates code to reach the global scope,
+to load a polyfill for module workers and, building its default worker
+script, to find the address of the wasm-bindgen shim. The first spawn of a
+thread so panics on such a page. js_sys::global() is the global scope
+eval("self") named. Every browser with the Atomics.waitAsync that threads on
+the web need also starts module workers, so the polyfill is left out. The
+default worker script is built only for a builder given no worker script
+URL, so a page that gives one never reaches the shim lookup.
+
+License: Apache-2.0 (wasm_thread 0cf96c7708dfb97ccf3da50347e25edcf75d6937)
+
+diff --git a/src/wasm32/mod.rs b/src/wasm32/mod.rs
+index 41b9b43..1a4147b 100644
+--- a/src/wasm32/mod.rs
++++ b/src/wasm32/mod.rs
+@@ -57,8 +57,7 @@ impl WorkerMessage {
+     pub fn post(self) {
+         let req = Box::new(self);
+ 
+-        js_sys::eval("self")
+-            .unwrap()
++        js_sys::global()
+             .dyn_into::<DedicatedWorkerGlobalScope>()
+             .unwrap()
+             .post_message(&JsValue::from(Box::into_raw(req) as u32))
+@@ -277,7 +276,7 @@ impl Builder {
+         } = self;
+ 
+         // Get worker script as URL encoded blob
+-        let script = worker_script_url.unwrap_or(get_worker_script(wasm_bindgen_shim_url));
++        let script = worker_script_url.unwrap_or_else(|| get_worker_script(wasm_bindgen_shim_url));
+ 
+         // Todo: figure out how to set stack size
+         let options = WorkerOptions::new();
+@@ -297,7 +296,6 @@ impl Builder {
+ 
+         #[cfg(feature = "es_modules")]
+         {
+-            js_sys::eval(include_str!("js/module_workers_polyfill.min.js")).unwrap();
+             options.set_type(WorkerType::Module);
+         }
+         #[cfg(not(feature = "es_modules"))]
+diff --git a/src/wasm32/utils.rs b/src/wasm32/utils.rs
+index 1791657..354e989 100644
+--- a/src/wasm32/utils.rs
++++ b/src/wasm32/utils.rs
+@@ -12,7 +12,7 @@ pub fn available_parallelism() -> io::Result<NonZeroUsize> {
+         return Ok(NonZeroUsize::new(window.navigator().hardware_concurrency() as usize).unwrap());
+     }
+ 
+-    if let Ok(worker) = js_sys::eval("self").unwrap().dyn_into::<WorkerGlobalScope>() {
++    if let Ok(worker) = js_sys::global().dyn_into::<WorkerGlobalScope>() {
+         return Ok(NonZeroUsize::new(worker.navigator().hardware_concurrency() as usize).unwrap());
+     }
+ 
+@@ -23,7 +23,7 @@ pub fn available_parallelism() -> io::Result<NonZeroUsize> {
+ }
+ 
+ pub fn is_web_worker_thread() -> bool {
+-    js_sys::eval("self").unwrap().dyn_into::<WorkerGlobalScope>().is_ok()
++    js_sys::global().dyn_into::<WorkerGlobalScope>().is_ok()
+ }
+ 
+ /// Extracts path of the `wasm_bindgen` generated .js shim script.
