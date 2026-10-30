@@ -43,7 +43,7 @@ where
 pub struct Pending<T>(Started<T>);
 
 #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
-type Started<T> = std::thread::JoinHandle<Result<T, String>>;
+type Started<T> = bviz_parallel::JoinHandle<Result<T, String>>;
 
 #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
 type Started<T> = Deferred<T>;

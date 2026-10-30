@@ -18,3 +18,4 @@ num_cpus = { workspace = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 js-sys = { workspace = true }
+wasm_thread = { workspace = true }

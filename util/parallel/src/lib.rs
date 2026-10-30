@@ -2,17 +2,18 @@
 //! bviz starts itself go through [`spawn`] or [`scope`]; those of its pools,
 //! through rayon's own pool builder.
 //!
-//! On wasm32-unknown-unknown the standard library cannot start a thread, even
-//! with the atomics feature: that takes a spawn backed by a Web Worker, which
-//! this crate does not provide. Built without atomics, the crate has neither
-//! `spawn` nor `scope`, and runs its fan-outs and pools on the calling thread.
-//! Built with them, it compiles the threaded paths, and `spawn`, `scope`,
-//! `fan_out` and building either pool panic when called.
+//! In the browser a thread is a Web Worker, which wasm32-unknown-unknown's
+//! standard library cannot start even with the atomics feature: built with
+//! atomics, `spawn` and `scope` start their threads through wasm_thread, and
+//! building either pool panics. Built without, the crate has neither `spawn`
+//! nor `scope`, and runs its fan-outs and pools on the calling thread.
 
 #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
 mod threads;
 #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
-pub use threads::{Pool, background_workers, fan_out, scope, spawn, workers};
+pub use threads::{
+    JoinHandle, Pool, Scope, ScopedJoinHandle, background_workers, fan_out, scope, spawn, workers,
+};
 
 #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
 mod one_thread;

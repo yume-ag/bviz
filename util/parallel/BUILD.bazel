@@ -15,7 +15,10 @@ rust_library(
         "//util/input:__pkg__",
     ],
     deps = ["@crates//:rayon"] + select({
-        "@platforms//cpu:wasm32": ["@crates//:js-sys"],
+        "@platforms//cpu:wasm32": [
+            "@crates//:js-sys",
+            "@crates//:wasm_thread",
+        ],
         "//conditions:default": ["@crates//:num_cpus"],
     }),
 )

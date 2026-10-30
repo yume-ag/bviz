@@ -1,19 +1,31 @@
 use std::sync::OnceLock;
-use std::thread::{JoinHandle, Scope};
+
+#[cfg(not(target_family = "wasm"))]
+use std::thread as platform;
+#[cfg(target_family = "wasm")]
+use wasm_thread as platform;
+
+pub use platform::{JoinHandle, Scope, ScopedJoinHandle};
 
 use crate::worker_count;
 
-/// Runs `work` on a new OS thread.
+/// Runs `work` on a new thread.
 pub fn spawn<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> JoinHandle<T> {
-    #[expect(clippy::disallowed_methods, reason = "the one start of an OS thread")]
-    std::thread::spawn(work)
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        expect(clippy::disallowed_methods, reason = "the one start of a thread")
+    )]
+    platform::spawn(work)
 }
 
 /// Runs `work` with a scope whose threads may borrow from the caller, returning
 /// once every thread spawned in it has finished.
 pub fn scope<'env, T>(work: impl for<'scope> FnOnce(&'scope Scope<'scope, 'env>) -> T) -> T {
-    #[expect(clippy::disallowed_methods, reason = "the one start of a thread scope")]
-    std::thread::scope(work)
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        expect(clippy::disallowed_methods, reason = "the one start of a thread scope")
+    )]
+    platform::scope(work)
 }
 
 /// Runs `work(0)` to `work(workers - 1)` on a thread each, returning their

@@ -865,6 +865,7 @@ dependencies = [
  "js-sys",
  "num_cpus",
  "rayon",
+ "wasm_thread",
 ]
 
 [[package]]
