@@ -519,6 +519,7 @@ rules_rust.patch(
     patches = [
         "//patches/rules_rust:rules-rust-export-licence.patch",
         "//patches/rules_rust:rules-rust-build-script-exec-cfg.patch",
+        "//patches/rules_rust:rules-rust-clippy-extra-rustc-env.patch",
     ],
     strip = 1,
 )

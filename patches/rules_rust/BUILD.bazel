@@ -1,5 +1,6 @@
 exports_files([
     "rules-rust-build-script-exec-cfg.patch",
+    "rules-rust-clippy-extra-rustc-env.patch",
     "rules-rust-export-licence.patch",
     "rules-rust-register-no-toolchains.patch",
 ])
