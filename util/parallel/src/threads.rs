@@ -5,9 +5,32 @@ use std::thread as platform;
 #[cfg(target_family = "wasm")]
 use wasm_thread as platform;
 
-pub use platform::{JoinHandle, Scope, ScopedJoinHandle};
+pub use platform::{Scope, ScopedJoinHandle};
 
 use crate::worker_count;
+
+/// A thread [`spawn`] started, waited on for what its work returns.
+pub struct JoinHandle<T>(platform::JoinHandle<T>);
+
+impl<T> JoinHandle<T> {
+    /// Blocks until the thread finishes, with what its work returned or the
+    /// panic that ended it.
+    pub fn join(self) -> std::thread::Result<T> {
+        self.0.join()
+    }
+
+    /// What [`join`](Self::join) returns, blocking the thread that polls it.
+    #[cfg(not(target_family = "wasm"))]
+    pub async fn finished(self) -> std::thread::Result<T> {
+        self.join()
+    }
+
+    /// What [`join`](Self::join) returns, awaited without blocking.
+    #[cfg(target_family = "wasm")]
+    pub async fn finished(self) -> std::thread::Result<T> {
+        self.0.join_async().await
+    }
+}
 
 /// Runs `work` on a new thread.
 pub fn spawn<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> JoinHandle<T> {
@@ -15,7 +38,8 @@ pub fn spawn<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Jo
         not(target_family = "wasm"),
         expect(clippy::disallowed_methods, reason = "the one start of a thread")
     )]
-    platform::spawn(work)
+    let started = platform::spawn(work);
+    JoinHandle(started)
 }
 
 /// Runs `work` with a scope whose threads may borrow from the caller, returning
