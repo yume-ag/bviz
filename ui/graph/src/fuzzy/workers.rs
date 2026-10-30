@@ -1,5 +1,4 @@
-//! The matcher engine of a build with threads: nucleo's, matching on a pool
-//! of worker threads.
+//! The native matcher engine: nucleo's, matching on a pool of worker threads.
 
 use super::narrow::narrows;
 use super::{Engine, Offered, Sink, config};
