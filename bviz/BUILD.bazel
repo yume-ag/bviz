@@ -69,12 +69,10 @@ third_party_notices(
     visibility = ["//dist:__pkg__"],
 )
 
-# Both web builds link the same crates, so the notices of the threaded one
-# cover the other too.
 platform_transition_filegroup(
     name = "third_party_notices_web",
     srcs = [":third_party_notices"],
-    target_platform = "//platforms:wasm32_web_threads",
+    target_platform = "//platforms:wasm32_web",
     visibility = ["//web:__pkg__"],
 )
 

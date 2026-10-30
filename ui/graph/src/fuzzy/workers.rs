@@ -1,6 +1,7 @@
 //! The matcher engine of a build with threads: nucleo's, matching on a pool
 //! of worker threads.
 
+use super::narrow::narrows;
 use super::{Engine, Offered, Sink, config};
 use gpui::BackgroundExecutor;
 use nucleo::pattern::{CaseMatching, Normalization, Pattern};
@@ -13,8 +14,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// dropping a [`Nucleo`] waits for its worker to stop.
 pub(super) struct Workers {
     nucleo: ManuallyDrop<Nucleo<u32>>,
-    /// The query last matched, none before the first.
-    query: Option<String>,
     executor: BackgroundExecutor,
 }
 
@@ -25,14 +24,12 @@ impl Engine for Workers {
         let workers = Some(bviz_parallel::worker_count());
         Workers {
             nucleo: ManuallyDrop::new(Nucleo::new(config(), Arc::new(|| {}), workers, 1)),
-            query: None,
             executor: executor.clone(),
         }
     }
 
     fn search(&mut self, query: &str) {
-        search(&mut self.nucleo, query, self.query.as_deref());
-        self.query = Some(query.to_owned());
+        search(&mut self.nucleo, query);
     }
 
     fn restart(&mut self) -> Injector<u32> {
@@ -79,10 +76,11 @@ impl Engine for Workers {
     }
 }
 
-/// Hands `nucleo` `query` in place of `previous`, narrowing the last result
-/// where the query extends the previous one.
-fn search(nucleo: &mut Nucleo<u32>, query: &str, previous: Option<&str>) {
-    let narrowing = previous.is_some_and(|previous| query.starts_with(previous));
+/// Hands `nucleo` `query` in place of the query it last matched, narrowing
+/// the last result where the new pattern allows it.
+fn search(nucleo: &mut Nucleo<u32>, query: &str) {
+    let pattern = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart);
+    let narrowing = narrows(nucleo.pattern.column_pattern(0), &pattern);
     nucleo.pattern.reparse(
         0,
         query,
@@ -109,6 +107,7 @@ impl Drop for Workers {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fuzzy::narrow::{TEXTS, TYPED};
     use nucleo::Matcher;
 
     /// Enough candidates that a match pass can still be running when the next
@@ -134,24 +133,53 @@ mod tests {
         let queries = ["p", "pk", "pkg1", "pkg1/s", "t", "ta", "tar3"];
         let mut typed = "";
         for query in queries {
-            search(&mut nucleo, query, Some(typed));
+            search(&mut nucleo, query);
             nucleo.try_tick();
             typed = query;
         }
         while nucleo.try_tick().running {
             std::thread::yield_now();
         }
-        let pattern = Pattern::parse(typed, CaseMatching::Smart, Normalization::Smart);
-        let mut matcher = Matcher::new(config());
-        let mut chars = Vec::new();
-        let expected = texts
-            .iter()
-            .filter(|text| {
-                let text = Utf32Str::new(text, &mut chars);
-                pattern.score(text, &mut matcher).is_some()
-            })
-            .count();
+        let expected = matched(&texts, typed).len();
         assert!(expected > 0);
         assert_eq!(nucleo.snapshot().matched_item_count() as usize, expected);
+    }
+
+    /// The indices of the texts `query` matches, in index order.
+    fn matched(texts: &[impl AsRef<str>], query: &str) -> Vec<u32> {
+        let pattern = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart);
+        let mut matcher = Matcher::new(config());
+        let mut chars = Vec::new();
+        (0..)
+            .zip(texts)
+            .filter(|(_, text)| {
+                let text = Utf32Str::new(text.as_ref(), &mut chars);
+                pattern.score(text, &mut matcher).is_some()
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    #[test]
+    fn each_query_typed_after_another_finds_as_typed_alone() {
+        for &(old, new) in TYPED {
+            let mut nucleo: Nucleo<u32> = Nucleo::new(config(), Arc::new(|| {}), Some(1), 1);
+            let injector = nucleo.injector();
+            for (index, text) in (0..).zip(TEXTS) {
+                injector.hand(index, text);
+            }
+            for query in [old, new] {
+                search(&mut nucleo, query);
+                while nucleo.try_tick().running {
+                    std::thread::yield_now();
+                }
+            }
+            let snapshot = nucleo.snapshot();
+            let mut found: Vec<u32> = snapshot.matched_items(..).map(|item| *item.data).collect();
+            found.sort_unstable();
+            let expected = matched(TEXTS, new);
+            assert!(!expected.is_empty());
+            assert_eq!(found, expected, "{old:?} then {new:?}");
+        }
     }
 }
