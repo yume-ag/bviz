@@ -18,6 +18,7 @@ rust_library(
             "@crates//:js-sys",
             "@crates//:wasm-bindgen",
             "@crates//:wasm-bindgen-futures",
+            "@crates//:wasm_thread",
             "@crates//:web-sys",
         ],
         "//conditions:default": [],
