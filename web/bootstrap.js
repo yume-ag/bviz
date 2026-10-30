@@ -134,12 +134,23 @@ function crashed(error) {
   ended(what ? `bviz crashed: ${what}` : "bviz crashed.");
 }
 
-// Says that bviz cannot use more than one thread, the page not being served
-// with the headers that let it share memory between threads.
-function warnNotIsolated() {
+// Why bviz cannot use more than one thread here, or null where it can: the
+// page not being served with the headers that let it share memory between
+// threads, or the browser not letting the page wait on that memory.
+function singleThreaded() {
+  if (!crossOriginIsolated) {
+    return "This page is not cross-origin isolated";
+  }
+  if (typeof globalThis.Atomics?.waitAsync !== "function") {
+    return "This browser cannot wait on memory shared between threads";
+  }
+  return null;
+}
+
+// Says that bviz cannot use more than one thread, because of `reason`.
+function warnSingleThreaded(reason) {
   const message = document.createElement("span");
-  message.textContent = "This page is not cross-origin isolated, so bviz cannot use more "
-    + "than one thread.";
+  message.textContent = `${reason}, so bviz cannot use more than one thread.`;
   const dismiss = document.createElement("button");
   dismiss.textContent = "Dismiss";
   const banner = document.createElement("div");
@@ -171,12 +182,16 @@ if (reason) {
   status.textContent = "Loading bviz…";
   document.body.append(status);
   addEventListener("bviz:ready", () => status.remove(), { once: true });
-  if (!crossOriginIsolated) {
-    warnNotIsolated();
+  const threadless = singleThreaded();
+  if (threadless) {
+    warnSingleThreaded(threadless);
+  } else {
+    // The script each thread of bviz starts in, which bviz reads by this name.
+    globalThis.bvizWorkerScript = new URL("threads/worker.js", import.meta.url).href;
   }
 
   try {
-    const { default: init } = await import("./bviz.js");
+    const { default: init } = await import(threadless ? "./bviz.js" : "./threads/bviz.js");
     ({ memory } = await init());
   } catch (error) {
     if (escaped(error)) {
