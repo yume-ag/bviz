@@ -147,6 +147,35 @@ function singleThreaded() {
   return null;
 }
 
+// The session's record that this tab reloaded for the service worker to
+// isolate it, so a reload that did not isolate it is not repeated.
+const ISOLATING = "bviz:isolating";
+
+// Whether reloading lets the page be cross-origin isolated by a service worker
+// where its host does not isolate it, once that worker is active. Isolation is
+// decided when a page loads, so a page the worker did not serve stays as it is.
+async function isolatesOnReload() {
+  try {
+    if (crossOriginIsolated) {
+      sessionStorage.removeItem(ISOLATING);
+      return false;
+    }
+    const workers = navigator.serviceWorker;
+    if (typeof globalThis.Atomics?.waitAsync !== "function"
+      || !workers || workers.controller || sessionStorage.getItem(ISOLATING) !== null) {
+      return false;
+    }
+    await workers.register(new URL("isolation.js", import.meta.url));
+    await workers.ready;
+    sessionStorage.setItem(ISOLATING, "");
+    return true;
+  } catch {
+    // A browser that keeps no session storage, or refuses the worker, leaves
+    // the page as it is.
+    return false;
+  }
+}
+
 // Says that bviz cannot use more than one thread, because of `reason`.
 function warnSingleThreaded(reason) {
   const message = document.createElement("span");
@@ -169,6 +198,8 @@ function escaped(error) {
 const reason = await missing();
 if (reason) {
   help(reason);
+} else if (await isolatesOnReload()) {
+  location.reload();
 } else {
   addEventListener("gpui:graphicsunavailable", (event) => help("graphics", event.message));
   addEventListener("bviz:failed", (event) => help("failed", event.message));

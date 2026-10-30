@@ -58,6 +58,7 @@ copy_to_directory(
         "help.html",
         "help.js",
         "index.html",
+        "isolation.js",
         "style.css",
         "worker.js",
         ":bindings",
