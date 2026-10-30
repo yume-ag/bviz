@@ -1,5 +1,6 @@
 // Modules using the WebAssembly features the web build is compiled to need.
 import { EXCEPTIONS_PROBE, SIMD_PROBE } from "./probes.js";
+import { crashOf } from "./crash.js";
 
 // The browser and system, by name, for the help page to pick its advice by.
 function about() {
@@ -90,20 +91,6 @@ const HEADROOM = 1 / 2;
 // The module's memory, from when `init` resolves, after bviz's `main` has run.
 let memory;
 
-// The panic bviz last recorded, kept until the task that recorded it ends, so a
-// crash in that task is the panic's, and one in a later task is not a panic
-// bviz caught before it.
-let lastPanic;
-Object.defineProperty(globalThis, "bvizLastPanic", {
-  get: () => lastPanic,
-  set(message) {
-    lastPanic = message;
-    setTimeout(() => {
-      lastPanic = undefined;
-    });
-  },
-});
-
 // Whether bviz's memory cannot grow by HEADROOM of its size. Asking it to grow
 // meets whichever limit binds it, its declared maximum or the browser's own,
 // and costs nothing once bviz has crashed.
@@ -117,20 +104,18 @@ function exhausted() {
   }
 }
 
-// Tells what crashed bviz: the panic or fault `error` that escaped it, or,
-// where an abort left none, the panic it last recorded. A fault that is no
-// panic, at a memory that cannot grow, is running out of memory: a failed
-// allocation aborts with a bare trap and runs no panic hook.
-function crashed(error) {
-  const panicked = error?.name === "PanicError" || lastPanic !== undefined;
-  if (error instanceof WebAssembly.RuntimeError && !panicked && memory && exhausted()) {
+// Tells what crashed bviz, on the page or on one of its threads, as crashOf
+// describes it. A fault that is no panic, at a memory that cannot grow, is
+// running out of memory: a failed allocation aborts with a bare trap and runs
+// no panic hook.
+function crashed({ fault, panicked, what }) {
+  if (fault && !panicked && memory && exhausted()) {
     const desktop = document.createElement("a");
     desktop.href = helpAddress("memory");
     desktop.textContent = "bviz on the desktop";
     ended("bviz ran out of the memory the browser gives it. For large builds, run ", desktop, ".");
     return;
   }
-  const what = lastPanic ?? error?.message;
   ended(what ? `bviz crashed: ${what}` : "bviz crashed.");
 }
 
@@ -203,10 +188,10 @@ if (reason) {
 } else {
   addEventListener("gpui:graphicsunavailable", (event) => help("graphics", event.message));
   addEventListener("bviz:failed", (event) => help("failed", event.message));
-  addEventListener("bviz:crashed", () => crashed());
+  addEventListener("bviz:crashed", () => crashed(crashOf()));
   addEventListener("bviz:closed", () => ended("bviz closed."));
-  addEventListener("error", (event) => escaped(event.error) && crashed(event.error));
-  addEventListener("unhandledrejection", (event) => escaped(event.reason) && crashed(event.reason));
+  addEventListener("error", (event) => escaped(event.error) && crashed(crashOf(event.error)));
+  addEventListener("unhandledrejection", (event) => escaped(event.reason) && crashed(crashOf(event.reason)));
 
   const status = document.createElement("p");
   status.className = "status";
@@ -217,8 +202,12 @@ if (reason) {
   if (threadless) {
     warnSingleThreaded(threadless);
   } else {
+    // The channel each thread of bviz tells this page of its crash on, named
+    // by the fragment of the script the thread starts in.
+    const crashes = new BroadcastChannel(`bviz:crashed:${crypto.randomUUID()}`);
+    crashes.addEventListener("message", (event) => crashed(event.data));
     // The script each thread of bviz starts in, which bviz reads by this name.
-    globalThis.bvizWorkerScript = new URL("threads/worker.js", import.meta.url).href;
+    globalThis.bvizWorkerScript = new URL(`threads/worker.js#${crashes.name}`, import.meta.url).href;
   }
 
   try {
@@ -226,7 +215,7 @@ if (reason) {
     ({ memory } = await init());
   } catch (error) {
     if (escaped(error)) {
-      crashed(error);
+      crashed(crashOf(error));
     } else {
       help("load", String(error));
     }

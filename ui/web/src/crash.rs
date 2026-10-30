@@ -3,9 +3,9 @@
 use std::panic::{self, PanicHookInfo};
 
 /// Dispatches `bviz:crashed` on the page should the module abort, and has the
-/// page record each panic's message as `bvizLastPanic` to name the crash by:
-/// an abort leaves no exception whose message would. A panic bviz catches is
-/// recorded as well, so the record alone tells of no crash.
+/// script running the thread record each panic's message as `bvizLastPanic` to
+/// name the crash by: an abort leaves no exception whose message would. A panic
+/// bviz catches is recorded as well, so the record alone tells of no crash.
 ///
 /// The console-logging hook gpui's web platform installs is installed here
 /// first, beneath the recording, so the platform does not later replace it.

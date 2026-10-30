@@ -54,6 +54,7 @@ copy_to_directory(
     name = "site",
     srcs = [
         "bootstrap.js",
+        "crash.js",
         "favicon.svg",
         "help.html",
         "help.js",
