@@ -102,25 +102,29 @@ pub struct Input {
 impl Input {
     /// The input `name` names, with its head read from `access`.
     pub fn new(name: String, mut access: Access) -> io::Result<Input> {
-        let head_limit = HEAD_BYTES as u64;
-        let expected = access
-            .size()
-            .map_or(head_limit, |size| size.min(head_limit));
-        let mut head = Vec::with_capacity(expected as usize);
-        match &mut access {
-            Access::Seekable { source, .. } => At::new(&**source, 0)
-                .take(head_limit)
-                .read_to_end(&mut head)?,
-            Access::Stream { reader, .. } => reader.take(head_limit).read_to_end(&mut head)?,
-            Access::Memory(bytes) => At::new(&*bytes, 0)
-                .take(head_limit)
-                .read_to_end(&mut head)?,
+        let head = match &mut access {
+            Access::Seekable { source, size } => Input::read_head(&**source, *size)?,
+            Access::Stream { reader, size } => {
+                let mut head = Vec::with_capacity(head_bytes(*size));
+                reader.take(HEAD_BYTES as u64).read_to_end(&mut head)?;
+                head
+            }
+            Access::Memory(bytes) => Input::read_head(&*bytes, bytes.len() as u64)?,
         };
         Ok(Input {
             name,
             head: Some(head),
             access,
         })
+    }
+
+    /// The head of `source`, of `size` bytes.
+    pub(crate) fn read_head(source: &dyn ReadAt, size: u64) -> io::Result<Vec<u8>> {
+        let mut head = Vec::with_capacity(head_bytes(Some(size)));
+        At::new(source, 0)
+            .take(HEAD_BYTES as u64)
+            .read_to_end(&mut head)?;
+        Ok(head)
     }
 
     /// The input `name` names, held in memory as `bytes`.
@@ -260,6 +264,12 @@ impl Reopener {
         };
         Input::new(self.name.clone(), access)
     }
+}
+
+/// The length of the head of an input of `size` bytes, where that is known,
+/// or the most a head holds where it is not.
+fn head_bytes(size: Option<u64>) -> usize {
+    size.map_or(HEAD_BYTES, |size| size.min(HEAD_BYTES as u64) as usize)
 }
 
 /// An empty vector with room for `capacity` items where that much memory can
