@@ -3365,9 +3365,9 @@ fn browser_label(file: &bviz_ui_web::File) -> SharedString {
     crate::document_label(std::path::Path::new(&file.name()))
 }
 
-/// Reads `files`, handed over by the browser and held by the window `this`
-/// frames as `batch`, showing how much of each is read, and hands them to the
-/// app's [`PathOpener`].
+/// Receives `files`, handed over by the browser and held by the window `this`
+/// frames as `batch`, showing how much of each is read ahead, and hands them
+/// to the app's [`PathOpener`].
 #[cfg(target_family = "wasm")]
 async fn read_and_open(
     this: WeakEntity<Workspace>,
@@ -3388,7 +3388,7 @@ async fn read_and_open(
         return;
     };
     let note = pending.note;
-    let read = bviz_ui_web::read_files(files, |at, bytes| {
+    let read = bviz_ui_web::receive_files(files, |at, bytes| {
         let shown = this.update(cx, |workspace, cx| {
             if let Some(opening) = workspace.opening_mut(note) {
                 opening.read(at, bytes);

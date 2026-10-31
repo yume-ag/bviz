@@ -1,20 +1,23 @@
 //! Files the page's visitor hands bviz, which the browser gives as bytes
-//! alone, read whole into memory.
+//! alone: read whole into memory built without threads, and read where they
+//! are by bviz's threads built with them.
 
 use bviz_input::Named;
-use js_sys::{Promise, Uint8Array};
+use js_sys::Promise;
 use std::io;
 use std::ops::ControlFlow;
+use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
-use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{DragEvent, File, FileList, HtmlInputElement};
 
 /// Bytes of a file the browser hands over at a time, so a large file passes
 /// through the browser's memory a slice at a time on its way into bviz's.
+#[cfg(not(target_feature = "atomics"))]
 const CHUNK_BYTES: u32 = 16 << 20;
 
 /// Why a file that does not fit bviz's memory does not open.
+#[cfg(not(target_feature = "atomics"))]
 const TOO_LARGE: &str = "too large to hold in the browser's memory";
 
 /// A file handed over that bviz could not read.
@@ -107,7 +110,8 @@ fn files_of(list: FileList) -> Vec<File> {
 /// among `files` of the file being read and how many of its bytes are read
 /// as each slice of it arrives; `None` where `progress` breaks off the
 /// reading.
-pub async fn read_files(
+#[cfg(not(target_feature = "atomics"))]
+pub async fn receive_files(
     files: Vec<File>,
     mut progress: impl FnMut(usize, u64) -> ControlFlow<()>,
 ) -> Option<Vec<Result<Named, Unread>>> {
@@ -123,9 +127,20 @@ pub async fn read_files(
     Some(read)
 }
 
+/// Each of `files`, under its name, read by bviz's threads as they go, so
+/// that nothing is read ahead and `progress` is never told.
+#[cfg(target_feature = "atomics")]
+pub async fn receive_files(
+    files: Vec<File>,
+    _progress: impl FnMut(usize, u64) -> ControlFlow<()>,
+) -> Option<Vec<Result<Named, Unread>>> {
+    Some(crate::served::serve(files))
+}
+
 /// `file`'s bytes, in a buffer sized for them before the first is read,
 /// telling `progress` how many are read as each slice arrives, unless it
 /// breaks off the reading.
+#[cfg(not(target_feature = "atomics"))]
 async fn read_file(
     file: &File,
     mut progress: impl FnMut(u64) -> ControlFlow<()>,
@@ -141,7 +156,7 @@ async fn read_file(
         let chunk = JsFuture::from(slice.array_buffer())
             .await
             .map_err(js_error)?;
-        let chunk = Uint8Array::new(&chunk);
+        let chunk = js_sys::Uint8Array::new(&chunk);
         let start = bytes.len();
         bytes.resize(start + chunk.length() as usize, 0);
         chunk.copy_to(&mut bytes[start..]);
@@ -153,7 +168,8 @@ async fn read_file(
     Ok(ControlFlow::Continue(bytes))
 }
 
-fn js_error(error: JsValue) -> io::Error {
+#[cfg(not(target_feature = "atomics"))]
+fn js_error(error: wasm_bindgen::JsValue) -> io::Error {
     match error.dyn_ref::<js_sys::Error>() {
         Some(error) => io::Error::other(String::from(error.message())),
         None => io::Error::other(format!("{error:?}")),

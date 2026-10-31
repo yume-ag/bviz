@@ -20,6 +20,8 @@ wasm-bindgen-futures = "0.4"
 wasm_thread = { workspace = true }
 web-sys = { workspace = true, features = [
     "Blob",
+    "BroadcastChannel",
+    "Crypto",
     "DataTransfer",
     "Document",
     "DragEvent",
@@ -35,4 +37,7 @@ web-sys = { workspace = true, features = [
     "Node",
     "UiEvent",
     "Window",
+    "Worker",
+    "WorkerOptions",
+    "WorkerType",
 ] }

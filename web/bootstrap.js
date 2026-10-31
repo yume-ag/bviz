@@ -208,6 +208,9 @@ if (reason) {
     crashes.addEventListener("message", (event) => crashed(event.data));
     // The script each thread of bviz starts in, which bviz reads by this name.
     globalThis.bvizWorkerScript = new URL(`threads/worker.js#${crashes.name}`, import.meta.url).href;
+    // The script of the worker that reads the files handed to bviz for its
+    // threads, which bviz reads by this name.
+    globalThis.bvizFileServerScript = new URL("threads/files.js", import.meta.url).href;
   }
 
   try {

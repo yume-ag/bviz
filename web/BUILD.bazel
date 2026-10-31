@@ -56,6 +56,7 @@ copy_to_directory(
         "bootstrap.js",
         "crash.js",
         "favicon.svg",
+        "files.js",
         "help.html",
         "help.js",
         "index.html",
@@ -72,6 +73,7 @@ copy_to_directory(
     replace_prefixes = {
         "bindings/": "",
         "threads_bindings/": "threads/",
+        "files.js": "threads/files.js",
         "worker.js": "threads/worker.js",
         "LICENSE": "LICENSE.txt",
         "NOTICE": "NOTICE.txt",
