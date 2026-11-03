@@ -399,17 +399,15 @@ impl ExclusivePanel {
             drawn.map_or_else(Default::default, |drawn| Arc::clone(&drawn.shown.points))
         });
         let (model, focus, chips) = (model.clone(), focus.clone(), chips.clone());
-        cx.new(|cx| {
-            JumpPalette::new(
-                model,
-                Holder::Exclusive,
-                focus,
-                chips,
-                Some(drawn),
-                standing,
-                cx,
-            )
-        })
+        JumpPalette::new(
+            model,
+            Holder::Exclusive,
+            focus,
+            chips,
+            Some(drawn),
+            standing,
+            cx,
+        )
     }
 
     /// Opens the palette over the icicle, noting how the tree was drawn as

@@ -24,8 +24,8 @@ use bviz_ui_components::{
     list_scrollbar, menu_chrome, overlay_canvas,
 };
 use gpui::{
-    Action, App, Bounds, ClickEvent, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
-    Hsla, KeyContext, MouseButton, MouseDownEvent, Pixels, Rems, Render, ScrollStrategy,
+    Action, App, Bounds, ClickEvent, Context, Div, Entity, EntityId, EventEmitter, FocusHandle,
+    Focusable, Hsla, KeyContext, MouseButton, MouseDownEvent, Pixels, Rems, Render, ScrollStrategy,
     SharedString, Stateful, Subscription, TextStyleRefinement, Window, actions, div, prelude::*,
     px, relative, rems, uniform_list,
 };
@@ -133,6 +133,9 @@ pub(crate) enum JumpEvent {
 pub(crate) struct JumpPalette {
     model: Entity<GraphModel>,
     holder: Holder,
+    /// The view holding the palette, which draws it while it is open and so
+    /// is notified as it opens.
+    view: EntityId,
     /// The view holding the palette, which closing it gives the focus back
     /// to.
     host: FocusHandle,
@@ -167,32 +170,37 @@ struct Jump {
 impl EventEmitter<JumpEvent> for JumpPalette {}
 
 impl JumpPalette {
-    /// A palette over `model` in the view `holder` that `host` focuses, adding
-    /// chips to `chips`, ranking first the nodes `drawn` reads and badging each
-    /// row as `standing` reads it.
-    pub(crate) fn new(
+    /// A palette over `model` in the view `holder` that `cx` belongs to and
+    /// `host` focuses, adding chips to `chips`, ranking first the nodes `drawn`
+    /// reads and badging each row as `standing` reads it.
+    pub(crate) fn new<V: 'static>(
         model: Entity<GraphModel>,
         holder: Holder,
         host: FocusHandle,
         chips: Entity<ChipBar>,
         drawn: Option<Drawn>,
         standing: StandsIn,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let source_replaced = cx.subscribe(&model, |view, _, _: &SourceReplaced, cx| {
-            _ = view.dismiss(cx)
-        });
-        JumpPalette {
-            model,
-            holder,
-            host,
-            chips,
-            drawn,
-            standing,
-            open: None,
-            scroll: ListScroll::new(),
-            _source_replaced: source_replaced,
-        }
+        cx: &mut Context<V>,
+    ) -> Entity<Self> {
+        let view = cx.entity_id();
+        cx.new(|cx| {
+            let source_replaced = cx
+                .subscribe(&model, |view: &mut Self, _, _: &SourceReplaced, cx| {
+                    _ = view.dismiss(cx)
+                });
+            JumpPalette {
+                model,
+                holder,
+                view,
+                host,
+                chips,
+                drawn,
+                standing,
+                open: None,
+                scroll: ListScroll::new(),
+                _source_replaced: source_replaced,
+            }
+        })
     }
 
     pub(crate) fn is_open(&self) -> bool {
@@ -237,6 +245,7 @@ impl JumpPalette {
             field.focus(window, cx);
         }
         cx.notify();
+        App::notify(cx, self.view);
         opened
     }
 

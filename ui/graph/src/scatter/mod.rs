@@ -314,17 +314,15 @@ impl ScatterPanel {
             (plot.index).stands(&shared.base, &shared.facets, &plot.verdicts, id)
         });
         let (model, focus, chips) = (model.clone(), focus.clone(), chips.clone());
-        cx.new(|cx| {
-            JumpPalette::new(
-                model,
-                Holder::Scatter,
-                focus,
-                chips,
-                Some(drawn),
-                standing,
-                cx,
-            )
-        })
+        JumpPalette::new(
+            model,
+            Holder::Scatter,
+            focus,
+            chips,
+            Some(drawn),
+            standing,
+            cx,
+        )
     }
 
     /// Opens the palette over the plot, noting the zoom it opened at.
