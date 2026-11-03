@@ -26,7 +26,6 @@ rust_library(
         "//ui/workspace",
         "//util/input",
         "//util/switches",
-        "//util/time",
         "@crates//:clap",
         "@crates//:gpui",
     ] + select({

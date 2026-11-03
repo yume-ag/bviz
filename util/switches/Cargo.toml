@@ -10,6 +10,9 @@ repository.workspace = true
 name = "bviz_switches"
 path = "src/lib.rs"
 
+[dependencies]
+bviz_time = { workspace = true }
+
 [target.'cfg(target_family = "wasm")'.dependencies]
 percent-encoding = { workspace = true }
 web-sys = { workspace = true, features = ["console"] }

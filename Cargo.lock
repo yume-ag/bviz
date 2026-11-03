@@ -897,6 +897,7 @@ dependencies = [
 name = "bviz_switches"
 version = "0.1.0"
 dependencies = [
+ "bviz_time",
  "percent-encoding",
  "web-sys",
 ]
@@ -1122,7 +1123,6 @@ dependencies = [
  "bviz_invocation",
  "bviz_label",
  "bviz_switches",
- "bviz_time",
  "bviz_trace_layout",
  "bviz_trace_profile",
  "bviz_ui_assets",
