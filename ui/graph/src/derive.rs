@@ -1252,17 +1252,19 @@ fn request(view: &mut GraphPanel, cx: &mut Context<GraphPanel>) {
                 false => Relaid::Nothing,
                 true if keeps_held(&slice.base, &expanded) => Relaid::Held,
                 true => {
-                    let laid = build::relayout(
-                        &slice.base,
-                        &slice.reduced,
-                        &expanded,
-                        &mut slice.names,
-                        reduced,
-                        &slice.transitions,
-                        held.as_ref()
-                            .and_then(|held| held.laid.as_ref().ok())
-                            .map(|laid| &laid.view.anchors),
-                    );
+                    let laid = bviz_graph_layout::timed("relayout", || {
+                        build::relayout(
+                            &slice.base,
+                            &slice.reduced,
+                            &expanded,
+                            &mut slice.names,
+                            reduced,
+                            &slice.transitions,
+                            held.as_ref()
+                                .and_then(|held| held.laid.as_ref().ok())
+                                .map(|laid| &laid.view.anchors),
+                        )
+                    });
                     Relaid::Fresh(Layered {
                         laid: laid.map(|(view, groups)| {
                             Laid::new(Arc::new(view), Arc::new(groups), &slice.base)

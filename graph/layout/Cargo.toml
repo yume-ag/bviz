@@ -15,6 +15,7 @@ bviz_bazel_flags = { workspace = true }
 bviz_input = { workspace = true }
 bviz_label = { workspace = true }
 bviz_parallel = { workspace = true }
+bviz_switches = { workspace = true }
 fixedbitset = { workspace = true }
 rayon = { workspace = true }
 regex-automata = { workspace = true }

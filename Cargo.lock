@@ -816,6 +816,7 @@ dependencies = [
  "bviz_input",
  "bviz_label",
  "bviz_parallel",
+ "bviz_switches",
  "fastrand",
  "fixedbitset",
  "org-eclipse-elk-alg-layered",

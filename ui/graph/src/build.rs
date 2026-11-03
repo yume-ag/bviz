@@ -2,7 +2,7 @@ use bviz_graph_layout::graph::Graph;
 use bviz_graph_layout::streamed_proto::ReadError;
 use bviz_graph_layout::transition::Transitions;
 use bviz_graph_layout::{
-    Anchor, Id, InputSet, Joint, LaidOut, Names, layout, quotient, streamed_proto,
+    Anchor, Id, InputSet, Joint, LaidOut, Names, layout, quotient, streamed_proto, timed,
 };
 use bviz_input::Named;
 use bviz_ui_graph_args::{GraphSource, Input, InputKind};
@@ -30,23 +30,39 @@ pub(crate) fn build_graph(inputs: Vec<Input<Named>>) -> Result<(Joint, Graph), S
         match kind {
             InputKind::Aquery => {
                 aq = Some(
-                    streamed_proto::read_action_graph_containers(stream, size)
-                        .map_err(unreadable)?,
+                    timed("  read+decode aquery", || {
+                        streamed_proto::read_action_graph_containers(stream, size)
+                    })
+                    .map_err(unreadable)?,
                 );
             }
             InputKind::Cquery => {
-                cq = Some(streamed_proto::read_cquery_results(stream, size).map_err(unreadable)?);
+                cq = Some(
+                    timed("  read+decode cquery", || {
+                        streamed_proto::read_cquery_results(stream, size)
+                    })
+                    .map_err(unreadable)?,
+                );
             }
             InputKind::Query => {
-                q = Some(streamed_proto::read_query_targets(stream, size).map_err(unreadable)?);
+                q = Some(
+                    timed("  read+decode query", || {
+                        streamed_proto::read_query_targets(stream, size)
+                    })
+                    .map_err(unreadable)?,
+                );
             }
         }
     }
-    let joint = bviz_graph_layout::build_joint(aq.as_deref(), cq.as_deref(), q.as_deref(), false);
+    let joint = timed("  join", || {
+        bviz_graph_layout::build_joint(aq.as_deref(), cq.as_deref(), q.as_deref(), false)
+    });
     // Transitively reduce the whole base once: a collapsed box then draws the
     // reduction of its hidden subtree's edges, so its edge count is stable under
     // expansion rather than re-derived (differently) from each view.
-    let reduced = bviz_graph_layout::reduce::transitive_reduction(&joint.graph);
+    let reduced = timed("  transitive reduction", || {
+        bviz_graph_layout::reduce::transitive_reduction(&joint.graph)
+    });
     Ok((joint, reduced))
 }
 
@@ -139,8 +155,12 @@ pub(crate) fn relayout(
     transitions: &Transitions,
     pinned: Option<&HashMap<Id, Anchor>>,
 ) -> Result<(LaidOut, BTreeMap<Id, Id>), TooDense> {
-    let (visible, folding) = bviz_graph_layout::lod::collapse_folded(base, expanded);
-    let (mut view, remap) = quotient::quotient(&visible, expanded, names);
+    let (visible, folding) = timed("  fold", || {
+        bviz_graph_layout::lod::collapse_folded(base, expanded)
+    });
+    let (mut view, remap) = timed("  quotient", || {
+        quotient::quotient(&visible, expanded, names)
+    });
     let full_edges: Vec<(Id, Id)> = view
         .edges
         .iter()
@@ -149,7 +169,9 @@ pub(crate) fn relayout(
         .into_iter()
         .collect();
     if reduced {
-        view = reduce_view(view, reduced_base, expanded, &remap);
+        view = timed("  reduce view", || {
+            reduce_view(view, reduced_base, expanded, &remap)
+        });
     }
     let connectors = view
         .edges
@@ -160,10 +182,10 @@ pub(crate) fn relayout(
     if connectors > MAX_LAID_OUT_CONNECTORS {
         return Err(TooDense { connectors });
     }
-    let mut laid = match pinned {
+    let mut laid = timed("  layered layout", || match pinned {
         Some(anchors) => layout::layout_pinned(&view, anchors),
         None => layout::layout(&view),
-    };
+    });
     laid.full_edges = full_edges;
     let box_of = |id: Id| remap.get(&id).copied().unwrap_or(id);
     transitions.mark(&mut laid.connectors, |from, to| {
