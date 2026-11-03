@@ -54,12 +54,26 @@ pub fn timing_start(switch: &str) -> Option<bviz_time::Instant> {
     is_set(switch).then(bviz_time::now)
 }
 
-/// Reports the stage `label`, which ran from `start` until now.
+/// Reports the stage `label`, which ran from `start` until now, and the thread
+/// it ended on.
 pub fn report_timing(label: &str, start: bviz_time::Instant) {
     report(format_args!(
-        "[timing] {label}: {:.3}s",
-        start.elapsed().as_secs_f64()
+        "[timing] {label}: {:.3}s on {}",
+        start.elapsed().as_secs_f64(),
+        ThreadName(std::thread::current()),
     ));
+}
+
+/// A thread as a report names it: by its name, or failing one by its id.
+struct ThreadName(std::thread::Thread);
+
+impl fmt::Display for ThreadName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0.name() {
+            Some(name) => f.write_str(name),
+            None => write!(f, "{:?}", self.0.id()),
+        }
+    }
 }
 
 #[cfg(target_family = "wasm")]
