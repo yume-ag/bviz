@@ -679,7 +679,10 @@ impl Panel for TracePanel {
             true => self.focus_handle(cx).focus(window, cx),
             // The tooltip and crosshair anchor to a cursor that is no longer over
             // the chart.
-            false => self.timeline.update(cx, |t, _| t.clear_hover()),
+            false => self.timeline.update(cx, |t, cx| {
+                t.clear_hover();
+                cx.notify();
+            }),
         }
     }
 }

@@ -967,7 +967,10 @@ impl Panel for FlamePanel {
         match active {
             true => self.focus.focus(window, cx),
             // The tooltip anchors to a cursor that is no longer over the graph.
-            false => self.clear_hover(),
+            false => {
+                self.clear_hover();
+                cx.notify();
+            }
         }
     }
 }
