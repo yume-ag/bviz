@@ -130,7 +130,7 @@ impl SpawnTimePanel {
             cx.notify();
         });
         let focus = cx.focus_handle();
-        let legend = cx.new(|cx| LegendState::new(focus.clone(), cx));
+        let legend = LegendState::new(focus.clone(), cx);
         let mut panel = Self {
             focus,
             model,

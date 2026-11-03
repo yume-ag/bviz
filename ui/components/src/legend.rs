@@ -7,9 +7,9 @@ use crate::{
 };
 use bviz_ui_theme::ThemeColors;
 use gpui::{
-    App, AvailableSpace, Bounds, Context, Div, ElementId, Entity, FocusHandle, Font, Hsla,
-    IntoElement, KeyBinding, MouseButton, Pixels, SharedString, Subscription, WeakFocusHandle,
-    Window, div, prelude::*, px, size,
+    App, AvailableSpace, Bounds, Context, Div, ElementId, Entity, EntityId, FocusHandle, Font,
+    Hsla, IntoElement, KeyBinding, MouseButton, Pixels, SharedString, Subscription,
+    WeakFocusHandle, Window, div, prelude::*, px, size,
 };
 use std::rc::Rc;
 
@@ -248,6 +248,9 @@ pub struct LegendState {
     /// [`ShowLegend`]'s keys up in, and where closing the popover hands focus
     /// when nothing held it as the popover opened.
     view_focus: FocusHandle,
+    /// The view the legend belongs to, which draws the popover and so is
+    /// notified whenever it opens or closes.
+    view: EntityId,
     popover_focus: FocusHandle,
     drawn: OnScreen,
     open: Option<Opened>,
@@ -257,14 +260,22 @@ pub struct LegendState {
 }
 
 impl LegendState {
-    pub fn new(view_focus: FocusHandle, cx: &mut Context<Self>) -> Self {
-        Self {
+    /// The legend of the view `cx` belongs to, whose focus is `view_focus`.
+    pub fn new<V: 'static>(view_focus: FocusHandle, cx: &mut Context<V>) -> Entity<Self> {
+        let view = cx.entity_id();
+        cx.new(|cx| Self {
             view_focus,
+            view,
             popover_focus: cx.focus_handle(),
             drawn: OnScreen::new(cx),
             open: None,
             measured: None,
-        }
+        })
+    }
+
+    fn opened_or_closed(&self, cx: &mut Context<Self>) {
+        cx.notify();
+        App::notify(cx, self.view);
     }
 
     pub fn is_open(&self) -> bool {
@@ -281,7 +292,7 @@ impl LegendState {
         }
         let dismiss = cx.on_focus_out(&self.popover_focus, window, |this, _, _, cx| {
             if this.open.take().is_some() {
-                cx.notify();
+                this.opened_or_closed(cx);
             }
         });
         self.open = Some(Opened {
@@ -292,7 +303,7 @@ impl LegendState {
             _dismiss: dismiss,
         });
         self.popover_focus.focus(window, cx);
-        cx.notify();
+        self.opened_or_closed(cx);
     }
 
     /// Closes the popover from within, handing focus back where it stood when
@@ -301,7 +312,7 @@ impl LegendState {
         if let Some(Opened { from, .. }) = self.open.take() {
             let to = from.upgrade().unwrap_or_else(|| self.view_focus.clone());
             window.focus(&to, cx);
-            cx.notify();
+            self.opened_or_closed(cx);
         }
     }
 

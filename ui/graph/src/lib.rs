@@ -659,7 +659,7 @@ impl GraphPanel {
             }
         });
         let derived = Derived::new();
-        let legend_state = cx.new(|cx| LegendState::new(focus_handle.clone(), cx));
+        let legend_state = LegendState::new(focus_handle.clone(), cx);
         let panel = cx.entity();
         model.update(cx, |model, cx| model.defer_to(&panel, cx));
         let mut view = Self {

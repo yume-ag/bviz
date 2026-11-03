@@ -245,7 +245,7 @@ impl ScatterPanel {
         });
         let parent = cx.entity().downgrade();
         let focus = cx.focus_handle();
-        let legend = cx.new(|cx| LegendState::new(focus.clone(), cx));
+        let legend = LegendState::new(focus.clone(), cx);
         let choice = Choice::of(&model, &focus, cx);
         let chips =
             cx.new(|cx| ChipBar::new(model.clone(), Holder::Scatter, focus.clone(), None, cx));

@@ -503,7 +503,7 @@ impl FlamePanel {
             this.invalidate_canvas(cx);
         });
         let focus = cx.focus_handle();
-        let legend = cx.new(|cx| LegendState::new(focus.clone(), cx));
+        let legend = LegendState::new(focus.clone(), cx);
         Self {
             focus,
             model,

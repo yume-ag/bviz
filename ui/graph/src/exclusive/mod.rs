@@ -316,7 +316,7 @@ impl ExclusivePanel {
         });
         let parent = cx.entity().downgrade();
         let focus_handle = cx.focus_handle();
-        let legend = cx.new(|cx| LegendState::new(focus_handle.clone(), cx));
+        let legend = LegendState::new(focus_handle.clone(), cx);
         let picker = unit_picker(&model, &focus_handle, cx);
         let chips = cx.new(|cx| {
             ChipBar::new(
