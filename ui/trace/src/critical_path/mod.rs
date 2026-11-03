@@ -219,6 +219,9 @@ pub struct CriticalPathPanel {
     nearly_critical_scroll: ListScroll,
     /// Shows the document's load state as it changes.
     _model_observer: Subscription,
+    /// Shows what the session holds chosen, which a view of another of the
+    /// invocation's outputs may change.
+    _session_observer: Subscription,
     _derived: Subscription,
     /// Returns the steps to the first for the document replacing the shown one.
     _source_replaced: Subscription,
@@ -227,6 +230,8 @@ pub struct CriticalPathPanel {
 impl CriticalPathPanel {
     pub(crate) fn new(model: Entity<TraceModel>, cx: &mut Context<Self>) -> Self {
         let model_observer = cx.observe(&model, |_, _, cx| cx.notify());
+        let session = model.read(cx).session().clone();
+        let session_observer = cx.observe(&session, |_, _, cx| cx.notify());
         let derived = cx.subscribe(&model, |_, _, _: &CriticalPathDerived, cx| cx.notify());
         let source_replaced = cx.subscribe(&model, |panel, _, _: &SourceReplaced, cx| {
             panel.listing = Listing::Steps;
@@ -245,6 +250,7 @@ impl CriticalPathPanel {
             scroll: ListScroll::new(),
             nearly_critical_scroll: ListScroll::new(),
             _model_observer: model_observer,
+            _session_observer: session_observer,
             _derived: derived,
             _source_replaced: source_replaced,
         }
