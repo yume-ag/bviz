@@ -1,0 +1,26 @@
+Draw what a focus listener invalidates in the next frame
+
+A window runs its focus listeners as the last step of a draw, once the
+frame is built and swapped in. A view notified there was only marked
+dirty: no frame was scheduled and no observer heard of it, so a popover a
+listener closed as focus left it stayed drawn until something else asked
+for a frame. Treat a notify from a focus listener as one made outside a
+draw, scheduling the next frame.
+
+License: Apache-2.0 (Zed v1.24.3)
+
+diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
+index d1d88b8..4b8eb3d 100644
+--- a/crates/gpui/src/window.rs
++++ b/crates/gpui/src/window.rs
+@@ -178,7 +178,9 @@ impl WindowInvalidator {
+         let mut inner = self.inner.borrow_mut();
+         inner.update_count += 1;
+         inner.dirty_views.insert(entity);
+-        if inner.draw_phase == DrawPhase::None {
++        // Focus listeners run once the frame is built, so what they invalidate
++        // is drawn in the next frame, as outside a draw.
++        if matches!(inner.draw_phase, DrawPhase::None | DrawPhase::Focus) {
+             #[cfg(feature = "profiler")]
+             let dirty_at = Self::record_frame_dirty(&mut inner);
+             let became_dirty = !inner.dirty;
