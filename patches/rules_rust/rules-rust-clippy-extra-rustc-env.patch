@@ -1,0 +1,24 @@
+Hand clippy the rustc environment the command line adds
+
+The clippy aspect takes the extra_rustc_flag setting but not extra_rustc_env,
+so a variable set there for every rustc action, such as RUSTC_BOOTSTRAP, is
+missing from clippy's, and clippy may then lint under other cfgs than the
+compile.
+
+The patch adds three lines to the aspect's attributes and carries the six
+around them, too little of the file to attribute.
+
+License: Apache-2.0 (hermeticbuild/rules_rust source-fd521efe16c03e4cd169453eb44fb98d73ebb7aa)
+
+--- a/rust/private/clippy.bzl
++++ b/rust/private/clippy.bzl
+@@ -349,6 +349,9 @@
+             doc = "The desired `--error-format` flags for rustc",
+             default = "//rust/settings:error_format",
+         ),
++        "_extra_rustc_env": attr.label(
++            default = Label("//rust/settings:extra_rustc_env"),
++        ),
+         "_extra_rustc_flag": attr.label(
+             default = Label("//rust/settings:extra_rustc_flag"),
+         ),

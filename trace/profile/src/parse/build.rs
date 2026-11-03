@@ -2,7 +2,6 @@ use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BinaryHeap, HashMap};
 
 use bviz_invocation::EpochMicros;
-use bviz_parallel::worker_count;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::{Map, Value};
 
@@ -14,7 +13,7 @@ use crate::model::{
 };
 
 use super::serde_events::{ArgEntry, ArgVal, RawEvent, arg_i64, arg_str};
-use super::{BUILD_ID_KEY, timed};
+use super::{BUILD_ID_KEY, slice_pass_workers, timed};
 
 const MAX_SORT_INDEX: i64 = 1_000_000;
 const PHASE_MARKER_CATEGORY: &str = "build phase marker";
@@ -401,7 +400,7 @@ fn finish_merge(
         slice_total,
         &categories,
     );
-    merge_lanes(&mut tasks);
+    merge_lanes(&mut tasks, slice_total);
     debug_assert_eq!(
         tasks.iter().map(|t| t.emitted).sum::<usize>(),
         slice_total,
@@ -567,11 +566,11 @@ fn carve_segments<'a>(
     (segments, tasks)
 }
 
-fn merge_lanes(tasks: &mut [TidTask]) {
+fn merge_lanes(tasks: &mut [TidTask], slice_total: usize) {
     timed("    slices", || {
         // Thread sizes are heavily skewed toward a few big evaluator lanes, so
         // workers steal tasks one thread at a time.
-        let workers = worker_count().min(tasks.len());
+        let workers = slice_pass_workers(slice_total).min(tasks.len());
         if workers <= 1 {
             tasks.iter_mut().for_each(merge_lane);
             return;

@@ -99,4 +99,5 @@ protoc-gen-prost = "0.4"
 gpui = { git = "https://github.com/zed-industries/zed", tag = "v1.24.3" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", tag = "v1.24.3" }
 gpui_web = { git = "https://github.com/zed-industries/zed", tag = "v1.24.3" }
+wasm_thread = { git = "https://github.com/zed-industries/wasm_thread", rev = "0cf96c7708dfb97ccf3da50347e25edcf75d6937" }
 

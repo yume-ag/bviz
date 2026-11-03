@@ -3,18 +3,26 @@ use std::fmt;
 use std::io;
 use std::path::PathBuf;
 
-use crate::{HEAD_BYTES, Input};
+use crate::{Access, HEAD_BYTES, Input, ReadAt};
 
 /// A file the user named to bviz: by its path, or, where there is no file
-/// system to name it in, by its name and the bytes it holds.
+/// system to name it in, by its name and the bytes it holds or the source
+/// they are read from.
+///
+/// A browser's `File.name` names the file in the latter two: the file's base
+/// name, without the directory a browser does not tell, so two files of one
+/// name are distinct files that share a label.
 pub enum Named {
     Path(PathBuf),
     Memory {
-        /// The browser's `File.name` for it: the file's base name, without
-        /// the directory a browser does not tell, so two files of one name
-        /// are distinct files that share a label.
         name: String,
         bytes: Vec<u8>,
+    },
+    /// A file read at any offset through `source`, of `size` bytes.
+    Seekable {
+        name: String,
+        source: Box<dyn ReadAt>,
+        size: u64,
     },
 }
 
@@ -27,6 +35,15 @@ impl Named {
                 Err(error) => Err((Named::Path(path), error)),
             },
             Named::Memory { name, bytes } => Ok(Opened(Open::Memory { name, bytes })),
+            Named::Seekable { name, source, size } => match Input::read_head(&*source, size) {
+                Ok(head) => Ok(Opened(Open::Seekable {
+                    name,
+                    source,
+                    size,
+                    head,
+                })),
+                Err(error) => Err((Named::Seekable { name, source, size }, error)),
+            },
         }
     }
 
@@ -34,7 +51,7 @@ impl Named {
     pub fn name(&self) -> Cow<'_, str> {
         match self {
             Named::Path(path) => path.to_string_lossy(),
-            Named::Memory { name, .. } => Cow::Borrowed(name),
+            Named::Memory { name, .. } | Named::Seekable { name, .. } => Cow::Borrowed(name),
         }
     }
 }
@@ -54,6 +71,11 @@ impl fmt::Debug for Named {
                 .field("name", name)
                 .field("size", &bytes.len())
                 .finish(),
+            Named::Seekable { name, size, .. } => f
+                .debug_struct("Seekable")
+                .field("name", name)
+                .field("size", size)
+                .finish(),
         }
     }
 }
@@ -63,8 +85,20 @@ impl fmt::Debug for Named {
 pub struct Opened(Open);
 
 enum Open {
-    Path { path: PathBuf, input: Input },
-    Memory { name: String, bytes: Vec<u8> },
+    Path {
+        path: PathBuf,
+        input: Input,
+    },
+    Memory {
+        name: String,
+        bytes: Vec<u8>,
+    },
+    Seekable {
+        name: String,
+        source: Box<dyn ReadAt>,
+        size: u64,
+        head: Vec<u8>,
+    },
 }
 
 impl Opened {
@@ -73,6 +107,7 @@ impl Opened {
         match &self.0 {
             Open::Path { input, .. } => input.head(),
             Open::Memory { bytes, .. } => Some(&bytes[..bytes.len().min(HEAD_BYTES)]),
+            Open::Seekable { head, .. } => Some(head),
         }
     }
 
@@ -80,6 +115,16 @@ impl Opened {
         match self.0 {
             Open::Path { input, .. } => input,
             Open::Memory { name, bytes } => Input::in_memory(name, bytes),
+            Open::Seekable {
+                name,
+                source,
+                size,
+                head,
+            } => Input {
+                name,
+                head: Some(head),
+                access: Access::Seekable { source, size },
+            },
         }
     }
 
@@ -87,6 +132,9 @@ impl Opened {
         match self.0 {
             Open::Path { path, .. } => Named::Path(path),
             Open::Memory { name, bytes } => Named::Memory { name, bytes },
+            Open::Seekable {
+                name, source, size, ..
+            } => Named::Seekable { name, source, size },
         }
     }
 }
@@ -141,6 +189,68 @@ mod tests {
             panic!("a file in memory is given back in memory");
         };
         assert_eq!((name.as_str(), bytes.as_ptr()), ("kept", at));
+    }
+
+    fn seekable(name: &str, content: Vec<u8>) -> Named {
+        let size = content.len() as u64;
+        Named::Seekable {
+            name: name.into(),
+            source: Box::new(content),
+            size,
+        }
+    }
+
+    #[test]
+    fn a_seekable_file_opens_on_its_source() {
+        let content = bytes(HEAD_BYTES + 3);
+        let opened = seekable("a.pb", content.clone()).open().unwrap();
+        assert_eq!(opened.head(), Some(&content[..HEAD_BYTES]));
+        let input = opened.into_input();
+        assert_eq!(input.name(), "a.pb");
+        assert_eq!(input.size(), Some(content.len() as u64));
+        assert!(input.seekable().is_some());
+        assert_eq!(input.read_all().unwrap(), content);
+    }
+
+    #[test]
+    fn a_seekable_file_given_back_unread_reads_from_its_start() {
+        let content = bytes(HEAD_BYTES + 3);
+        let named = seekable("again.pb", content.clone())
+            .open()
+            .unwrap()
+            .into_named();
+        assert_eq!(
+            format!("{named:?}"),
+            format!(
+                r#"Seekable {{ name: "again.pb", size: {} }}"#,
+                content.len()
+            )
+        );
+        let input = named.open().unwrap().into_input();
+        assert_eq!(input.read_all().unwrap(), content);
+    }
+
+    /// A source every read of which fails.
+    struct Unreadable;
+
+    impl ReadAt for Unreadable {
+        fn read_at(&self, _: &mut [u8], _: u64) -> io::Result<usize> {
+            Err(io::ErrorKind::NotFound.into())
+        }
+    }
+
+    #[test]
+    fn a_seekable_file_whose_head_does_not_read_is_given_back() {
+        let named = Named::Seekable {
+            name: "gone.bep".into(),
+            source: Box::new(Unreadable),
+            size: 1,
+        };
+        let Err((named, error)) = named.open() else {
+            panic!("an unreadable source does not open");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert_eq!(named.name(), "gone.bep");
     }
 
     #[test]

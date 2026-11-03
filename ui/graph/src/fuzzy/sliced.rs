@@ -1,6 +1,7 @@
-//! The matcher engine of a build without threads: matching on the UI thread,
-//! a slice of the candidates per tick, so that typing stays responsive while
-//! a large list is matched.
+//! The matcher engine of the browser build: matching on the UI thread, a slice
+//! of the candidates per tick, so that typing stays responsive while a large
+//! list is matched. It needs no thread the standard library starts, as the
+//! browser's cannot start one.
 
 use super::narrow::narrows;
 use super::rank::MAX_WINDOW;

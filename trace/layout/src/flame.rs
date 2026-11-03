@@ -891,12 +891,12 @@ impl TrackFlamer {
 
     fn flamer(&self) -> &Flamer {
         self.flamer
-            .get_or_init(|| Flamer::new(&self.profile, worker_count()))
+            .get_or_init(|| Flamer::new(&self.profile, self.profile.pass_workers()))
     }
 
     fn wall_share(&self) -> &WallShare {
         self.wall_share
-            .get_or_init(|| WallShare::new(&self.profile, worker_count()))
+            .get_or_init(|| WallShare::new(&self.profile, self.profile.pass_workers()))
     }
 
     /// The [`WorkingLanes`] of the wall share this flamer weighs by.
@@ -919,7 +919,13 @@ impl TrackFlamer {
     ) -> (Vec<LaneTable>, Vec<Vec<W::Weight>>) {
         #[cfg(test)]
         self.count_walk(window);
-        build_lane_tables(self.flamer(), labels, window, worker_count(), weigher_of)
+        build_lane_tables(
+            self.flamer(),
+            labels,
+            window,
+            self.profile.pass_workers(),
+            weigher_of,
+        )
     }
 
     fn reduce(
@@ -976,7 +982,12 @@ impl TrackFlamer {
         tables.wall_us.get_or_init(|| {
             #[cfg(test)]
             self.count_walk(&tables.window);
-            wall_columns(self.flamer(), tables, self.wall_share(), worker_count())
+            wall_columns(
+                self.flamer(),
+                tables,
+                self.wall_share(),
+                self.profile.pass_workers(),
+            )
         })
     }
 

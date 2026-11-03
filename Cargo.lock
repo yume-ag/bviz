@@ -865,6 +865,7 @@ dependencies = [
  "js-sys",
  "num_cpus",
  "rayon",
+ "wasm_thread",
 ]
 
 [[package]]
@@ -1149,10 +1150,12 @@ name = "bviz_ui_web"
 version = "0.1.0"
 dependencies = [
  "bviz_input",
+ "bviz_parallel",
  "console_error_panic_hook",
  "js-sys",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm_thread",
  "web-sys",
 ]
 

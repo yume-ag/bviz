@@ -1,12 +1,12 @@
 //! Fuzzy matching of a query against candidates a list offers, run off the UI
-//! thread where the build has threads and in time slices on it where it has
-//! none, and the rows it ranks drawn with the matched characters picked out.
+//! thread natively and in time slices on it in the browser, and the rows it
+//! ranks drawn with the matched characters picked out.
 
 mod narrow;
 mod rank;
 
 cfg_if::cfg_if! {
-    if #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))] {
+    if #[cfg(target_family = "wasm")] {
         mod sliced;
         /// The engine a [`Matching`] matches on.
         type Chosen = sliced::Sliced;

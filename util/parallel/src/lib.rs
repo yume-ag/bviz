@@ -2,22 +2,44 @@
 //! bviz starts itself go through [`spawn`] or [`scope`]; those of its pools,
 //! through rayon's own pool builder.
 //!
-//! On wasm32-unknown-unknown the standard library cannot start a thread, even
-//! with the atomics feature: that takes a spawn backed by a Web Worker, which
-//! this crate does not provide. Built without atomics, the crate has neither
-//! `spawn` nor `scope`, and runs its fan-outs and pools on the calling thread.
-//! Built with them, it compiles the threaded paths, and `spawn`, `scope`,
-//! `fan_out` and building either pool panic when called.
+//! In the browser a thread is a Web Worker, which wasm32-unknown-unknown's
+//! standard library cannot start even with the atomics feature. Built with
+//! atomics, the crate starts its threads and its pools' workers through
+//! wasm_thread, and [`build_global_pool`] gives rayon's global pool workers
+//! the same way. Built without, the crate has neither `spawn` nor `scope`, and
+//! runs its fan-outs and pools on the calling thread.
 
 #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
 mod threads;
+#[cfg(all(target_family = "wasm", target_feature = "atomics"))]
+pub use threads::build_global_pool;
 #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
-pub use threads::{Pool, background_workers, fan_out, scope, spawn, workers};
+pub use threads::{
+    JoinHandle, Pool, Scope, ScopedJoinHandle, background_workers, fan_out, scope, spawn, workers,
+};
 
 #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
 mod one_thread;
 #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
 pub use one_thread::{Pool, background_workers, fan_out, workers};
+
+/// Panics on the browser's window thread, which must never wait on another
+/// thread: the wait traps there, and only when the other thread has not yet
+/// finished, so an unchecked wait fails at random.
+#[cfg(all(target_family = "wasm", target_feature = "atomics"))]
+#[track_caller]
+pub fn assert_can_block() {
+    assert!(
+        wasm_thread::is_web_worker_thread(),
+        "the browser's window thread cannot wait on another thread"
+    );
+}
+
+/// Any thread may wait on another natively, and a build without threads has no
+/// other to wait on.
+#[cfg(not(all(target_family = "wasm", target_feature = "atomics")))]
+#[inline(always)]
+pub fn assert_can_block() {}
 
 /// Worker count for a parallel pass over bulk data: the machine's physical core
 /// count rather than its logical (SMT) thread count, because such a pass is

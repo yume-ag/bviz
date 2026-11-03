@@ -77,12 +77,12 @@ impl<T> Identified<T> {
 }
 
 impl Identified<Named> {
-    /// `named` with the identity its path gives, which a file held in memory
-    /// has none of. Blocks on the file system.
+    /// `named` with the identity its path gives, which a file named by no
+    /// path has none of. Blocks on the file system.
     pub fn of_named(named: Named) -> Self {
         let identity = match &named {
             Named::Path(path) => FileIdentity::of_path(path).ok(),
-            Named::Memory { .. } => None,
+            Named::Memory { .. } | Named::Seekable { .. } => None,
         };
         Self {
             file: named,

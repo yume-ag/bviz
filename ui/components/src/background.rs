@@ -43,7 +43,7 @@ where
 pub struct Pending<T>(Started<T>);
 
 #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
-type Started<T> = std::thread::JoinHandle<Result<T, String>>;
+type Started<T> = bviz_parallel::JoinHandle<Result<T, String>>;
 
 #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
 type Started<T> = Deferred<T>;
@@ -81,10 +81,13 @@ impl<T: Send + 'static> Pending<T> {
     }
 
     /// The work's outcome, as [`join`](Self::join) gives it where the build
-    /// has threads, blocking the thread that polls it.
+    /// has threads, waited on as [`bviz_parallel::JoinHandle::finished`] waits.
     #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
     pub async fn finished(self) -> Result<T, String> {
-        self.join()
+        self.0
+            .finished()
+            .await
+            .unwrap_or_else(|_| Err(PANICKED.into()))
     }
 
     /// The work's outcome, a panic in it reported the way the work reports a

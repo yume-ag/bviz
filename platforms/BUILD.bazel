@@ -90,11 +90,13 @@ WASM32_ADDRESS_SPACE = 1 << 32
 # The web build with threads, for a page served cross-origin isolated. Its
 # memory, which may grow to the whole 32-bit address space, is shared between
 # the workers and imported, so that wasm-bindgen can hand it to each one; the
-# exports are the symbols wasm-bindgen's threads transform reads.
+# exports are the symbols wasm-bindgen's threads transform reads. rustc names
+# the atomics feature in cfg(target_feature) only under RUSTC_BOOTSTRAP.
 platform(
     name = "wasm32_web_threads",
     constraint_values = ["@rules_rs//rs/platforms/constraints:wasm_threads_on"],
     flags = [
+        "--@rules_rs_rules_rust//rust/settings:extra_rustc_env=RUSTC_BOOTSTRAP=1",
         "--@rules_rs_rules_rust//rust/settings:extra_rustc_flag=-Ctarget-feature=+atomics,+bulk-memory,+mutable-globals",
         "--@rules_rs_rules_rust//rust/settings:extra_rustc_flag=-Clink-args=--shared-memory --max-memory=%d --import-memory --export=__heap_base --export=__wasm_init_tls --export=__tls_size --export=__tls_align --export=__tls_base" % WASM32_ADDRESS_SPACE,
         "--copt=-matomics",

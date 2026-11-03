@@ -413,6 +413,7 @@ impl<T> Prepared<T> {
     /// and waited for where another is preparing it; so read only off the UI
     /// thread.
     pub(crate) fn wait(&self) -> &T {
+        bviz_parallel::assert_can_block();
         &self.0.prepared
     }
 

@@ -343,7 +343,12 @@ crate.annotation(
     git_archive_strip_prefix = "wasm_thread-{commit}",
     git_archive_url = "https://github.com/zed-industries/wasm_thread/archive/{commit}.tar.gz",
     patch_args = ["-p1"],
-    patches = ["//patches/wasm_thread:wasm_thread-assert-unwind-safe-handler.patch"],
+    patches = [
+        "//patches/wasm_thread:wasm_thread-assert-unwind-safe-handler.patch",
+        "//patches/wasm_thread:wasm_thread-no-eval.patch",
+        "//patches/wasm_thread:wasm_thread-stack-size.patch",
+        "//patches/wasm_thread:wasm_thread-parked-workers.patch",
+    ],
 )
 
 # These crates bind JavaScript through js-sys only where WebAssembly has
@@ -515,6 +520,7 @@ rules_rust.patch(
     patches = [
         "//patches/rules_rust:rules-rust-export-licence.patch",
         "//patches/rules_rust:rules-rust-build-script-exec-cfg.patch",
+        "//patches/rules_rust:rules-rust-clippy-extra-rustc-env.patch",
     ],
     strip = 1,
 )

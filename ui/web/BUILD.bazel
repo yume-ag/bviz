@@ -14,10 +14,12 @@ rust_library(
     deps = select({
         "@platforms//cpu:wasm32": [
             "//util/input",
+            "//util/parallel",
             "@crates//:console_error_panic_hook",
             "@crates//:js-sys",
             "@crates//:wasm-bindgen",
             "@crates//:wasm-bindgen-futures",
+            "@crates//:wasm_thread",
             "@crates//:web-sys",
         ],
         "//conditions:default": [],
