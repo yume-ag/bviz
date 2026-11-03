@@ -14,7 +14,7 @@ use bviz_ui_components::{
     sort_hint,
 };
 use bviz_ui_spawn_phase::phase_name;
-use bviz_ui_workspace::{Panel, PanelEvent, PanelKind, Role, ViewKind};
+use bviz_ui_workspace::{Caching, Panel, PanelEvent, PanelKind, Role, ViewKind};
 use gpui::{
     AnyElement, App, Context, Div, ElementId, Entity, EventEmitter, FocusHandle, Focusable,
     IntoElement, MouseButton, MouseDownEvent, Pixels, Render, SharedString, Stateful, Subscription,
@@ -677,6 +677,7 @@ impl Panel for SpawnTimePanel {
             view: ViewKind::new("execlog-spawn-time"),
             key_context: KEY_CONTEXT,
             role: Role::Analysis,
+            caching: Caching::Whole,
         }
     }
 

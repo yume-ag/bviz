@@ -6,7 +6,8 @@ use gpui::{
 
 /// Embeds `view` filling its parent as a layer whose recorded scene replays
 /// until `view` itself is notified: a `cx.notify()` marks the notified view and
-/// its ancestors dirty, never its descendants.
+/// its ancestors dirty, never its descendants. Draw it inside no other cached
+/// view.
 pub fn cached_layer(view: impl Into<AnyView>) -> impl IntoElement {
     view.into()
         .cached(StyleRefinement::default().absolute().inset_0().size_full())

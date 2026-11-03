@@ -52,7 +52,7 @@ use bviz_ui_components::{
     tooltip_extent, track_drag,
 };
 use bviz_ui_components::{KeyStyle, key_text_within};
-use bviz_ui_workspace::{Panel, PanelEvent, PanelKind, Role, ViewKind};
+use bviz_ui_workspace::{Caching, Panel, PanelEvent, PanelKind, Role, ViewKind};
 use gpui::{
     App, Bounds, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection, PinchEvent,
@@ -1670,6 +1670,7 @@ impl Panel for ScatterPanel {
             view: ViewKind::new("graph-scatter"),
             key_context: KEY_CONTEXT,
             role: Role::Canvas,
+            caching: Caching::Layers,
         }
     }
 

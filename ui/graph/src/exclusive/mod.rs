@@ -48,7 +48,7 @@ use bviz_ui_components::{
     cached_layer, centered_notice, centered_spinner, defer_hover_card, legend_gestures,
     load_in_background, over_window,
 };
-use bviz_ui_workspace::{Panel, PanelEvent, PanelKind, Role, ViewKind};
+use bviz_ui_workspace::{Caching, Panel, PanelEvent, PanelKind, Role, ViewKind};
 use cell_menu::{Caveat, Offer, PointFacts};
 use gpui::{
     Action, App, Bounds, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable,
@@ -2518,6 +2518,7 @@ impl Panel for ExclusivePanel {
             view: ViewKind::new("graph-exclusive"),
             key_context: KEY_CONTEXT,
             role: Role::Canvas,
+            caching: Caching::Layers,
         }
     }
 

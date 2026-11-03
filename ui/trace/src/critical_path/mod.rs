@@ -26,7 +26,7 @@ use bviz_ui_components::{
     ToggleGroup, ToggleSegment, centered_notice, centered_spinner, list_scrollbar, sort_gesture,
     sort_header, sort_hint,
 };
-use bviz_ui_workspace::{Panel, PanelEvent, PanelKind, Role, ViewKind};
+use bviz_ui_workspace::{Caching, Panel, PanelEvent, PanelKind, Role, ViewKind};
 use fills::{Fills, outside};
 use gpui::{
     AnyElement, App, Context, Div, ElementId, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
@@ -1288,6 +1288,7 @@ impl Panel for CriticalPathPanel {
             view: ViewKind::new("trace-critical-path"),
             key_context: KEY_CONTEXT,
             role: Role::Analysis,
+            caching: Caching::Whole,
         }
     }
 

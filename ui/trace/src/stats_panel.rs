@@ -15,7 +15,7 @@ use bviz_ui_components::{
     TextTooltip, TruncatingLabel, centered_spinner, load_in_background, overlay_canvas,
     sort_gesture, sort_header, sort_hint, track_drag,
 };
-use bviz_ui_workspace::{Panel, PanelEvent, PanelKind, Role, ViewKind};
+use bviz_ui_workspace::{Caching, Panel, PanelEvent, PanelKind, Role, ViewKind};
 use gpui::{
     App, Bounds, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
     MouseButton, MouseDownEvent, Pixels, Point, Render, Rgba, ScrollStrategy, SharedString,
@@ -646,6 +646,7 @@ impl Panel for StatsPanel {
             view: ViewKind::new("trace-stats"),
             key_context: STATS_KEY_CONTEXT,
             role: Role::Analysis,
+            caching: Caching::Whole,
         }
     }
 

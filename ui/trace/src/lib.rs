@@ -50,8 +50,8 @@ use bviz_ui_components::{
 use bviz_ui_playback::{Clock, unaligned_note};
 use bviz_ui_trace_args::{PROFILE_LONG, TraceArgs, TraceSource};
 use bviz_ui_workspace::{
-    Document, Member, Panel, PanelEvent, PanelKind, Role, Shared, Titled, ViewKind, ViewSpec,
-    document_label,
+    Caching, Document, Member, Panel, PanelEvent, PanelKind, Role, Shared, Titled, ViewKind,
+    ViewSpec, document_label,
 };
 use clap::Parser;
 use gpui::{
@@ -656,6 +656,7 @@ impl Panel for TracePanel {
             view: ViewKind::new("trace"),
             key_context: TRACE_KEY_CONTEXT,
             role: Role::Timeline,
+            caching: Caching::Layers,
         }
     }
 
