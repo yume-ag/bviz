@@ -21,6 +21,9 @@ rust_library(
             "@crates//:libmimalloc-sys",
             "@crates//:mimalloc",
         ],
+    }) + select({
+        "@rules_rs//rs/platforms/constraints:wasm_threads_on": ["@crates//:dlmalloc"],
+        "//conditions:default": [],
     }),
 )
 
@@ -29,4 +32,9 @@ rust_test(
     size = "small",
     crate = ":alloc",
     env = {"MIMALLOC_PURGE_DELAY": "4321"},
+    deps = [
+        "//util/parallel",
+        "@crates//:dlmalloc",
+        "@crates//:fastrand",
+    ],
 )
