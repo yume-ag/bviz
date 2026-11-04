@@ -2,12 +2,13 @@
 //! open one.
 
 use crate::dropdown::{Dismiss, KEY_CONTEXT};
+use crate::focus::focus_went_nowhere;
 use gpui::{App, Context, Div, Entity, FocusHandle, Subscription, Window, div, prelude::*};
 
 /// The menu a [`Popup`] has open.
 struct Opened {
-    /// Where focus stood when the menu opened, which closing it from within
-    /// hands focus back to.
+    /// Where focus stood when the menu opened, which closing it hands focus
+    /// back to.
     from: Option<FocusHandle>,
 }
 
@@ -43,11 +44,15 @@ impl Popup {
 
     fn open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.dismiss.is_none() {
-            self.dismiss = Some(cx.on_focus_out(&self.focus, window, |popup, _, _, cx| {
-                if popup.opened.take().is_some() {
-                    cx.notify();
-                }
-            }));
+            self.dismiss = Some(
+                cx.on_focus_out(&self.focus, window, |popup, _, window, cx| {
+                    if focus_went_nowhere(&popup.focus, window, cx) {
+                        popup.close(window, cx);
+                    } else if popup.opened.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            );
         }
         self.opened = Some(Opened {
             from: window.focused(cx),
@@ -56,8 +61,7 @@ impl Popup {
         cx.notify();
     }
 
-    /// Closes the menu from within, handing focus back where it stood when the
-    /// menu opened.
+    /// Closes the menu, handing focus back where it stood when the menu opened.
     pub(crate) fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(Opened { from }) = self.opened.take() {
             if let Some(from) = from {

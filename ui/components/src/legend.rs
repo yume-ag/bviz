@@ -1,6 +1,7 @@
 //! A view's colour key, opened from a toggle on its toolbar so it never covers
 //! what it explains until asked for.
 
+use crate::focus::focus_went_nowhere;
 use crate::gesture::{Button as PointerButton, Entry, GestureRow, Gestures, Input, Place, Pointer};
 use crate::{
     Button, KeyScope, MenuItem, OverflowRows, Priority, TextTooltip, ToolbarGroup, menu_chrome,
@@ -233,9 +234,9 @@ impl RenderOnce for LegendEntry {
 
 /// The popover a [`LegendState`] has open.
 struct Opened {
-    /// Where focus stood when the popover opened, which closing it from
-    /// within hands focus back to while it stands: a menu row opening the
-    /// popover leaves focus on a menu that is let go as it closes.
+    /// Where focus stood when the popover opened, which closing it hands focus
+    /// back to while it stands: a menu row opening the popover leaves focus on
+    /// a menu that is let go as it closes.
     from: WeakFocusHandle,
     /// Closes the popover as focus leaves it.
     _dismiss: Subscription,
@@ -290,8 +291,10 @@ impl LegendState {
         if self.open.is_some() || !keys_something || !self.drawn.in_last_frame(window) {
             return;
         }
-        let dismiss = cx.on_focus_out(&self.popover_focus, window, |this, _, _, cx| {
-            if this.open.take().is_some() {
+        let dismiss = cx.on_focus_out(&self.popover_focus, window, |this, _, window, cx| {
+            if focus_went_nowhere(&this.popover_focus, window, cx) {
+                this.close(window, cx);
+            } else if this.open.take().is_some() {
                 this.opened_or_closed(cx);
             }
         });
@@ -306,8 +309,8 @@ impl LegendState {
         self.opened_or_closed(cx);
     }
 
-    /// Closes the popover from within, handing focus back where it stood when
-    /// the popover opened, or to the view where that is gone.
+    /// Closes the popover, handing focus back where it stood when the popover
+    /// opened, or to the view where that is gone.
     pub fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(Opened { from, .. }) = self.open.take() {
             let to = from.upgrade().unwrap_or_else(|| self.view_focus.clone());
