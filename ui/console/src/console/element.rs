@@ -1,4 +1,4 @@
-use bviz_terminal::{Cell, Flags, Scroll, Terminal};
+use bviz_terminal::{Cell, Flags, Terminal};
 use bviz_ui_components::{
     Axis, DEFAULT_MIN_THUMB, DragEnd, Hint, Scrollbar, ScrollbarColors, track_drag,
 };
@@ -67,63 +67,6 @@ impl IntoElement for TerminalElement {
 }
 
 impl TerminalElement {
-    /// Build the terminal at `cols`x`rows` for the played frame so alacritty
-    /// wraps to the window, or reflow the existing one to that size. On rebuild,
-    /// restore scroll, search, and selection so scrubbing keeps them; before the
-    /// source loads there is nothing to build and the viewport reads empty.
-    fn sync_terminal(&self, cols: usize, rows: usize, cx: &mut App) {
-        self.view.update(cx, |view, cx| {
-            let Some(frame) = view.model.read(cx).shown_frame(cx) else {
-                return;
-            };
-            if view.terminal.is_none() || view.terminal_frame != Some(frame) {
-                let Some(replay) = view.replay(cx) else {
-                    return;
-                };
-                let source = replay.display_at(frame);
-                let mut terminal = Terminal::from_display(&source, cols, rows);
-                // Restore the user's remembered scroll. If the held line lies
-                // beyond the output at this frame, scroll_to_top_line clamps to
-                // the bottom without forgetting it, so scrubbing forward returns.
-                if view.follow_bottom {
-                    terminal.scroll(Scroll::Bottom);
-                } else {
-                    terminal.scroll_to_top_line(view.scroll_top);
-                }
-                // Carry an active search onto the rebuilt content, keeping the
-                // focused match rather than resetting it to the first.
-                if view.find_active
-                    && let Some(input) = view.find_input.as_ref()
-                {
-                    let query = input.read(cx).content().to_string();
-                    let current = view
-                        .terminal
-                        .as_ref()
-                        .and_then(Terminal::current_match_index);
-                    terminal.restore_search(&query, current);
-                }
-                // Carry the text selection onto the rebuilt content. A live drag
-                // keeps its anchor on its text but lets the far end follow the
-                // cursor's cell, so it grows as playback scrolls under a held
-                // cursor; a settled selection just re-applies its range.
-                if let (true, Some(anchor), Some(cursor)) =
-                    (view.selecting, view.selection_anchor, view.selection_drag)
-                {
-                    if let Some(end) = view.cell_at(cursor) {
-                        terminal.drag_select(anchor, end);
-                    }
-                } else if let Some(span) = view.terminal.as_ref().and_then(Terminal::selection_span)
-                {
-                    terminal.restore_selection(span);
-                }
-                view.terminal = Some(terminal);
-                view.terminal_frame = Some(frame);
-            } else if let Some(terminal) = view.terminal.as_mut() {
-                terminal.resize(cols, rows);
-            }
-        });
-    }
-
     /// Size and place the scroll bar from how much is off-screen and how far the
     /// viewport is scrolled: the content is the whole scrollback plus the visible
     /// rows, and the offset is how far below the top the viewport sits
@@ -477,7 +420,7 @@ impl Element for TerminalElement {
         let rows = (f32::from(bounds.size.height) / f32::from(metrics.line_height))
             .floor()
             .max(1.0) as usize;
-        self.sync_terminal(cols, rows, cx);
+        (self.view).update(cx, |view, cx| view.sync_terminal(cols, rows, cx));
 
         let (viewport, history, offset, selection, search) =
             match self.view.read(cx).terminal.as_ref() {

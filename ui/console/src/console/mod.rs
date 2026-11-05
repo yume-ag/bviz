@@ -273,6 +273,60 @@ impl ConsolePanel {
         self.model.read(cx).replay()
     }
 
+    /// Build the terminal at `cols`x`rows` for the played frame so alacritty
+    /// wraps to the window, or reflow the existing one to that size. On rebuild,
+    /// restore scroll, search, and selection so scrubbing keeps them; before the
+    /// source loads there is nothing to build and the viewport reads empty.
+    fn sync_terminal(&mut self, cols: usize, rows: usize, cx: &App) {
+        let Some(frame) = self.model.read(cx).shown_frame(cx) else {
+            return;
+        };
+        if self.terminal.is_none() || self.terminal_frame != Some(frame) {
+            let Some(replay) = self.replay(cx) else {
+                return;
+            };
+            let source = replay.display_at(frame);
+            let mut terminal = Terminal::from_display(&source, cols, rows);
+            // Restore the user's remembered scroll. If the held line lies
+            // beyond the output at this frame, scroll_to_top_line clamps to
+            // the bottom without forgetting it, so scrubbing forward returns.
+            if self.follow_bottom {
+                terminal.scroll(Scroll::Bottom);
+            } else {
+                terminal.scroll_to_top_line(self.scroll_top);
+            }
+            // Carry an active search onto the rebuilt content, keeping the
+            // focused match rather than resetting it to the first.
+            if self.find_active
+                && let Some(input) = self.find_input.as_ref()
+            {
+                let query = input.read(cx).content().to_string();
+                let current = self
+                    .terminal
+                    .as_ref()
+                    .and_then(Terminal::current_match_index);
+                terminal.restore_search(&query, current);
+            }
+            // Carry the text selection onto the rebuilt content. A live drag
+            // keeps its anchor on its text but lets the far end follow the
+            // cursor's cell, so it grows as playback scrolls under a held
+            // cursor; a settled selection just re-applies its range.
+            if let (true, Some(anchor), Some(cursor)) =
+                (self.selecting, self.selection_anchor, self.selection_drag)
+            {
+                if let Some(end) = self.cell_at(cursor) {
+                    terminal.drag_select(anchor, end);
+                }
+            } else if let Some(span) = self.terminal.as_ref().and_then(Terminal::selection_span) {
+                terminal.restore_selection(span);
+            }
+            self.terminal = Some(terminal);
+            self.terminal_frame = Some(frame);
+        } else if let Some(terminal) = self.terminal.as_mut() {
+            terminal.resize(cols, rows);
+        }
+    }
+
     /// Show the scroll bar and schedule it to hide after a period of no further
     /// scroll interaction.
     fn reveal_scrollbar(&mut self, cx: &mut Context<Self>) {
@@ -676,6 +730,13 @@ impl Render for ConsolePanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         Clock::keep_pace(Some(self.model.read(cx).clock()), window, cx);
         self.autoscroll_selection(window, cx);
+        // The find box counts the matches of the frame shown, so the terminal
+        // takes that frame up before the box is drawn; the first terminal is
+        // built once a layout has sized it.
+        if let Some(terminal) = &self.terminal {
+            let (cols, rows) = (terminal.columns(), terminal.rows());
+            self.sync_terminal(cols, rows, cx);
+        }
         let theme = bviz_ui_theme::theme(window, cx);
         let colors = &theme.colors;
         let chrome = div()
