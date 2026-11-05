@@ -778,7 +778,9 @@ impl ExclusivePanel {
             rooting => rooting.set() == set.as_ref(),
         });
         if stands {
-            self.choosing = None;
+            if self.choosing.take().is_some() {
+                cx.notify();
+            }
             return;
         }
         match set {
@@ -814,6 +816,7 @@ impl ExclusivePanel {
             text,
             _work: work,
         });
+        cx.notify();
     }
 
     /// Roots the tree of `scope` at what the target set `text` came to. A
