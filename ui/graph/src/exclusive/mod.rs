@@ -596,13 +596,11 @@ impl ExclusivePanel {
     /// Takes up a node another view selected: the cell the keys selected
     /// gives way to it.
     fn take_up_selection(&mut self, cx: &mut Context<Self>) {
-        if let Some(drawn) = &mut self.drawn
-            && drawn
-                .selection
-                .as_ref()
-                .is_some_and(|s| s.by == Picked::Keys)
-        {
-            drawn.selection = None;
+        let keyed = (self.drawn.as_ref())
+            .and_then(|drawn| drawn.selection.as_ref())
+            .is_some_and(|s| s.by == Picked::Keys);
+        if keyed {
+            self.drop_selection(cx);
         }
         self.relink(cx);
     }
