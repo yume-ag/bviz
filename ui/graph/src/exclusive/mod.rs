@@ -2922,8 +2922,8 @@ fn reached_key(unit: Unit, by: RootedBy, fill: Rgba, palette: &Palette) -> [Lege
 /// painted apart from the cells so that neither repaints any of them, and
 /// only while they are at rest. Its layout records where the cells lie for
 /// the pointer handlers and the keys, lets go of a cell the pointer selected
-/// where they are laid out elsewhere, and rings the cell of the node selected
-/// among them.
+/// where they are laid out elsewhere, and once the frame is drawn, rings the
+/// cell of the node selected among them.
 fn hover_layer(view: Entity<ExclusivePanel>, palette: Palette) -> impl IntoElement {
     let prepaint = {
         let view = view.clone();
@@ -2932,9 +2932,9 @@ fn hover_layer(view: Entity<ExclusivePanel>, palette: Palette) -> impl IntoEleme
                 bounds,
                 row: paint::row_height(window),
             };
-            view.update(cx, |view, cx| {
+            let laid_anew = view.update(cx, |view, _| {
                 if view.frame == Some(frame) {
-                    return;
+                    return false;
                 }
                 view.frame = Some(frame);
                 let laid = view.laid_out();
@@ -2946,8 +2946,13 @@ fn hover_layer(view: Entity<ExclusivePanel>, palette: Palette) -> impl IntoEleme
                     });
                     drawn.selection = moved;
                 }
-                view.relink(cx);
+                true
             });
+            // Relinking notifies, so it runs once the frame is drawn.
+            if laid_anew {
+                let view = view.clone();
+                cx.defer(move |cx| view.update(cx, |view, cx| view.relink(cx)));
+            }
             // The palette stands over the cells, which a card describing the
             // cell its keys preview would cover it with.
             let panel = view.read(cx);
