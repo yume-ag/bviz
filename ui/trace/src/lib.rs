@@ -50,8 +50,8 @@ use bviz_ui_components::{
 use bviz_ui_playback::{Clock, unaligned_note};
 use bviz_ui_trace_args::{PROFILE_LONG, TraceArgs, TraceSource};
 use bviz_ui_workspace::{
-    Document, Member, Panel, PanelEvent, PanelKind, Role, Shared, Titled, ViewKind, ViewSpec,
-    document_label,
+    Caching, Document, Member, Panel, PanelEvent, PanelKind, Role, Shared, Titled, ViewKind,
+    ViewSpec, document_label,
 };
 use clap::Parser;
 use gpui::{
@@ -318,6 +318,8 @@ pub struct TracePanel {
     /// Width of the left label gutter, set by its drag handle; clamped on use.
     gutter_width: f32,
     tracks_menu: Entity<TracksMenu>,
+    /// Shows the document's load state as it changes.
+    _model_observer: Subscription,
     /// Drops the view-local state a freshly loaded document leaves addressing
     /// nothing: the timeline's scroll and cached scene, and the tracks-menu fold
     /// state the model does not seed.
@@ -326,6 +328,7 @@ pub struct TracePanel {
 
 impl TracePanel {
     pub(crate) fn new(model: Entity<TraceModel>, cx: &mut Context<Self>) -> Self {
+        let model_observer = cx.observe(&model, |_, _, cx| cx.notify());
         let source_replaced = cx.subscribe(&model, |panel, _, _: &SourceReplaced, cx| {
             panel.timeline.update(cx, |t, _| t.reset_for_new_profile());
             panel
@@ -352,6 +355,7 @@ impl TracePanel {
             counters: CountersStrip::DEFAULT,
             gutter_width: DEFAULT_GUTTER_WIDTH,
             tracks_menu,
+            _model_observer: model_observer,
             _source_replaced: source_replaced,
         }
     }
@@ -652,6 +656,7 @@ impl Panel for TracePanel {
             view: ViewKind::new("trace"),
             key_context: TRACE_KEY_CONTEXT,
             role: Role::Timeline,
+            caching: Caching::Layers,
         }
     }
 
@@ -675,7 +680,10 @@ impl Panel for TracePanel {
             true => self.focus_handle(cx).focus(window, cx),
             // The tooltip and crosshair anchor to a cursor that is no longer over
             // the chart.
-            false => self.timeline.update(cx, |t, _| t.clear_hover()),
+            false => self.timeline.update(cx, |t, cx| {
+                t.clear_hover();
+                cx.notify();
+            }),
         }
     }
 }

@@ -53,6 +53,19 @@ pub struct PanelKind {
     /// across kinds, so such a binding reaches only this panel.
     pub key_context: KeyScope,
     pub role: Role,
+    pub caching: Caching,
+}
+
+/// How much of a panel's body its pane draws as one cached view.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Caching {
+    /// The whole body, which a frame then redraws only where the panel, or a
+    /// view it draws, was notified since, so whatever changes what the body
+    /// draws must notify one of them.
+    Whole,
+    /// None of it, for a body that draws cached views of its own, such as a
+    /// [`cached_layer`](bviz_ui_components::cached_layer).
+    Layers,
 }
 
 impl PanelKind {
@@ -270,6 +283,10 @@ impl AnyPanel {
         self.panel.view()
     }
 
+    pub fn caching(&self) -> Caching {
+        self.panel.caching()
+    }
+
     /// Forward this panel's [`PanelEvent`]s to the pane `cx` belongs to.
     pub fn subscribe(&self, window: &Window, cx: &mut Context<Pane>) -> Subscription {
         self.panel.subscribe(window, cx)
@@ -465,6 +482,7 @@ trait PanelOps {
     fn description(&self) -> Option<&'static str>;
     fn gestures(&self) -> Vec<GestureRow>;
     fn key_scope(&self) -> KeyScope;
+    fn caching(&self) -> Caching;
     fn status(&self, cx: &App) -> Option<SharedString>;
     fn icon(&self, cx: &App) -> Option<&'static str>;
     fn focus_handle(&self, cx: &App) -> FocusHandle;
@@ -494,6 +512,10 @@ impl<T: Panel> PanelOps for Entity<T> {
 
     fn key_scope(&self) -> KeyScope {
         T::kind().key_context
+    }
+
+    fn caching(&self) -> Caching {
+        T::kind().caching
     }
 
     fn status(&self, cx: &App) -> Option<SharedString> {

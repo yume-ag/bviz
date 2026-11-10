@@ -24,7 +24,9 @@ use bviz_graph_layout::query_lang::{
 use bviz_graph_layout::select;
 use bviz_graph_layout::select::labels::LabelIndex;
 use bviz_graph_layout::target_pattern::TargetIndex;
-use bviz_graph_layout::{Capabilities, Facets, Id, InputSet, Joint, MapLayout, Names, Provenance};
+use bviz_graph_layout::{
+    Capabilities, Facets, Id, InputSet, Joint, MapLayout, Names, Provenance, timed,
+};
 use bviz_input::Named;
 use bviz_invocation::{ActionGraph, Chosen, Configurations, Revision, Session};
 use bviz_ui_components::{Pending, load_future_in_background, load_in_background};
@@ -493,28 +495,36 @@ pub(crate) fn build(source: GraphSource<Named>) -> Result<Read, String> {
             provenance,
         },
         reduced_base,
-    ) = build_graph(source.inputs())?;
+    ) = timed("read graph", || build_graph(source.inputs()))?;
     // The map derives each of its views against these, so it holds a share in
     // them rather than a copy.
     let (base, reduced_base) = (Arc::new(graph), Arc::new(reduced_base));
     let (map, landing) = Placement::pending();
     let placing = {
         let (base, reduced_base) = (Arc::clone(&base), Arc::clone(&reduced_base));
-        Pending::start(move || Ok(Arc::new(bviz_graph_layout::map_layout(base, reduced_base))))
+        Pending::start(move || {
+            Ok(Arc::new(timed("map layout", || {
+                bviz_graph_layout::map_layout(base, reduced_base)
+            })))
+        })
     };
     // A graph no expansion of which fits still has to open at something, and the
     // unexpanded view is the smallest drawing of it there is.
-    let (expanded, over_budget) = match bviz_graph_layout::lod::default_expansion(
-        &base,
-        OPENS_REDUCED.then_some(&reduced_base),
-        DEFAULT_MAX_NODES,
-        DEFAULT_MAX_EDGES,
-    ) {
+    let (expanded, over_budget) = match timed("default expansion", || {
+        bviz_graph_layout::lod::default_expansion(
+            &base,
+            OPENS_REDUCED.then_some(&reduced_base),
+            DEFAULT_MAX_NODES,
+            DEFAULT_MAX_EDGES,
+        )
+    }) {
         Ok(expanded) => (expanded, None),
         Err(overflow) => (HashSet::new(), Some(overflow)),
     };
     let containers = Arc::new(bviz_graph_layout::lod::expandable_containers(&base));
-    let labels = Arc::new(LabelIndex::of(&base, &names, &facets));
+    let labels = Arc::new(timed("label index", || {
+        LabelIndex::of(&base, &names, &facets)
+    }));
     let config_names = Arc::new(ConfigNames::of(&facets));
     Ok(Read {
         loaded: Loaded::new(

@@ -13,8 +13,8 @@ use bviz_ui_components::{
     TruncatingLabel, list_scrollbar,
 };
 use gpui::{
-    AnyElement, App, Bounds, Context, Entity, Focusable, IntoElement, MouseButton, MouseDownEvent,
-    Pixels, Render, SharedString, Subscription, WeakEntity, Window, deferred, div, prelude::*, px,
+    AnyElement, App, Context, Entity, Focusable, IntoElement, MouseButton, MouseDownEvent, Pixels,
+    Render, SharedString, Subscription, WeakEntity, Window, deferred, div, prelude::*, px,
 };
 
 /// Side of the menu's caret icons.
@@ -55,8 +55,8 @@ pub(crate) struct TracksMenu {
     scroll: ListScroll,
     /// Read for the visible tracks, written to toggle them.
     model: Entity<TraceModel>,
-    /// The owning view, read for the gutter width and viewport that position the
-    /// popover, and updated to reflow the timeline after a visibility change.
+    /// The owning view, read for the gutter width that positions the popover,
+    /// and updated to reflow the timeline after a visibility change.
     shell: WeakEntity<TracePanel>,
 }
 
@@ -125,28 +125,24 @@ impl TracksMenu {
     }
 
     /// The open menu's deferred body: a filter field over the filtered track
-    /// checklist, with a full-viewport backdrop behind it that closes the menu on
-    /// an outside click. `None` when the menu is closed.
+    /// checklist. `None` when the menu is closed.
     fn popover(
         &self,
-        viewport: Bounds<Pixels>,
         palette: Palette,
         cx: &mut Context<Self>,
-    ) -> Option<impl IntoElement> {
+    ) -> Option<impl IntoElement + use<>> {
         if !self.open {
             return None;
         }
         let profile = self.model.read(cx).profile()?.clone();
         let rows = self.menu_rows(&profile, palette, cx);
         let menu = self.chrome(rows, palette, cx);
-        let backdrop = self.backdrop(viewport, cx);
         Some(deferred(
             div()
                 .key_context(TRACKS_MENU_KEY_CONTEXT)
                 .on_action(
                     cx.listener(|this, _: &CloseTracksMenu, window, cx| this.close(window, cx)),
                 )
-                .child(backdrop)
                 .child(menu),
         ))
     }
@@ -463,26 +459,24 @@ impl TracksMenu {
             .child(bar)
     }
 
-    /// A backdrop the size of the viewport, behind the menu, closing it on an
-    /// outside click.
-    fn backdrop(
-        &self,
-        viewport: Bounds<Pixels>,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
-        div()
-            .absolute()
-            .left_0()
-            .top_0()
-            .w(viewport.size.width)
-            .h(viewport.size.height)
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _: &MouseDownEvent, window, cx| {
-                    this.close(window, cx);
-                    cx.stop_propagation();
-                }),
-            )
+    /// A backdrop behind the menu over the viewport below the trigger's band,
+    /// closing the menu on an outside click.
+    fn backdrop(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        deferred(
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .top(px(TICK_BAND_HEIGHT))
+                .bottom_0()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                        this.close(window, cx);
+                        cx.stop_propagation();
+                    }),
+                ),
+        )
     }
 }
 
@@ -492,13 +486,9 @@ impl Render for TracksMenu {
         let Some(shell) = self.shell.upgrade() else {
             return div().into_any_element();
         };
-        let (gutter_width, viewport, focus) = {
+        let (gutter_width, focus) = {
             let s = shell.read(cx);
-            (
-                s.gutter_width,
-                s.timeline.read(cx).viewport(),
-                s.focus_handle(cx),
-            )
+            (s.gutter_width, s.focus_handle(cx))
         };
         let menu = cx.weak_entity();
         let hint = Hint::default()
@@ -545,18 +535,25 @@ impl Render for TracksMenu {
                     .size(MENU_ICON)
                     .text_color(palette.label),
             );
+        let popover = self.popover(palette, cx);
+        let backdrop = popover.is_some().then(|| self.backdrop(cx));
         // An anchor at the corner holds the trigger and, below it, the popover.
         // The popover is an absolute child of this anchor (not a flex sibling of
         // the trigger row), so it opens directly under the trigger and does not
         // shift the trigger's own layout.
-        div()
+        let anchor = div()
             .absolute()
             .left_0()
             .top_0()
             .w(px(gutter_width))
             .h(px(TICK_BAND_HEIGHT))
             .child(trigger)
-            .children(self.popover(viewport, palette, cx))
+            .children(popover);
+        div()
+            .absolute()
+            .inset_0()
+            .children(backdrop)
+            .child(anchor)
             .into_any_element()
     }
 }

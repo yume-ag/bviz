@@ -6,7 +6,7 @@ use crate::{Hint, KeyScope, SubmenuItem, menu_chrome};
 use bviz_ui_theme::ThemeColors;
 use gpui::{
     Action, App, ClickEvent, Context, ElementId, Entity, EventEmitter, FocusHandle, IntoElement,
-    KeyBinding, Pixels, Render, SharedString, Window, div, prelude::*,
+    KeyBinding, Pixels, Render, SharedString, Subscription, Window, div, prelude::*,
 };
 
 gpui::actions!(
@@ -51,6 +51,8 @@ pub struct Dropdown {
     /// What the trigger's tooltip reads.
     hint: Hint,
     popup: Entity<Popup>,
+    /// Re-renders the dropdown, which draws the menu, as it opens or closes.
+    _popup_changed: Subscription,
 }
 
 impl Dropdown {
@@ -60,6 +62,8 @@ impl Dropdown {
         selected: usize,
         cx: &mut Context<Self>,
     ) -> Self {
+        let popup = cx.new(Popup::new);
+        let popup_changed = cx.observe(&popup, |_, _, cx| cx.notify());
         Self {
             id: id.into(),
             options: options
@@ -71,7 +75,8 @@ impl Dropdown {
                 .collect(),
             selected,
             hint: Hint::default(),
-            popup: cx.new(Popup::new),
+            popup,
+            _popup_changed: popup_changed,
         }
     }
 

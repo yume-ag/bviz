@@ -84,6 +84,9 @@ pub(crate) fn remark(view: &mut GraphPanel, cx: &mut Context<GraphPanel>) {
         view.selection.mark(marked);
         view.invalidate_canvas(cx);
     }
+    // The chrome describes the node selected, which can change within the
+    // box marked for it.
+    cx.notify();
     crate::box_menu::remarked(view, cx);
 }
 

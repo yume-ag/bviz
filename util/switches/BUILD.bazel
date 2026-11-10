@@ -7,11 +7,12 @@ rust_library(
     crate_name = "bviz_switches",
     visibility = [
         "//bviz:__pkg__",
+        "//graph/layout:__pkg__",
         "//trace/profile:__pkg__",
         "//ui/graph:__pkg__",
         "//ui/trace:__pkg__",
     ],
-    deps = select({
+    deps = ["//util/time"] + select({
         "@platforms//cpu:wasm32": [
             "@crates//:percent-encoding",
             "@crates//:web-sys",

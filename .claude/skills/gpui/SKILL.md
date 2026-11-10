@@ -68,10 +68,16 @@ This is the one thing to internalize; everything else follows from it.
   (`div()`, text, widgets) describing *this frame*. The tree is rebuilt and dropped each
   frame — never store element references; store state in the view struct or child entities.
 - **Rendering is notify-driven, not a vsync loop.** Any `cx.notify()` re-renders the whole
-  window from the root view — there is no per-view scoped redraw. A notify marks the view's
-  *ancestors* dirty, and gpui rebuilds the element tree from the root, cascading `render` down.
+  window from the root view — there is no per-view scoped redraw. A notify marks the view and
+  its ancestors dirty, and gpui rebuilds the element tree from the root, cascading `render` down.
   With no notify there is no frame, so idle views do no work. To make a frequent cheap repaint
   skip expensive content, see *Incremental redraw and view caching* below.
+- **A notify made while drawing schedules no frame.** A notify from `render`, a prepaint or a
+  paint marks the view dirty, but asks for no frame and runs none of its observers; the change
+  shows in whichever frame comes next for another reason. Notify from outside the draw instead —
+  `cx.defer`, `window.on_next_frame`, or an observer of what changed. This repo's
+  `gpui-focus-listener-notify-draws.patch` makes a notify from a focus listener, which gpui runs
+  as a draw ends, schedule a frame like one made outside a draw.
 
 Consequence: mutate `self` in an event handler, call `cx.notify()`, and the UI updates.
 
@@ -583,14 +589,21 @@ Reach for a cell only for a writer with no path to `&mut App` or `&mut self` at 
   hover crosshair, a tooltip, an in-progress drag) in the parent above it. Notify the **parent**
   for a cheap overlay change — the child scene replays and only the overlay repaints; notify the
   **child** for any change to what it paints — it rebuilds its scene.
+- **Caching does not nest.** A cached view that redraws sets the refreshing flag (below) over its
+  own subtree, so every cached view inside it redraws too, notified or not; of the cached views on
+  a path from the root only the outermost ever replays. A parent holding cached layers must
+  therefore not be drawn cached itself, or every overlay notify on it rebuilds the layers.
 - **A refresh suspends caching for the whole window, and gpui's own drag calls one per mouse
   move.** The refreshing flag is a conjunct of the replay condition itself, so while it is set no
-  cached view in the window replays, and a cached view that misses sets it again for its own
-  subtree — nesting an expensive layer deeper shields nothing. A gesture driven through
-  `cx.active_drag` (the `on_drag` / `on_drop` API) refreshes on every mouse move, which makes
-  every frame it lasts a full uncached redraw of every panel. Drive a gesture over expensive
-  content with `track_drag` and a parent-only notify instead, and the cached scenes go on
-  replaying; only the press and release frames are full ones, which `div` refreshes anyway.
+  cached view in the window replays. A gesture driven through `cx.active_drag` (the `on_drag` /
+  `on_drop` API) refreshes on every mouse move, which makes every frame it lasts a full uncached
+  redraw of every panel. Drive a gesture over expensive content with `track_drag` and a
+  parent-only notify instead, and the cached scenes go on replaying; only the press and release
+  frames are full ones, which `div` refreshes anyway.
+- **Reading an entity does not tie a cached view to it.** Only a notify of the cached view or of
+  a view drawn inside it dirties it. A notify of another entity it reads, such as a model, still
+  schedules a frame, but the view replays its old scene; observe the entity and notify the view
+  from the observer.
 - **The stale-cache gate.** The one real bug class: a state change that alters what the cached
   child paints but leaves the child un-notified shows stale content until the next child notify —
   and a static screenshot won't reveal it. Route every content-mutating handler through one helper

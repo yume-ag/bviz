@@ -19,8 +19,8 @@ use bviz_ui_playback::Clock;
 use bviz_ui_session::Sharing;
 use bviz_ui_theme::{DataColors, Theme, ThemeColors};
 use bviz_ui_workspace::{
-    Document, Member, Panel, PanelEvent, PanelKind, Role, Shared, Titled, ViewKind, ViewSpec,
-    named_label,
+    Caching, Document, Member, Panel, PanelEvent, PanelKind, Role, Shared, Titled, ViewKind,
+    ViewSpec, named_label,
 };
 use clap::Parser;
 use gpui::{
@@ -659,7 +659,7 @@ impl GraphPanel {
             }
         });
         let derived = Derived::new();
-        let legend_state = cx.new(|cx| LegendState::new(focus_handle.clone(), cx));
+        let legend_state = LegendState::new(focus_handle.clone(), cx);
         let panel = cx.entity();
         model.update(cx, |model, cx| model.defer_to(&panel, cx));
         let mut view = Self {
@@ -1241,6 +1241,7 @@ impl Panel for GraphPanel {
             view: ViewKind::new("graph"),
             key_context: KEY_CONTEXT,
             role: Role::Canvas,
+            caching: Caching::Layers,
         }
     }
 

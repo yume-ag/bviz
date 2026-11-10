@@ -407,6 +407,7 @@ filegroup(
         "//patches/gpui:gpui-tooltip-dismiss-on-press.patch",
         "//patches/gpui:gpui-tooltip-dismiss-on-escape.patch",
         "//patches/gpui:gpui-tooltip-optional.patch",
+        "//patches/gpui:gpui-focus-listener-notify-draws.patch",
     ],
 )
 crate.annotation(

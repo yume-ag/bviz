@@ -13,3 +13,11 @@ path = "src/lib.rs"
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 libmimalloc-sys = { workspace = true }
 mimalloc = { workspace = true }
+
+[target.'cfg(all(target_family = "wasm", target_feature = "atomics"))'.dependencies]
+dlmalloc = { workspace = true }
+
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+bviz_parallel = { workspace = true }
+dlmalloc = { workspace = true }
+fastrand = { workspace = true }

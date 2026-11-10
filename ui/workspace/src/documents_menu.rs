@@ -3,7 +3,9 @@ use crate::workspace::{CloseDocument, OpenFiles, ResetArrangement, ToggleDocumen
 use crate::{
     DocumentId, Documents, OpenDocument, PathOpener, ViewId, ViewState, Workspace, documents,
 };
-use bviz_ui_components::{Button, KeyScope, Nesting, action_label, key_text_in, menu_chrome};
+use bviz_ui_components::{
+    Button, KeyScope, Nesting, action_label, focus_went_nowhere, key_text_in, menu_chrome,
+};
 use bviz_ui_theme::{ThemeColors, over};
 use gpui::{
     Action, AnyElement, App, Context, Div, ElementId, Entity, FocusHandle, Hsla, IntoElement,
@@ -180,7 +182,13 @@ impl DocumentsMenu {
         let documents = Documents::global(cx);
         let changed = cx.observe(&documents, |_, _, cx| cx.notify());
         let focus_handle = cx.focus_handle();
-        let dismiss = cx.on_focus_out(&focus_handle, window, |this, _, _, cx| this.close(cx));
+        let dismiss = cx.on_focus_out(&focus_handle, window, |this, _, window, cx| {
+            if this.open && focus_went_nowhere(&this.focus_handle, window, cx) {
+                this.toggle(window, cx);
+            } else {
+                this.close(cx);
+            }
+        });
         Self {
             // A window can be opened from an update of the workspace opening it
             // and is drawn before that update unwinds, with that workspace

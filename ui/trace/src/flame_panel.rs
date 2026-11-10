@@ -20,7 +20,7 @@ use bviz_ui_components::{
     ZoomOut, cached_layer, centered_spinner, hover_card_canvas, legend_gestures, overlay_canvas,
     paint_labeled_box, track_drag,
 };
-use bviz_ui_workspace::{Panel, PanelEvent, PanelKind, Role, ViewKind};
+use bviz_ui_workspace::{Caching, Panel, PanelEvent, PanelKind, Role, ViewKind};
 use gpui::{
     AnyElement, App, Bounds, ContentMask, Context, Div, Entity, EventEmitter, FocusHandle,
     Focusable, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, PinchEvent, Pixels, Point,
@@ -503,7 +503,7 @@ impl FlamePanel {
             this.invalidate_canvas(cx);
         });
         let focus = cx.focus_handle();
-        let legend = cx.new(|cx| LegendState::new(focus.clone(), cx));
+        let legend = LegendState::new(focus.clone(), cx);
         Self {
             focus,
             model,
@@ -952,6 +952,7 @@ impl Panel for FlamePanel {
             view: ViewKind::new("trace-flame-graph"),
             key_context: FLAME_KEY_CONTEXT,
             role: Role::Analysis,
+            caching: Caching::Layers,
         }
     }
 
@@ -967,7 +968,10 @@ impl Panel for FlamePanel {
         match active {
             true => self.focus.focus(window, cx),
             // The tooltip anchors to a cursor that is no longer over the graph.
-            false => self.clear_hover(),
+            false => {
+                self.clear_hover();
+                cx.notify();
+            }
         }
     }
 }

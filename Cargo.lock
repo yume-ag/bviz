@@ -756,6 +756,9 @@ dependencies = [
 name = "bviz_alloc"
 version = "0.1.0"
 dependencies = [
+ "bviz_parallel",
+ "dlmalloc",
+ "fastrand",
  "libmimalloc-sys",
  "mimalloc",
 ]
@@ -816,6 +819,7 @@ dependencies = [
  "bviz_input",
  "bviz_label",
  "bviz_parallel",
+ "bviz_switches",
  "fastrand",
  "fixedbitset",
  "org-eclipse-elk-alg-layered",
@@ -897,6 +901,7 @@ dependencies = [
 name = "bviz_switches"
 version = "0.1.0"
 dependencies = [
+ "bviz_time",
  "percent-encoding",
  "web-sys",
 ]
@@ -1122,7 +1127,6 @@ dependencies = [
  "bviz_invocation",
  "bviz_label",
  "bviz_switches",
- "bviz_time",
  "bviz_trace_layout",
  "bviz_trace_profile",
  "bviz_ui_assets",
@@ -1893,6 +1897,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab8ecd87370524b461f8557c119c405552c396ed91fc0a8eec68679eab26f94a"
 dependencies = [
  "libloading",
+]
+
+[[package]]
+name = "dlmalloc"
+version = "0.2.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad5208a115eaba24916f7456929832e310a81518c641f93fee4f89aa93aa3675"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

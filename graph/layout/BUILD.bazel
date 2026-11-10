@@ -29,6 +29,7 @@ rust_library(
         "//label",
         "//util/input",
         "//util/parallel",
+        "//util/switches",
         "@bazel_query_proto//:bazel_query_rust_proto",
         "@crates//:fixedbitset",
         "@crates//:org-eclipse-elk-alg-layered",

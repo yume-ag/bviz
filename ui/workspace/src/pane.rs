@@ -2,7 +2,7 @@ use crate::drop::Band;
 use crate::gestures::{CHROME_GESTURES, ChromeIntent, OPEN_PANEL_MENU};
 use crate::panel::keys_focus;
 use crate::workspace::{ClosePanel, ShowKeysAndGestures, ToggleMaximize};
-use crate::{AnyPanel, Documents, PanelEvent};
+use crate::{AnyPanel, Caching, Documents, PanelEvent};
 use bviz_ui_components::gesture::{Pointer, scroll_pixels};
 use bviz_ui_components::{
     Button, KeysHelp, KeysHelpEvent, TextTooltip, compact_band_end, overlay_canvas,
@@ -11,8 +11,8 @@ use bviz_ui_theme::ThemeColors;
 use gpui::{
     Anchor, AnyElement, AnyView, App, Bounds, ClickEvent, Div, ElementId, Entity, EntityId,
     EventEmitter, FocusHandle, Hsla, IntoElement, MouseButton, MouseDownEvent, MouseUpEvent,
-    Pixels, Point, Render, ScrollHandle, ScrollWheelEvent, Subscription, Window, anchored,
-    deferred, div, linear_color_stop, linear_gradient, point, prelude::*, px, size,
+    Pixels, Point, Render, ScrollHandle, ScrollWheelEvent, StyleRefinement, Subscription, Window,
+    anchored, deferred, div, linear_color_stop, linear_gradient, point, prelude::*, px, size,
 };
 use std::cmp::Ordering;
 use std::iter;
@@ -1091,7 +1091,13 @@ fn showing_after(showing: usize, removed: usize, remaining: usize) -> usize {
 
 impl Render for Pane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let body = self.active_panel().view();
+        let panel = self.active_panel();
+        let body = match panel.caching() {
+            Caching::Whole => (panel.view())
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element(),
+            Caching::Layers => panel.view().into_any_element(),
+        };
         let help = self.keys_help_overlay();
         let Some(naming) = self.naming() else {
             self.band = None;

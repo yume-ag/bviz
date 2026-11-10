@@ -15,7 +15,7 @@ use crate::graph::{Containment, EdgeKind, Graph, Node, id_span};
 use crate::intern::Id;
 use crate::layout::{self, BORDER, Box, Connector, LABEL_BAND, LEAF_HEIGHT, LaidOut};
 use crate::transition::Transitions;
-use crate::{lod, reduce};
+use crate::{lod, reduce, timed};
 
 /// A container opens once its smaller side covers this many screen pixels, the
 /// point at which the boxes inside it are worth drawing. It sets how much of the
@@ -40,21 +40,26 @@ pub fn map_layout(base: Arc<Graph>, reduced: Arc<Graph>) -> MapLayout {
     let containment = Containment::new(&base);
     // The reduction reaches as far as the base, so it stacks the boxes the same
     // way for a fraction of the routing work.
-    let drawing = place(&base, &frame_edges(&reduced, &containment), &containment);
+    let drawing = timed("  place", || {
+        place(&base, &frame_edges(&reduced, &containment), &containment)
+    });
     let expandable = lod::expandable_containers(&base);
 
     // Which containers each level opens, settled here because a level takes
     // over from the one below it: a threshold that opens nothing further is not
     // a level of its own.
-    let mut open: HashSet<Id> = HashSet::new();
-    let mut finer: Vec<(f64, Level)> = Vec::new();
-    for from in thresholds(&expandable, &drawing) {
-        let opened = open_at(&expandable, &drawing, from);
-        if opened != open {
-            open = opened;
-            finer.push((from, Level::opening(Arc::new(open.clone()))));
+    let finer = timed("  levels", || {
+        let mut open: HashSet<Id> = HashSet::new();
+        let mut finer: Vec<(f64, Level)> = Vec::new();
+        for from in thresholds(&expandable, &drawing) {
+            let opened = open_at(&expandable, &drawing, from);
+            if opened != open {
+                open = opened;
+                finer.push((from, Level::opening(Arc::new(open.clone()))));
+            }
         }
-    }
+        finer
+    });
     MapLayout {
         base,
         reduced,
@@ -185,7 +190,10 @@ impl MapLayout {
     pub fn level(&self, index: usize) -> &LaidOut {
         bviz_parallel::assert_can_block();
         let level = self.level_at(index);
-        &level.view.get_or_init(|| self.view_of(&level.open)).view
+        &level
+            .view
+            .get_or_init(|| timed("derive map level", || self.view_of(&level.open)))
+            .view
     }
 
     /// The view at `index`, where it has been derived.

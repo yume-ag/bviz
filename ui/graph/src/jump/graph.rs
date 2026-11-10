@@ -10,7 +10,7 @@ use crate::reveal::{self, hidden_by};
 use crate::{GraphPanel, chips, pins, why};
 use bviz_graph_layout::Id;
 use bviz_graph_layout::select::Visibility;
-use gpui::{App, Context, Entity, FocusHandle, Window, prelude::*, px};
+use gpui::{App, Context, Entity, FocusHandle, Window, px};
 use rustc_hash::FxHashSet;
 use std::sync::Arc;
 
@@ -33,7 +33,7 @@ pub(crate) fn palette(
             .and_then(|panel| hidden_by(panel.read(cx), id));
         hidden.map_or(Stands::Here, Stands::Hidden)
     });
-    cx.new(|cx| JumpPalette::new(model, Holder::Graph, host, chips, Some(drawn), standing, cx))
+    JumpPalette::new(model, Holder::Graph, host, chips, Some(drawn), standing, cx)
 }
 
 /// Reads the nodes the panel draws, for a control ranking them first.

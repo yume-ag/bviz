@@ -60,6 +60,7 @@ bviz_time = { path = "util/time" }
 clap = { version = "4", features = ["derive"] }
 crossbeam-channel = "0.5"
 crossbeam-utils = "0.8"
+dlmalloc = "0.2"
 fastrand = "2"
 fixedbitset = "0.5"
 flate2 = { version = "1", features = ["zlib-rs"] }

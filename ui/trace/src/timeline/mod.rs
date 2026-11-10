@@ -122,6 +122,7 @@ impl Timeline {
         let clock = model.read(cx).clock().clone();
         let clock_changed = cx.observe(&clock, |timeline, _, cx| {
             timeline.follow = Follow::Playhead;
+            timeline.follow_playhead(cx);
             cx.notify();
         });
         let working_lanes_derived = cx
@@ -201,19 +202,11 @@ impl Timeline {
     /// holds it nor once the reader has moved it ([`Follow::Released`]), so a
     /// reader exploring the timeline keeps where they are.
     fn follow_playhead(&mut self, cx: &mut Context<Self>) {
-        if !self.fitted || !matches!(self.drag, TimelineDrag::None) {
+        if !self.fitted || !matches!(self.drag, TimelineDrag::None) || !self.playing(cx) {
             return;
         }
         let (span, at_us) = {
             let model = self.model.read(cx);
-            let playing = model
-                .clock()
-                .read(cx)
-                .timeline()
-                .is_some_and(|timeline| timeline.is_playing());
-            if !playing {
-                return;
-            }
             let (Some(profile), Some(at_us)) = (model.profile(), model.playhead_us(cx)) else {
                 return;
             };
@@ -230,6 +223,11 @@ impl Timeline {
         self.view.pan_px(time_w * PLAYHEAD_FOLLOW_INSET - x);
         self.view.clamp_to(span, time_w, EDGE_MARGIN_PX);
         self.invalidate_canvas(cx);
+    }
+
+    fn playing(&self, cx: &App) -> bool {
+        (self.model.read(cx).clock().read(cx).timeline())
+            .is_some_and(|timeline| timeline.is_playing())
     }
 
     /// Drops the state that addresses the document being replaced, so nothing
@@ -383,7 +381,10 @@ impl Focusable for Timeline {
 
 impl Render for Timeline {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.follow_playhead(cx);
+        // Paging notifies the cached slice layer, so it runs outside the draw.
+        if self.playing(cx) {
+            cx.on_next_frame(window, |timeline, _, cx| timeline.follow_playhead(cx));
+        }
         let (profile, lanes) = {
             let model = self.model.read(cx);
             Clock::keep_pace(Some(model.clock()), window, cx);

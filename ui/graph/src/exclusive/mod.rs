@@ -48,7 +48,7 @@ use bviz_ui_components::{
     cached_layer, centered_notice, centered_spinner, defer_hover_card, legend_gestures,
     load_in_background, over_window,
 };
-use bviz_ui_workspace::{Panel, PanelEvent, PanelKind, Role, ViewKind};
+use bviz_ui_workspace::{Caching, Panel, PanelEvent, PanelKind, Role, ViewKind};
 use cell_menu::{Caveat, Offer, PointFacts};
 use gpui::{
     Action, App, Bounds, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable,
@@ -316,7 +316,7 @@ impl ExclusivePanel {
         });
         let parent = cx.entity().downgrade();
         let focus_handle = cx.focus_handle();
-        let legend = cx.new(|cx| LegendState::new(focus_handle.clone(), cx));
+        let legend = LegendState::new(focus_handle.clone(), cx);
         let picker = unit_picker(&model, &focus_handle, cx);
         let chips = cx.new(|cx| {
             ChipBar::new(
@@ -399,17 +399,15 @@ impl ExclusivePanel {
             drawn.map_or_else(Default::default, |drawn| Arc::clone(&drawn.shown.points))
         });
         let (model, focus, chips) = (model.clone(), focus.clone(), chips.clone());
-        cx.new(|cx| {
-            JumpPalette::new(
-                model,
-                Holder::Exclusive,
-                focus,
-                chips,
-                Some(drawn),
-                standing,
-                cx,
-            )
-        })
+        JumpPalette::new(
+            model,
+            Holder::Exclusive,
+            focus,
+            chips,
+            Some(drawn),
+            standing,
+            cx,
+        )
     }
 
     /// Opens the palette over the icicle, noting how the tree was drawn as
@@ -598,13 +596,11 @@ impl ExclusivePanel {
     /// Takes up a node another view selected: the cell the keys selected
     /// gives way to it.
     fn take_up_selection(&mut self, cx: &mut Context<Self>) {
-        if let Some(drawn) = &mut self.drawn
-            && drawn
-                .selection
-                .as_ref()
-                .is_some_and(|s| s.by == Picked::Keys)
-        {
-            drawn.selection = None;
+        let keyed = (self.drawn.as_ref())
+            .and_then(|drawn| drawn.selection.as_ref())
+            .is_some_and(|s| s.by == Picked::Keys);
+        if keyed {
+            self.drop_selection(cx);
         }
         self.relink(cx);
     }
@@ -782,7 +778,9 @@ impl ExclusivePanel {
             rooting => rooting.set() == set.as_ref(),
         });
         if stands {
-            self.choosing = None;
+            if self.choosing.take().is_some() {
+                cx.notify();
+            }
             return;
         }
         match set {
@@ -818,6 +816,7 @@ impl ExclusivePanel {
             text,
             _work: work,
         });
+        cx.notify();
     }
 
     /// Roots the tree of `scope` at what the target set `text` came to. A
@@ -2519,6 +2518,7 @@ impl Panel for ExclusivePanel {
             view: ViewKind::new("graph-exclusive"),
             key_context: KEY_CONTEXT,
             role: Role::Canvas,
+            caching: Caching::Layers,
         }
     }
 
@@ -2923,8 +2923,8 @@ fn reached_key(unit: Unit, by: RootedBy, fill: Rgba, palette: &Palette) -> [Lege
 /// painted apart from the cells so that neither repaints any of them, and
 /// only while they are at rest. Its layout records where the cells lie for
 /// the pointer handlers and the keys, lets go of a cell the pointer selected
-/// where they are laid out elsewhere, and rings the cell of the node selected
-/// among them.
+/// where they are laid out elsewhere, and once the frame is drawn, rings the
+/// cell of the node selected among them.
 fn hover_layer(view: Entity<ExclusivePanel>, palette: Palette) -> impl IntoElement {
     let prepaint = {
         let view = view.clone();
@@ -2933,9 +2933,9 @@ fn hover_layer(view: Entity<ExclusivePanel>, palette: Palette) -> impl IntoEleme
                 bounds,
                 row: paint::row_height(window),
             };
-            view.update(cx, |view, cx| {
+            let laid_anew = view.update(cx, |view, _| {
                 if view.frame == Some(frame) {
-                    return;
+                    return false;
                 }
                 view.frame = Some(frame);
                 let laid = view.laid_out();
@@ -2947,8 +2947,13 @@ fn hover_layer(view: Entity<ExclusivePanel>, palette: Palette) -> impl IntoEleme
                     });
                     drawn.selection = moved;
                 }
-                view.relink(cx);
+                true
             });
+            // Relinking notifies, so it runs once the frame is drawn.
+            if laid_anew {
+                let view = view.clone();
+                cx.defer(move |cx| view.update(cx, |view, cx| view.relink(cx)));
+            }
             // The palette stands over the cells, which a card describing the
             // cell its keys preview would cover it with.
             let panel = view.read(cx);

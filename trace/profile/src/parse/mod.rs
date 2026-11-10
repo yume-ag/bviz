@@ -160,35 +160,18 @@ pub const TIMING_SWITCH: &str = "BVIZ_TRACE_TIMING";
 /// Wall-clock timing of a load stage, reported when [`TIMING_SWITCH`] is set.
 /// Returns the closure's value so a stage can be wrapped inline.
 fn timed<T>(label: &str, f: impl FnOnce() -> T) -> T {
-    let Some(start) = timing_start() else {
-        return f();
-    };
-    let out = f();
-    report_timing(label, start);
-    out
+    bviz_switches::timed(TIMING_SWITCH, label, f)
 }
 
 /// [`timed`] of a stage that awaits, timed from its first poll to its last.
 #[cfg(any(test, all(target_family = "wasm", not(target_feature = "atomics"))))]
 async fn timed_future<T>(label: &str, stage: impl Future<Output = T>) -> T {
-    let Some(start) = timing_start() else {
+    let Some(start) = bviz_switches::timing_start(TIMING_SWITCH) else {
         return stage.await;
     };
     let out = stage.await;
-    report_timing(label, start);
+    bviz_switches::report_timing(label, start);
     out
-}
-
-/// Now, where [`TIMING_SWITCH`] is set.
-fn timing_start() -> Option<bviz_time::Instant> {
-    bviz_switches::is_set(TIMING_SWITCH).then(bviz_time::now)
-}
-
-fn report_timing(label: &str, start: bviz_time::Instant) {
-    bviz_switches::report(format_args!(
-        "[timing] {label}: {:.3}s",
-        start.elapsed().as_secs_f64()
-    ));
 }
 
 impl Profile {

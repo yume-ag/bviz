@@ -41,7 +41,7 @@ pub(crate) use pane::Framing;
 pub use pane::{Pane, PaneEvent};
 pub(crate) use panel::DocumentOf;
 pub use panel::{
-    AnyPanel, Document, Member, Panel, PanelEvent, PanelKind, Shared, Titled, ViewKind,
+    AnyPanel, Caching, Document, Member, Panel, PanelEvent, PanelKind, Shared, Titled, ViewKind,
     document_label, invocation_label, named_label,
 };
 pub(crate) use regions::Regions;

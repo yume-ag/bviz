@@ -71,6 +71,7 @@ documented in [`ui/graph/src/pan_bench.rs`](ui/graph/src/pan_bench.rs).
 
 | Variable | Purpose |
 | --- | --- |
+| `BVIZ_GRAPH_TIMING` | times each stage of loading a graph and of laying it out |
 | `BVIZ_PAN_BENCH` | runs a self-driving graph pan benchmark and reports its frame times |
 | `BVIZ_PAN_BENCH_FRAMES` | how many frames the benchmark records |
 | `BVIZ_PAN_BENCH_MOTION` | how the benchmark moves the view |

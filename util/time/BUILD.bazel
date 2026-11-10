@@ -12,7 +12,7 @@ rust_library(
         "//trace/profile:__pkg__",
         "//ui/graph:__pkg__",
         "//ui/playback:__pkg__",
-        "//ui/trace:__pkg__",
+        "//util/switches:__pkg__",
     ],
     deps = ["@crates//:web-time"],
 )

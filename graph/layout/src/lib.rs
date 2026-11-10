@@ -51,3 +51,13 @@ pub use label::Resolver;
 pub use layout::{Anchor, Box, Connector, LaidOut, layout, layout_pinned};
 pub use map::{MapLayout, map_layout};
 pub use provenance::{Input, InputSet, Provenance};
+
+/// The switch that has each stage of loading and laying out a graph report
+/// how long it took.
+pub const TIMING_SWITCH: &str = "BVIZ_GRAPH_TIMING";
+
+/// Runs the graph stage `label`, reporting how long it took when
+/// [`TIMING_SWITCH`] is set.
+pub fn timed<T>(label: &str, stage: impl FnOnce() -> T) -> T {
+    bviz_switches::timed(TIMING_SWITCH, label, stage)
+}

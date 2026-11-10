@@ -52,7 +52,7 @@ use bviz_ui_components::{
     tooltip_extent, track_drag,
 };
 use bviz_ui_components::{KeyStyle, key_text_within};
-use bviz_ui_workspace::{Panel, PanelEvent, PanelKind, Role, ViewKind};
+use bviz_ui_workspace::{Caching, Panel, PanelEvent, PanelKind, Role, ViewKind};
 use gpui::{
     App, Bounds, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection, PinchEvent,
@@ -245,7 +245,7 @@ impl ScatterPanel {
         });
         let parent = cx.entity().downgrade();
         let focus = cx.focus_handle();
-        let legend = cx.new(|cx| LegendState::new(focus.clone(), cx));
+        let legend = LegendState::new(focus.clone(), cx);
         let choice = Choice::of(&model, &focus, cx);
         let chips =
             cx.new(|cx| ChipBar::new(model.clone(), Holder::Scatter, focus.clone(), None, cx));
@@ -314,17 +314,15 @@ impl ScatterPanel {
             (plot.index).stands(&shared.base, &shared.facets, &plot.verdicts, id)
         });
         let (model, focus, chips) = (model.clone(), focus.clone(), chips.clone());
-        cx.new(|cx| {
-            JumpPalette::new(
-                model,
-                Holder::Scatter,
-                focus,
-                chips,
-                Some(drawn),
-                standing,
-                cx,
-            )
-        })
+        JumpPalette::new(
+            model,
+            Holder::Scatter,
+            focus,
+            chips,
+            Some(drawn),
+            standing,
+            cx,
+        )
     }
 
     /// Opens the palette over the plot, noting the zoom it opened at.
@@ -1672,6 +1670,7 @@ impl Panel for ScatterPanel {
             view: ViewKind::new("graph-scatter"),
             key_context: KEY_CONTEXT,
             role: Role::Canvas,
+            caching: Caching::Layers,
         }
     }
 

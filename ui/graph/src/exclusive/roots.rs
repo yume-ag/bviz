@@ -15,7 +15,7 @@ use bviz_graph_layout::target_set::{PatternError, Resolved, TargetSet, TopLevel}
 use bviz_graph_layout::{Id, Kind};
 use bviz_ui_components::{
     Button, Hint, KeyScope, MenuItem, Nesting, OverflowRows, Priority, QueryField, ToolbarGroup,
-    menu_chrome,
+    focus_went_nowhere, menu_chrome,
 };
 use gpui::{
     App, ClickEvent, Context, Div, Entity, FocusHandle, Focusable, Pixels, SharedString,
@@ -350,7 +350,10 @@ impl ExclusivePanel {
     /// Opens the sheet editing the roots, its field taking focus.
     pub(super) fn edit_roots(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.roots.closing.is_none() {
-            let closing = cx.on_focus_out(&self.roots.sheet, window, |view, _, _, cx| {
+            let closing = cx.on_focus_out(&self.roots.sheet, window, |view, _, window, cx| {
+                if focus_went_nowhere(&view.roots.sheet, window, cx) {
+                    view.focus_handle.focus(window, cx);
+                }
                 view.roots.open = false;
                 view.reroot(cx);
                 cx.notify();
