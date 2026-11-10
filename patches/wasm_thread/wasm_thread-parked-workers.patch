@@ -5,25 +5,41 @@ instantiates the module before the thread runs, and a spawn from a worker
 waits on the main thread to start it, behind whatever that thread is busy
 with. Here a worker whose thread has finished parks, and the next spawn
 with the same worker script and stack size, from any thread, hands its
-thread to the worker parked last; a worker left idle long enough ends. A
-worker parks before its thread's joiner is woken, so a spawn right after a
-join finds it. A scoped thread is counted before it is handed over, since
-a parked worker can finish it before the spawn returns. A reused worker
-keeps the name and thread-locals of the thread it first ran.
+thread to the worker parked last. A worker parks before its thread's
+joiner is woken, so a spawn right after a join finds it. A scoped thread
+is counted before it is handed over, since a parked worker can finish it
+before the spawn returns. A reused worker keeps the name and thread-locals
+of the thread it first ran.
+
+A parked worker is kept for the rest of the page's life, since a worker's
+exit can stall the page's main thread, as it does in Firefox under its
+profiler, and a thread spawned later would start cold. Each costs its
+stack and a few megabytes, so no more workers park than the browser
+reports logical processors, enough for the threads of two of bviz's
+tasks, which each fan out to half of them; a worker whose thread finishes
+beyond that ends.
 
 A thread must leave nothing queued on its worker's event loop, such as a
 promise, a timer or a message handler: a parked worker does not return to
-the loop, so that work would wait until the worker ends. A parked worker
-the browser has ended, for example one that ran out of memory, stays
-listed, and a thread handed to it never runs.
+the loop, so that work would never run. A parked worker the browser has
+ended, for example one that ran out of memory, stays listed, and a thread
+handed to it never runs.
 
 License: Apache-2.0 (wasm_thread 0cf96c7708dfb97ccf3da50347e25edcf75d6937)
 
 diff --git a/src/wasm32/mod.rs b/src/wasm32/mod.rs
-index 169b19c..05c288d 100644
+index 169b19c..866fdbf 100644
 --- a/src/wasm32/mod.rs
 +++ b/src/wasm32/mod.rs
-@@ -17,19 +17,65 @@ pub use utils::{available_parallelism, get_wasm_bindgen_shim_script_path, get_wo
+@@ -4,7 +4,6 @@ use std::{
+     marker::PhantomData,
+     mem,
+     panic::{catch_unwind, AssertUnwindSafe},
+-    rc::Rc,
+     sync::{Arc, Mutex},
+     thread::{Result, Thread},
+ };
+@@ -17,20 +16,66 @@ pub use utils::{available_parallelism, get_wasm_bindgen_shim_script_path, get_wo
  use wasm_bindgen::prelude::*;
  use web_sys::{DedicatedWorkerGlobalScope, Worker, WorkerOptions, WorkerType};
  
@@ -72,27 +88,29 @@ index 169b19c..05c288d 100644
 +    }
 +}
 +
-+/// Entry point for web workers: runs the thread it is given, then each thread handed to the worker while it is parked.
++/// Entry point for web workers: runs the thread it is given, then each thread handed to the worker while it is parked,
++/// and returns once the worker cannot park.
  #[wasm_bindgen]
  pub fn wasm_thread_entry_point(ptr: u32) {
 -    let ctx = unsafe { Box::from_raw(ptr as *mut WebWorkerContext) };
 -    (ctx.func)();
+-    WorkerMessage::ThreadComplete.post();
 +    let mut ctx = unsafe { Box::from_raw(ptr as *mut WebWorkerContext) };
 +    let worker = parked::Worker::new(ctx.setup.clone());
 +    loop {
 +        let WebWorkerContext { func, finished, .. } = *ctx;
 +        func();
-+        worker.park();
++        let parked = worker.park();
 +        finished.signal();
-+        match worker.wait_for_thread() {
-+            Some(next) => ctx = next,
-+            None => break,
++        if !parked {
++            return;
 +        }
++        ctx = worker.wait_for_thread();
 +    }
-     WorkerMessage::ThreadComplete.post();
  }
  
-@@ -41,7 +87,10 @@ struct BuilderRequest {
+ /// Used to relay spawn requests from web workers to main thread
+@@ -41,7 +86,10 @@ struct BuilderRequest {
  
  impl BuilderRequest {
      pub unsafe fn spawn(self) {
@@ -104,7 +122,16 @@ index 169b19c..05c288d 100644
      }
  }
  
-@@ -242,27 +291,28 @@ impl Builder {
+@@ -49,8 +97,6 @@ impl BuilderRequest {
+ enum WorkerMessage {
+     /// Request to spawn thread
+     SpawnThread(BuilderRequest),
+-    /// Thread has completed execution
+-    ThreadComplete,
+ }
+ 
+ impl WorkerMessage {
+@@ -242,27 +288,28 @@ impl Builder {
              // will call `decrement_num_running_threads` and therefore signal that this thread is
              // done.
              drop(their_packet);
@@ -143,7 +170,7 @@ index 169b19c..05c288d 100644
          Ok(JoinInner {
              signal: my_signal,
              packet: my_packet,
-@@ -270,16 +320,13 @@ impl Builder {
+@@ -270,16 +317,13 @@ impl Builder {
      }
  
      unsafe fn spawn_for_context(self, ctx: WebWorkerContext) {
@@ -166,7 +193,30 @@ index 169b19c..05c288d 100644
  
          let options = WorkerOptions::new();
          match (name, prefix) {
-@@ -338,8 +385,8 @@ impl Builder {
+@@ -306,10 +350,7 @@ impl Builder {
+         }
+ 
+         // Spawn the worker
+-        let worker = Rc::new(Worker::new_with_options(script.as_str(), &options).unwrap());
+-
+-        // Make copy and keep a reference in callback handler so that GC does not despawn worker
+-        let mut their_worker = Some(worker.clone());
++        let worker = Worker::new_with_options(script.as_str(), &options).unwrap();
+ 
+         let callback = Closure::wrap_assert_unwind_safe(Box::new(move |x: &web_sys::MessageEvent| {
+             // All u32 bits map to f64 mantisa so it's safe to cast like that
+@@ -319,10 +360,6 @@ impl Builder {
+                 WorkerMessage::SpawnThread(builder) => {
+                     builder.spawn();
+                 }
+-                WorkerMessage::ThreadComplete => {
+-                    // Drop worker reference so it can be cleaned up by GC
+-                    their_worker.take();
+-                }
+             };
+         }) as Box<dyn FnMut(&web_sys::MessageEvent)>);
+         worker.set_onmessage(Some(callback.as_ref().unchecked_ref()));
+@@ -338,8 +375,8 @@ impl Builder {
          init.push(&wasm_bindgen::memory());
          init.push(&JsValue::from(ctx_ptr as u32));
          init.push(&match stack_size {
@@ -177,31 +227,37 @@ index 169b19c..05c288d 100644
          });
  
          // Send initialization message
+@@ -350,6 +387,8 @@ impl Builder {
+                 Err(e)
+             }
+         }
++        // Unreferenced, a parked worker could be collected.
++        .map(mem::forget)
+         .unwrap();
+     }
+ }
 diff --git a/src/wasm32/parked.rs b/src/wasm32/parked.rs
 new file mode 100644
-index 0000000..52121b8
+index 0000000..ebf1c82
 --- /dev/null
 +++ b/src/wasm32/parked.rs
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,92 @@
 +//! Workers whose thread has finished, kept to run a later thread: starting a worker loads and instantiates the module
 +//! anew, and a worker's spawn of one waits on the main thread to start it.
 +
 +use std::{
 +    arch::wasm32,
++    num::NonZeroUsize,
 +    sync::{
-+        atomic::{AtomicU32, Ordering},
++        atomic::{AtomicU32, AtomicUsize, Ordering},
 +        Arc, Mutex,
 +    },
 +};
 +
-+use super::{utils::SpinLockMutex, WebWorkerContext, WorkerSetup};
++use super::{available_parallelism, utils::SpinLockMutex, WebWorkerContext, WorkerSetup};
 +
-+/// How long a parked worker waits for a thread before it ends, which lets the threads of one task's stages, and of a
-+/// task begun soon after, run on the same workers.
-+const PARKED_TIMEOUT_NS: i64 = 30_000_000_000;
-+
-+/// What `memory.atomic.wait32` returns when its timeout passes.
-+const WAIT_TIMED_OUT: i32 = 2;
++/// [parked_cap] where the browser does not report its logical processors.
++const FALLBACK_PARKED_CAP: usize = 4;
 +
 +/// The calling worker, as listed while it is parked.
 +pub(super) struct Worker(Arc<Parked>);
@@ -213,6 +269,19 @@ index 0000000..52121b8
 +}
 +
 +static IDLE: Mutex<Vec<Arc<Parked>>> = Mutex::new(Vec::new());
++
++/// The most workers parked at once: the browser's logical processors.
++fn parked_cap() -> usize {
++    static CAP: AtomicUsize = AtomicUsize::new(0);
++    match CAP.load(Ordering::Relaxed) {
++        0 => {
++            let cap = available_parallelism().map_or(FALLBACK_PARKED_CAP, NonZeroUsize::get);
++            CAP.store(cap, Ordering::Relaxed);
++            cap
++        }
++        cap => cap,
++    }
++}
 +
 +/// Hands `context` to the worker parked last with its setup, or gives it back where none is.
 +pub(super) fn hand_over(context: WebWorkerContext) -> Result<(), WebWorkerContext> {
@@ -239,30 +308,28 @@ index 0000000..52121b8
 +    }
 +
 +    /// Lists the worker for [hand_over], which may give it a thread from then on, to run once
-+    /// [Self::wait_for_thread] takes it up.
-+    pub(super) fn park(&self) {
-+        IDLE.lock_spin().unwrap().push(self.0.clone());
++    /// [Self::wait_for_thread] takes it up; `false`, listing nothing, where [parked_cap] workers are listed already.
++    #[must_use]
++    pub(super) fn park(&self) -> bool {
++        let cap = parked_cap();
++        let mut idle = IDLE.lock_spin().unwrap();
++        if idle.len() >= cap {
++            return false;
++        }
++        idle.push(self.0.clone());
++        true
 +    }
 +
-+    /// Waits for the thread handed to the parked worker, or `None` once [`PARKED_TIMEOUT_NS`] passes without one.
-+    pub(super) fn wait_for_thread(&self) -> Option<Box<WebWorkerContext>> {
++    /// Waits for the thread handed to the parked worker.
++    pub(super) fn wait_for_thread(&self) -> Box<WebWorkerContext> {
 +        let work = &self.0.work;
-+        let mut timeout = PARKED_TIMEOUT_NS;
 +        loop {
 +            let context = work.swap(0, Ordering::Acquire);
 +            if context != 0 {
-+                return Some(unsafe { Box::from_raw(context as *mut WebWorkerContext) });
++                return unsafe { Box::from_raw(context as *mut WebWorkerContext) };
 +            }
-+            if unsafe { wasm32::memory_atomic_wait32(work.as_ptr() as *mut i32, 0, timeout) } == WAIT_TIMED_OUT {
-+                let mut idle = IDLE.lock_spin().unwrap();
-+                match idle.iter().position(|other| Arc::ptr_eq(other, &self.0)) {
-+                    Some(at) => {
-+                        idle.remove(at);
-+                        return None;
-+                    }
-+                    // Taken by a spawn, whose thread is on its way.
-+                    None => timeout = -1,
-+                }
++            unsafe {
++                wasm32::memory_atomic_wait32(work.as_ptr() as *mut i32, 0, -1);
 +            }
 +        }
 +    }
