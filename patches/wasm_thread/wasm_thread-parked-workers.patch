@@ -28,7 +28,7 @@ handed to it never runs.
 License: Apache-2.0 (wasm_thread 0cf96c7708dfb97ccf3da50347e25edcf75d6937)
 
 diff --git a/src/wasm32/mod.rs b/src/wasm32/mod.rs
-index 169b19c..866fdbf 100644
+index 169b19c..36fc436 100644
 --- a/src/wasm32/mod.rs
 +++ b/src/wasm32/mod.rs
 @@ -4,7 +4,6 @@ use std::{
@@ -96,7 +96,7 @@ index 169b19c..866fdbf 100644
 -    (ctx.func)();
 -    WorkerMessage::ThreadComplete.post();
 +    let mut ctx = unsafe { Box::from_raw(ptr as *mut WebWorkerContext) };
-+    let worker = parked::Worker::new(ctx.setup.clone());
++    let worker = parked::Worker::new(&ctx.setup);
 +    loop {
 +        let WebWorkerContext { func, finished, .. } = *ctx;
 +        func();
@@ -238,37 +238,56 @@ index 169b19c..866fdbf 100644
  }
 diff --git a/src/wasm32/parked.rs b/src/wasm32/parked.rs
 new file mode 100644
-index 0000000..ebf1c82
+index 0000000..46ca08c
 --- /dev/null
 +++ b/src/wasm32/parked.rs
-@@ -0,0 +1,92 @@
+@@ -0,0 +1,214 @@
 +//! Workers whose thread has finished, kept to run a later thread: starting a worker loads and instantiates the module
-+//! anew, and a worker's spawn of one waits on the main thread to start it.
++//! anew, and a worker's spawn of one waits on the main thread to start it. Listing and taking a worker never wait on
++//! another thread, as the browser's main thread hands threads over too.
 +
 +use std::{
 +    arch::wasm32,
 +    num::NonZeroUsize,
-+    sync::{
-+        atomic::{AtomicU32, AtomicUsize, Ordering},
-+        Arc, Mutex,
-+    },
++    sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering},
 +};
 +
-+use super::{available_parallelism, utils::SpinLockMutex, WebWorkerContext, WorkerSetup};
++use super::{available_parallelism, WebWorkerContext, WorkerSetup};
 +
 +/// [parked_cap] where the browser does not report its logical processors.
 +const FALLBACK_PARKED_CAP: usize = 4;
 +
-+/// The calling worker, as listed while it is parked.
-+pub(super) struct Worker(Arc<Parked>);
++/// The calling worker, which [hand_over] may give a thread once it is parked.
++pub(super) struct Worker {
++    shelf: &'static Shelf,
++    parked: &'static Parked,
++}
 +
++/// A worker as listed on its setup's shelf, never freed, so that a node another thread has taken since it was read
++/// stays valid to read.
 +struct Parked {
-+    setup: WorkerSetup,
++    /// The address of the worker below on the shelf, zero for none.
++    next: AtomicU32,
 +    /// The address of the context of the thread handed to the worker, zero until one is.
 +    work: AtomicU32,
 +}
 +
-+static IDLE: Mutex<Vec<Arc<Parked>>> = Mutex::new(Vec::new());
++/// The workers parked with one setup, a stack of [Parked] nodes, each on it at most once: only its own worker lists
++/// it, the first time on parking and afterwards only once a hand-over has taken it off.
++struct Shelf {
++    setup: WorkerSetup,
++    /// The top node's address, [counted] by the changes to the top, so that a top taken and listed again since it was
++    /// read fails an exchange from the one read.
++    idle: AtomicU64,
++    /// The address of the shelf listed before, zero for none.
++    next: u32,
++}
++
++/// The address of the shelf listed last, zero for none; a shelf, once listed, stays.
++static SHELVES: AtomicU32 = AtomicU32::new(0);
++
++/// At least the workers listed on all shelves: a worker is counted before it is listed and uncounted once taken.
++static PARKED: AtomicUsize = AtomicUsize::new(0);
 +
 +/// The most workers parked at once: the browser's logical processors.
 +fn parked_cap() -> usize {
@@ -285,12 +304,8 @@ index 0000000..ebf1c82
 +
 +/// Hands `context` to the worker parked last with its setup, or gives it back where none is.
 +pub(super) fn hand_over(context: WebWorkerContext) -> Result<(), WebWorkerContext> {
-+    let parked = {
-+        let mut idle = IDLE.lock_spin().unwrap();
-+        match idle.iter().rposition(|parked| parked.setup == context.setup) {
-+            Some(at) => idle.remove(at),
-+            None => return Err(context),
-+        }
++    let Some(parked) = find_shelf(&context.setup).and_then(Shelf::pop) else {
++        return Err(context);
 +    };
 +    parked.work.store(Box::into_raw(Box::new(context)) as u32, Ordering::Release);
 +    unsafe {
@@ -299,12 +314,117 @@ index 0000000..ebf1c82
 +    Ok(())
 +}
 +
++fn find_shelf(setup: &WorkerSetup) -> Option<&'static Shelf> {
++    find_shelf_from(SHELVES.load(Ordering::Acquire), setup)
++}
++
++fn find_shelf_from(mut at: u32, setup: &WorkerSetup) -> Option<&'static Shelf> {
++    while at != 0 {
++        // SAFETY: a listed shelf is never freed.
++        let shelf = unsafe { &*(at as *const Shelf) };
++        if shelf.setup == *setup {
++            return Some(shelf);
++        }
++        at = shelf.next;
++    }
++    None
++}
++
++/// The shelf for `setup`, listed by the first worker with it, so that a setup never has two.
++fn shelf_for(setup: &WorkerSetup) -> &'static Shelf {
++    let mut head = SHELVES.load(Ordering::Acquire);
++    if let Some(listed) = find_shelf_from(head, setup) {
++        return listed;
++    }
++    let shelf = Box::into_raw(Box::new(Shelf {
++        setup: setup.clone(),
++        idle: AtomicU64::new(0),
++        next: head,
++    }));
++    loop {
++        match SHELVES.compare_exchange(head, shelf as u32, Ordering::Release, Ordering::Acquire) {
++            Ok(_) => return unsafe { &*shelf },
++            Err(now) => {
++                if let Some(listed) = find_shelf_from(now, setup) {
++                    drop(unsafe { Box::from_raw(shelf) });
++                    return listed;
++                }
++                head = now;
++                // SAFETY: `shelf` is this thread's alone until the exchange lists it.
++                unsafe { (*shelf).next = head };
++            }
++        }
++    }
++}
++
++const ADDRESS_BITS: u32 = 32;
++
++/// An address, packed with a count that tells it from the same address stored before.
++fn counted(count: u32, address: u32) -> u64 {
++    (count as u64) << ADDRESS_BITS | address as u64
++}
++
++fn address_of(counted: u64) -> u32 {
++    counted as u32
++}
++
++fn count_of(counted: u64) -> u32 {
++    (counted >> ADDRESS_BITS) as u32
++}
++
++impl Shelf {
++    fn push(&self, parked: &'static Parked) {
++        let address = parked as *const Parked as u32;
++        let mut was = self.idle.load(Ordering::Relaxed);
++        loop {
++            parked.next.store(address_of(was), Ordering::Relaxed);
++            let is = counted(count_of(was).wrapping_add(1), address);
++            match self
++                .idle
++                .compare_exchange_weak(was, is, Ordering::Release, Ordering::Relaxed)
++            {
++                Ok(_) => return,
++                Err(now) => was = now,
++            }
++        }
++    }
++
++    /// Takes the top worker, which its taker then owns until the worker lists itself again.
++    fn pop(&self) -> Option<&'static Parked> {
++        let mut was = self.idle.load(Ordering::Acquire);
++        loop {
++            let address = address_of(was);
++            if address == 0 {
++                return None;
++            }
++            // SAFETY: a node is never freed.
++            let parked = unsafe { &*(address as *const Parked) };
++            // Stale where another thread has taken the node since, which fails the exchange on the count.
++            let next = parked.next.load(Ordering::Relaxed);
++            let is = counted(count_of(was).wrapping_add(1), next);
++            match self
++                .idle
++                .compare_exchange_weak(was, is, Ordering::Acquire, Ordering::Acquire)
++            {
++                Ok(_) => {
++                    PARKED.fetch_sub(1, Ordering::Relaxed);
++                    return Some(parked);
++                }
++                Err(now) => was = now,
++            }
++        }
++    }
++}
++
 +impl Worker {
-+    pub(super) fn new(setup: WorkerSetup) -> Self {
-+        Self(Arc::new(Parked {
-+            setup,
-+            work: AtomicU32::new(0),
-+        }))
++    pub(super) fn new(setup: &WorkerSetup) -> Self {
++        Self {
++            shelf: shelf_for(setup),
++            parked: Box::leak(Box::new(Parked {
++                next: AtomicU32::new(0),
++                work: AtomicU32::new(0),
++            })),
++        }
 +    }
 +
 +    /// Lists the worker for [hand_over], which may give it a thread from then on, to run once
@@ -312,17 +432,19 @@ index 0000000..ebf1c82
 +    #[must_use]
 +    pub(super) fn park(&self) -> bool {
 +        let cap = parked_cap();
-+        let mut idle = IDLE.lock_spin().unwrap();
-+        if idle.len() >= cap {
++        let counted = PARKED.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |parked| {
++            (parked < cap).then_some(parked + 1)
++        });
++        if counted.is_err() {
 +            return false;
 +        }
-+        idle.push(self.0.clone());
++        self.shelf.push(self.parked);
 +        true
 +    }
 +
 +    /// Waits for the thread handed to the parked worker.
 +    pub(super) fn wait_for_thread(&self) -> Box<WebWorkerContext> {
-+        let work = &self.0.work;
++        let work = &self.parked.work;
 +        loop {
 +            let context = work.swap(0, Ordering::Acquire);
 +            if context != 0 {
