@@ -18,13 +18,8 @@ pub fn when_threads_start(start: impl FnOnce() + 'static) {
     wasm_thread::Builder::new()
         .worker_script_url(script)
         .set_default();
-    let global_pool = bviz_parallel::build_global_pool();
-    wasm_bindgen_futures::spawn_local(async move {
-        if global_pool.finished().await.is_err() {
-            panic!("rayon's global pool could not be built");
-        }
-        start();
-    });
+    bviz_parallel::build_global_pool();
+    start();
 }
 
 /// Runs `start` at once, as a build without threads starts none.
