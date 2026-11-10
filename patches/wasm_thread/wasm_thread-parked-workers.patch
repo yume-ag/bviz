@@ -21,14 +21,17 @@ beyond that ends.
 
 A thread must leave nothing queued on its worker's event loop, such as a
 promise, a timer or a message handler: a parked worker does not return to
-the loop, so that work would never run. A parked worker the browser has
-ended, for example one that ran out of memory, stays listed, and a thread
-handed to it never runs.
+the loop, so that work would never run.
+
+A thread handed to a parked worker that does not take it up within a grace
+period, as when the browser has ended the worker, for example for running
+out of memory, is taken back and started on a new worker, which has no
+name; the parked worker ends if it wakes.
 
 License: Apache-2.0 (wasm_thread 0cf96c7708dfb97ccf3da50347e25edcf75d6937)
 
 diff --git a/src/wasm32/mod.rs b/src/wasm32/mod.rs
-index 169b19c..36fc436 100644
+index 169b19c..a42f814 100644
 --- a/src/wasm32/mod.rs
 +++ b/src/wasm32/mod.rs
 @@ -4,7 +4,6 @@ use std::{
@@ -39,7 +42,7 @@ index 169b19c..36fc436 100644
      sync::{Arc, Mutex},
      thread::{Result, Thread},
  };
-@@ -17,20 +16,66 @@ pub use utils::{available_parallelism, get_wasm_bindgen_shim_script_path, get_wo
+@@ -17,20 +16,93 @@ pub use utils::{available_parallelism, get_wasm_bindgen_shim_script_path, get_wo
  use wasm_bindgen::prelude::*;
  use web_sys::{DedicatedWorkerGlobalScope, Worker, WorkerOptions, WorkerType};
  
@@ -89,7 +92,7 @@ index 169b19c..36fc436 100644
 +}
 +
 +/// Entry point for web workers: runs the thread it is given, then each thread handed to the worker while it is parked,
-+/// and returns once the worker cannot park.
++/// and returns once the worker cannot park or a thread handed to it is taken back.
  #[wasm_bindgen]
  pub fn wasm_thread_entry_point(ptr: u32) {
 -    let ctx = unsafe { Box::from_raw(ptr as *mut WebWorkerContext) };
@@ -105,33 +108,62 @@ index 169b19c..36fc436 100644
 +        if !parked {
 +            return;
 +        }
-+        ctx = worker.wait_for_thread();
++        match worker.wait_for_thread() {
++            Some(next) => ctx = next,
++            None => return,
++        }
 +    }
++}
++
++/// [parked::hand_over], watched from the main thread, which starts a thread taken back.
++fn hand_over(context: WebWorkerContext) -> std::result::Result<(), WebWorkerContext> {
++    let handed = parked::hand_over(context)?;
++    if is_web_worker_thread() {
++        WorkerMessage::WatchHandOver(handed).post();
++    } else {
++        watch_hand_over(handed);
++    }
++    Ok(())
++}
++
++/// Starts the thread handed over on a new worker unless its worker takes it up within [parked::HAND_OVER_GRACE_MS].
++fn watch_hand_over(handed: parked::HandedOver) {
++    let take_back = Closure::once_into_js(move || {
++        if let Some(context) = handed.take_back() {
++            unsafe { Builder::empty().spawn_for_context(*context) };
++        }
++    });
++    web_sys::window()
++        .unwrap()
++        .set_timeout_with_callback_and_timeout_and_arguments_0(take_back.unchecked_ref(), parked::HAND_OVER_GRACE_MS)
++        .unwrap();
  }
  
  /// Used to relay spawn requests from web workers to main thread
-@@ -41,7 +86,10 @@ struct BuilderRequest {
+@@ -41,7 +113,10 @@ struct BuilderRequest {
  
  impl BuilderRequest {
      pub unsafe fn spawn(self) {
 -        self.builder.spawn_for_context(self.context);
 +        // A worker may have parked since the request was posted.
-+        if let Err(context) = parked::hand_over(self.context) {
++        if let Err(context) = hand_over(self.context) {
 +            self.builder.spawn_for_context(context);
 +        }
      }
  }
  
-@@ -49,8 +97,6 @@ impl BuilderRequest {
+@@ -49,8 +124,8 @@ impl BuilderRequest {
  enum WorkerMessage {
      /// Request to spawn thread
      SpawnThread(BuilderRequest),
 -    /// Thread has completed execution
 -    ThreadComplete,
++    /// Request to watch a thread the web worker handed over
++    WatchHandOver(parked::HandedOver),
  }
  
  impl WorkerMessage {
-@@ -242,27 +288,28 @@ impl Builder {
+@@ -242,27 +317,28 @@ impl Builder {
              // will call `decrement_num_running_threads` and therefore signal that this thread is
              // done.
              drop(their_packet);
@@ -159,7 +191,7 @@ index 169b19c..36fc436 100644
              scope.increment_num_running_threads();
          }
  
-+        if let Err(context) = parked::hand_over(context) {
++        if let Err(context) = hand_over(context) {
 +            if is_web_worker_thread() {
 +                WorkerMessage::SpawnThread(BuilderRequest { builder: self, context }).post();
 +            } else {
@@ -170,7 +202,7 @@ index 169b19c..36fc436 100644
          Ok(JoinInner {
              signal: my_signal,
              packet: my_packet,
-@@ -270,16 +317,13 @@ impl Builder {
+@@ -270,16 +346,13 @@ impl Builder {
      }
  
      unsafe fn spawn_for_context(self, ctx: WebWorkerContext) {
@@ -193,7 +225,7 @@ index 169b19c..36fc436 100644
  
          let options = WorkerOptions::new();
          match (name, prefix) {
-@@ -306,10 +350,7 @@ impl Builder {
+@@ -306,10 +379,7 @@ impl Builder {
          }
  
          // Spawn the worker
@@ -205,7 +237,7 @@ index 169b19c..36fc436 100644
  
          let callback = Closure::wrap_assert_unwind_safe(Box::new(move |x: &web_sys::MessageEvent| {
              // All u32 bits map to f64 mantisa so it's safe to cast like that
-@@ -319,10 +360,6 @@ impl Builder {
+@@ -319,10 +389,7 @@ impl Builder {
                  WorkerMessage::SpawnThread(builder) => {
                      builder.spawn();
                  }
@@ -213,10 +245,11 @@ index 169b19c..36fc436 100644
 -                    // Drop worker reference so it can be cleaned up by GC
 -                    their_worker.take();
 -                }
++                WorkerMessage::WatchHandOver(handed) => watch_hand_over(handed),
              };
          }) as Box<dyn FnMut(&web_sys::MessageEvent)>);
          worker.set_onmessage(Some(callback.as_ref().unchecked_ref()));
-@@ -338,8 +375,8 @@ impl Builder {
+@@ -338,8 +405,8 @@ impl Builder {
          init.push(&wasm_bindgen::memory());
          init.push(&JsValue::from(ctx_ptr as u32));
          init.push(&match stack_size {
@@ -227,7 +260,7 @@ index 169b19c..36fc436 100644
          });
  
          // Send initialization message
-@@ -350,6 +387,8 @@ impl Builder {
+@@ -350,6 +417,8 @@ impl Builder {
                  Err(e)
              }
          }
@@ -238,10 +271,10 @@ index 169b19c..36fc436 100644
  }
 diff --git a/src/wasm32/parked.rs b/src/wasm32/parked.rs
 new file mode 100644
-index 0000000..46ca08c
+index 0000000..6f7da2f
 --- /dev/null
 +++ b/src/wasm32/parked.rs
-@@ -0,0 +1,214 @@
+@@ -0,0 +1,254 @@
 +//! Workers whose thread has finished, kept to run a later thread: starting a worker loads and instantiates the module
 +//! anew, and a worker's spawn of one waits on the main thread to start it. Listing and taking a worker never wait on
 +//! another thread, as the browser's main thread hands threads over too.
@@ -257,6 +290,16 @@ index 0000000..46ca08c
 +/// [parked_cap] where the browser does not report its logical processors.
 +const FALLBACK_PARKED_CAP: usize = 4;
 +
++/// How long a parked worker has to take up a thread handed to it before the thread is started on a new worker, the
++/// parked one taken for ended by the browser: a live parked worker wakes in well under a millisecond.
++pub(super) const HAND_OVER_GRACE_MS: i32 = 1_000;
++
++/// [Parked::work] while no thread is handed to the worker.
++const NO_WORK: u64 = 0;
++
++/// [Parked::work] once the thread handed to the worker was taken back, which ends the worker.
++const TAKEN_BACK: u64 = u64::MAX;
++
 +/// The calling worker, which [hand_over] may give a thread once it is parked.
 +pub(super) struct Worker {
 +    shelf: &'static Shelf,
@@ -268,8 +311,10 @@ index 0000000..46ca08c
 +struct Parked {
 +    /// The address of the worker below on the shelf, zero for none.
 +    next: AtomicU32,
-+    /// The address of the context of the thread handed to the worker, zero until one is.
-+    work: AtomicU32,
++    /// [NO_WORK], [TAKEN_BACK], or the address of the context of the thread handed to the worker, [counted] by
++    /// [Self::hand_overs].
++    work: AtomicU64,
++    hand_overs: AtomicU32,
 +}
 +
 +/// The workers parked with one setup, a stack of [Parked] nodes, each on it at most once: only its own worker lists
@@ -302,16 +347,43 @@ index 0000000..46ca08c
 +    }
 +}
 +
++/// A thread handed to a parked worker, which [Self::take_back] can start elsewhere if the worker never takes it up.
++pub(super) struct HandedOver {
++    parked: &'static Parked,
++    work: u64,
++}
++
 +/// Hands `context` to the worker parked last with its setup, or gives it back where none is.
-+pub(super) fn hand_over(context: WebWorkerContext) -> Result<(), WebWorkerContext> {
++pub(super) fn hand_over(context: WebWorkerContext) -> Result<HandedOver, WebWorkerContext> {
 +    let Some(parked) = find_shelf(&context.setup).and_then(Shelf::pop) else {
 +        return Err(context);
 +    };
-+    parked.work.store(Box::into_raw(Box::new(context)) as u32, Ordering::Release);
-+    unsafe {
-+        wasm32::memory_atomic_notify(parked.work.as_ptr() as *mut i32, 1);
++    let count = parked.hand_overs.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
++    let work = counted(count, Box::into_raw(Box::new(context)) as u32);
++    parked.work.store(work, Ordering::Release);
++    parked.notify();
++    Ok(HandedOver { parked, work })
++}
++
++impl HandedOver {
++    /// Takes the thread back, and ends its worker, unless the worker has taken it up.
++    pub(super) fn take_back(self) -> Option<Box<WebWorkerContext>> {
++        self.parked
++            .work
++            .compare_exchange(self.work, TAKEN_BACK, Ordering::Acquire, Ordering::Relaxed)
++            .ok()?;
++        // Wakes a worker that is merely slow, to end.
++        self.parked.notify();
++        Some(unsafe { Box::from_raw(address_of(self.work) as *mut WebWorkerContext) })
 +    }
-+    Ok(())
++}
++
++impl Parked {
++    fn notify(&self) {
++        unsafe {
++            wasm32::memory_atomic_notify(self.work.as_ptr() as *mut i32, 1);
++        }
++    }
 +}
 +
 +fn find_shelf(setup: &WorkerSetup) -> Option<&'static Shelf> {
@@ -422,7 +494,8 @@ index 0000000..46ca08c
 +            shelf: shelf_for(setup),
 +            parked: Box::leak(Box::new(Parked {
 +                next: AtomicU32::new(0),
-+                work: AtomicU32::new(0),
++                work: AtomicU64::new(NO_WORK),
++                hand_overs: AtomicU32::new(0),
 +            })),
 +        }
 +    }
@@ -442,16 +515,16 @@ index 0000000..46ca08c
 +        true
 +    }
 +
-+    /// Waits for the thread handed to the parked worker.
-+    pub(super) fn wait_for_thread(&self) -> Box<WebWorkerContext> {
++    /// Waits for the thread handed to the parked worker, or `None` where it was taken back, which ends the worker.
++    pub(super) fn wait_for_thread(&self) -> Option<Box<WebWorkerContext>> {
 +        let work = &self.parked.work;
 +        loop {
-+            let context = work.swap(0, Ordering::Acquire);
-+            if context != 0 {
-+                return unsafe { Box::from_raw(context as *mut WebWorkerContext) };
-+            }
-+            unsafe {
-+                wasm32::memory_atomic_wait32(work.as_ptr() as *mut i32, 0, -1);
++            match work.swap(NO_WORK, Ordering::Acquire) {
++                NO_WORK => unsafe {
++                    wasm32::memory_atomic_wait64(work.as_ptr() as *mut i64, NO_WORK as i64, -1);
++                },
++                TAKEN_BACK => return None,
++                handed => return Some(unsafe { Box::from_raw(address_of(handed) as *mut WebWorkerContext) }),
 +            }
 +        }
 +    }
