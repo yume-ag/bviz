@@ -15,8 +15,8 @@ Object.defineProperty(globalThis, "bvizLastPanic", {
 });
 
 // What crashed bviz on this thread, for the page to tell: the panic or fault
-// `error` that escaped it, or, where an abort left none, the panic it last
-// recorded.
+// `error` that escaped it, named by the panic it last recorded where there is
+// one.
 export function crashOf(error) {
   return {
     fault: error instanceof WebAssembly.RuntimeError,
