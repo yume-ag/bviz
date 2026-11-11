@@ -35,8 +35,8 @@ const ANSWERED: i32 = 2;
 /// slice is written after.
 const GONE: i32 = 3;
 
-/// The answers that tell of no slice read: the DOM exception the server met
-/// by its name, any other as [`FAILED`], or a slice shorter than the file
+/// The answers that tell of no slice read: the exception the server met by
+/// its name, any other as [`FAILED`], or a slice shorter than the file
 /// handed over holds there as [`CHANGED`].
 const NOT_FOUND: i32 = -1;
 const NOT_READABLE: i32 = -2;
@@ -255,8 +255,8 @@ impl Slot {
     }
 
     /// What the server reads the request by: each field's word in bviz's
-    /// memory, each state, and the answer each DOM exception it meets gives
-    /// by its name.
+    /// memory, each state, and the answer each exception it meets gives by
+    /// its name.
     fn layout(&self) -> Object {
         let states = object(&[
             ("idle", IDLE.into()),
@@ -266,6 +266,11 @@ impl Slot {
         let errors = object(&[
             ("NotFoundError", NOT_FOUND.into()),
             ("NotReadableError", NOT_READABLE.into()),
+            // Gecko names its exceptions by XPCOM result; its FileReaderSync
+            // throws NS_ERROR_FAILURE where a file ends short of the size it
+            // was handed over at (dom/file/FileReaderSync.cpp).
+            ("NS_ERROR_FILE_NOT_FOUND", NOT_FOUND.into()),
+            ("NS_ERROR_FAILURE", CHANGED.into()),
         ]);
         object(&[
             ("state", self.state().into()),
