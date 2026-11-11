@@ -124,6 +124,7 @@ impl Opened {
                 name,
                 head: Some(head),
                 access: Access::Seekable { source, size },
+                reached: Default::default(),
             },
         }
     }
