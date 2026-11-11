@@ -3,7 +3,7 @@
 //! rendering the result.
 
 use bviz_graph_layout::Id;
-use bviz_input::Named;
+use bviz_input::{Named, ReadProgress};
 use bviz_invocation::Session;
 use bviz_ui_components::gesture::{
     GestureRow, Pointer, pinch_factor, scroll_pixels, wheel_zoom_factor,
@@ -1570,8 +1570,17 @@ pub struct Load {
 impl From<GraphSource<Named>> for Load {
     fn from(source: GraphSource<Named>) -> Self {
         let title = title(&source);
+        let (first, rest) = source.first_and_rest();
+        let total = (std::iter::once(first).chain(rest))
+            .map(|input| input.file.size())
+            .sum::<Option<u64>>();
+        let progress = total.map(ReadProgress::new);
         Self {
-            built: Pending::start(move || model::build(source)),
+            built: Pending::start({
+                let progress = progress.clone();
+                move || model::build(source, progress)
+            })
+            .reading(progress),
             title,
         }
     }

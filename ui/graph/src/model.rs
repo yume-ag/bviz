@@ -483,8 +483,12 @@ pub(crate) struct Read {
     landing: Landing,
 }
 
-/// Reads `source` and builds the graph, and starts placing its map.
-pub(crate) fn build(source: GraphSource<Named>) -> Result<Read, String> {
+/// Reads `source`, counting its bytes read in `progress`, and builds the
+/// graph, and starts placing its map.
+pub(crate) fn build(
+    source: GraphSource<Named>,
+    progress: Option<ReadProgress>,
+) -> Result<Read, String> {
     let inputs = loaded_inputs(&source);
     let (
         Joint {
@@ -495,7 +499,9 @@ pub(crate) fn build(source: GraphSource<Named>) -> Result<Read, String> {
             provenance,
         },
         reduced_base,
-    ) = timed("read graph", || build_graph(source.inputs()))?;
+    ) = timed("read graph", || {
+        build_graph(source.inputs(), progress.as_ref())
+    })?;
     // The map derives each of its views against these, so it holds a share in
     // them rather than a copy.
     let (base, reduced_base) = (Arc::new(graph), Arc::new(reduced_base));
