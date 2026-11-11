@@ -61,16 +61,16 @@ function answer() {
   const offset = Atomics.load(words, layout.offsetLow) >>> 0;
   const start = offset + (Atomics.load(words, layout.offsetHigh) >>> 0) * 2 ** 32;
   const end = Math.min(file.size, start + (Atomics.load(words, layout.length) >>> 0));
-  let answer;
+  let told;
   try {
     const slice = start < end ? new Uint8Array(reader.readAsArrayBuffer(file.slice(start, end))) : new Uint8Array();
     // A view made afresh, as the memory's buffer is replaced as it grows.
     new Uint8Array(memory.buffer, Atomics.load(words, layout.into) >>> 0, slice.length).set(slice);
-    answer = slice.length;
+    told = slice.length;
   } catch (error) {
-    answer = layout.errors[error?.name] ?? layout.failed;
+    told = layout.errors[error?.name] ?? layout.failed;
   }
-  Atomics.store(words, layout.answer, answer);
+  Atomics.store(words, layout.answer, told);
   Atomics.store(words, layout.state, layout.states.answered);
   Atomics.notify(words, layout.state);
   return true;
