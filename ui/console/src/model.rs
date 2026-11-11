@@ -72,6 +72,7 @@ impl ConsoleModel {
         clock: Entity<Clock>,
         cx: &mut Context<Self>,
     ) -> Self {
+        let progress = stream.progress();
         let load = load_future_in_background(cx, stream.finished(), move |model, result, cx| {
             model.source = match result {
                 Ok(stream) => Source::Loaded(model.reports.report(cx, |session, by, cx| {
@@ -83,7 +84,7 @@ impl ConsoleModel {
             model.place_on_clock(cx);
         });
         Self {
-            source: Source::Loading,
+            source: Source::Loading(progress),
             on_clock: OnClock::new(clock, cx, Self::place_on_clock),
             reports: Reports::new(session, cx),
             _load: load,
@@ -368,7 +369,7 @@ mod tests {
     /// whether or not a panel is showing one.
     #[test]
     fn a_build_still_being_read_has_nothing_to_play() {
-        assert!(replay_of(&Source::Loading).is_none());
+        assert!(replay_of(&Source::Loading(None)).is_none());
     }
 
     /// A read that failed leaves nothing to play and holds on to why, which is

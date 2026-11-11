@@ -1782,8 +1782,10 @@ impl From<bviz_input::Input> for Load {
     #[cfg(not(target_family = "wasm"))]
     fn from(input: bviz_input::Input) -> Self {
         let title = document_label(std::path::Path::new(input.name()));
+        let progress = input.progress();
         Self {
-            profile: Pending::start(move || Profile::from_input(input).map_err(|e| e.to_string())),
+            profile: Pending::start(move || Profile::from_input(input).map_err(|e| e.to_string()))
+                .reading(progress),
             title,
         }
     }
@@ -1791,9 +1793,11 @@ impl From<bviz_input::Input> for Load {
     #[cfg(target_family = "wasm")]
     fn from(input: bviz_input::Input) -> Self {
         let title = document_label(std::path::Path::new(input.name()));
+        let progress = input.progress();
         let decoding = Profile::from_input_ceding(input, DECODE_SLICE, bviz_ui_web::cede);
         Self {
-            profile: Pending::start_future(async { decoding.await.map_err(|e| e.to_string()) }),
+            profile: Pending::start_future(async { decoding.await.map_err(|e| e.to_string()) })
+                .reading(progress),
             title,
         }
     }

@@ -27,7 +27,7 @@ use bviz_graph_layout::target_pattern::TargetIndex;
 use bviz_graph_layout::{
     Capabilities, Facets, Id, InputSet, Joint, MapLayout, Names, Provenance, timed,
 };
-use bviz_input::Named;
+use bviz_input::{Named, ReadProgress};
 use bviz_invocation::{ActionGraph, Chosen, Configurations, Revision, Session};
 use bviz_ui_components::{Pending, load_future_in_background, load_in_background};
 use bviz_ui_graph_args::GraphSource;
@@ -483,8 +483,12 @@ pub(crate) struct Read {
     landing: Landing,
 }
 
-/// Reads `source` and builds the graph, and starts placing its map.
-pub(crate) fn build(source: GraphSource<Named>) -> Result<Read, String> {
+/// Reads `source`, counting its bytes read in `progress`, and builds the
+/// graph, and starts placing its map.
+pub(crate) fn build(
+    source: GraphSource<Named>,
+    progress: Option<ReadProgress>,
+) -> Result<Read, String> {
     let inputs = loaded_inputs(&source);
     let (
         Joint {
@@ -495,7 +499,9 @@ pub(crate) fn build(source: GraphSource<Named>) -> Result<Read, String> {
             provenance,
         },
         reduced_base,
-    ) = timed("read graph", || build_graph(source.inputs()))?;
+    ) = timed("read graph", || {
+        build_graph(source.inputs(), progress.as_ref())
+    })?;
     // The map derives each of its views against these, so it holds a share in
     // them rather than a copy.
     let (base, reduced_base) = (Arc::new(graph), Arc::new(reduced_base));
@@ -874,6 +880,7 @@ impl GraphModel {
             reports: Reports::new(session, cx),
         };
         let shares = sharing == Sharing::Invocation;
+        let progress = load.progress();
         let work = load_future_in_background(
             cx,
             async move {
@@ -912,7 +919,7 @@ impl GraphModel {
                 model.replaced(cx);
             },
         );
-        Self::new(work, in_session, clock)
+        Self::new(work, progress, in_session, clock)
     }
 
     /// Takes up what the session's build reports of the loaded graph.
@@ -954,9 +961,14 @@ impl GraphModel {
     /// Lands what placing the loaded graph's map came to: the map, through
     /// `landing`, or a failed read where placing failed. Returns the map where
     /// it landed.
-    fn new(work: Task<()>, in_session: InSession, clock: Entity<Clock>) -> Self {
+    fn new(
+        work: Task<()>,
+        progress: Option<ReadProgress>,
+        in_session: InSession,
+        clock: Entity<Clock>,
+    ) -> Self {
         Self {
-            source: Source::Loading,
+            source: Source::Loading(progress),
             _work: work,
             _placing: Task::ready(()),
             deferred: None,
@@ -1746,7 +1758,7 @@ mod tests {
     #[test]
     fn a_placement_that_panics_fails_the_read() {
         let (placement, landing) = Placement::pending();
-        let mut source = Source::Loading;
+        let mut source = Source::Loading(None);
         let placed = Pending::<Arc<MapLayout>>::start(|| panic!("placing the map")).join();
 
         assert!(land(&mut source, placed, landing).is_none());

@@ -966,6 +966,7 @@ dependencies = [
 name = "bviz_ui_components"
 version = "0.1.0"
 dependencies = [
+ "bviz_input",
  "bviz_invocation",
  "bviz_label",
  "bviz_parallel",

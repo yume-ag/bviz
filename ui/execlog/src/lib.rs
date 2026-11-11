@@ -44,9 +44,10 @@ pub fn invocation_id(input: &Input) -> Option<InvocationId> {
 
 impl From<Input> for Load {
     fn from(input: Input) -> Self {
+        let progress = input.progress();
         Self {
             title: document_label(Path::new(input.name())),
-            log: Pending::start(move || read_log(input)),
+            log: Pending::start(move || read_log(input)).reading(progress),
         }
     }
 }

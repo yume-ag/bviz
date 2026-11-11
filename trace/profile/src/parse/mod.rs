@@ -25,7 +25,7 @@ use pipeline::{TraceEventsArray, find_trace_events_array, find_trace_events_key,
 use scanner::object_end;
 use serde_events::{ArgEntry, ProfileVisitor, RawEventSeed};
 #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
-use stream::pipelined::{parse_gz_pipelined, parse_gz_pipelined_input};
+use stream::pipelined::{parse_gz_pipelined, parse_pipelined_input};
 #[cfg(any(test, all(target_family = "wasm", not(target_feature = "atomics"))))]
 use stream::serial::{Ceding, parse_serial_input};
 #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
@@ -181,7 +181,7 @@ impl Profile {
     }
 
     /// Loads a profile. A seekable input goes first to this build's streamed
-    /// decode — `parse_gz_pipelined_input` built with threads,
+    /// decode — `parse_pipelined_input` built with threads,
     /// `parse_serial_input` built without — which reads it without pulling
     /// it in whole; what that declines is read whole and goes through
     /// [`from_whole_buffer`]. A stream, which cannot be read twice, is read
@@ -192,7 +192,7 @@ impl Profile {
             return Profile::from_bytes(&bytes);
         }
         #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
-        if let Some(profile) = parse_gz_pipelined_input(&input) {
+        if let Some(profile) = parse_pipelined_input(&input) {
             return Ok(Recorded::Complete(profile));
         }
         #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
@@ -477,7 +477,10 @@ mod tests {
     use super::scanner::{find_special, scan_event};
     use super::serde_events::{arg_i64, arg_str};
     #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
-    use super::stream::pipelined::{parse_gz_stream, parse_gz_stream_into};
+    use super::stream::pipelined::{
+        parse_gz_stream, parse_pipelined_input, parse_plain_stream, parse_stream_into,
+        pipeline_params,
+    };
     use super::stream::serial::{
         Declined, MIN_STREAMED_BYTES, first_pool, parse_serial, parse_serial_into,
         parse_serial_retrying,
@@ -783,6 +786,8 @@ mod tests {
         {
             assert!(parse_gz_stream(&gzip(&profile("abc")), 2, 64).is_some());
             assert!(parse_gz_stream(&gzip(&json), 2, 64).is_none());
+            assert!(parse_plain_stream(profile("abc").as_bytes(), 2, 64).is_some());
+            assert!(parse_plain_stream(json.as_bytes(), 2, 64).is_none());
         }
         assert!(parse_gz_serial_chunked(&gzip(&profile("abc")), 64).is_some());
         assert!(parse_gz_serial_chunked(&gzip(&json), 64).is_none());
@@ -933,6 +938,51 @@ mod tests {
         // carries, and the no-newline buffer doubling.
         let pipelined = parse_gz_stream(&gz, 4, 64).expect("pipelined");
         assert_eq!(semantic(&serial), semantic(&pipelined));
+        let plain = parse_plain_stream(json.as_bytes(), 4, 64).expect("pipelined");
+        assert_eq!(semantic(&serial), semantic(&plain));
+    }
+
+    /// The whole-buffer parse of `bytes`, which must read complete.
+    #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+    fn whole(bytes: &[u8]) -> String {
+        let Ok(Recorded::Complete(p)) = from_whole_buffer(bytes) else {
+            panic!("the whole-buffer path reads it complete");
+        };
+        semantic(&p)
+    }
+
+    #[test]
+    #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+    fn pipelined_plain_text_transcodes_latin1_as_the_whole_buffer_does() {
+        // 0xe9 is Latin-1 'é', as Bazel writes it. Runs of it longer than a
+        // piece put high bytes on either side of many piece boundaries.
+        let mut raw = b"{\"otherData\":{\"build_id\":\"caf\xe9\"},\"traceEvents\":[\n".to_vec();
+        for i in 0..8 {
+            raw.extend(b"{\"cat\":\"c\",\"name\":\"");
+            raw.extend(std::iter::repeat_n(0xe9, 40 * i));
+            raw.extend(format!("\",\"ph\":\"X\",\"ts\":{i},\"dur\":1,\"tid\":1}},\n").as_bytes());
+        }
+        raw.extend(
+            b"{\"cat\":\"\xe8\",\"name\":\"x\xff\",\"ph\":\"X\",\"ts\":9,\"dur\":1,\"tid\":2}\n]}",
+        );
+        let p = parse_plain_stream(&raw, 4, 64).expect("pipelined");
+        assert_eq!(semantic(&p), whole(&raw));
+        assert_eq!(p.opt_str(p.metadata().build_id), Some("café"));
+        let lane = p.threads().iter().find(|t| t.tid == 2).expect("a lane");
+        assert_eq!(p.str(p.slices(lane)[0].name), "xÿ");
+    }
+
+    #[test]
+    #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+    fn a_plain_input_streams_through_the_pipelined_parse() {
+        let json = streamable_profile_json(8, 0);
+        let input = memory_input(json.clone().into_bytes());
+        let streamed = parse_pipelined_input(&input);
+        assert_eq!(streamed.is_some(), pipeline_params(json.len()).is_some());
+        if let Some(p) = streamed {
+            assert_eq!(semantic(&p), whole(json.as_bytes()));
+            assert!(input.progress().expect("a sized input").is_done());
+        }
     }
 
     /// Events short enough that every piece takes a ring buffer, and enough of
@@ -1806,7 +1856,7 @@ mod tests {
         const PAGE: usize = 16;
         let short_pool = || ConcurrentInterner::with_exact_pool(4 * PAGE, PAGE);
         #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
-        assert!(parse_gz_stream_into(&gz[..], short_pool(), 2, 64, 0).is_none());
+        assert!(parse_stream_into(MultiGzDecoder::new(&gz[..]), short_pool(), 2, 64, 0).is_none());
         assert!(matches!(
             run_here(parse_serial_into(
                 MultiGzDecoder::new(&gz[..]),
@@ -1889,6 +1939,26 @@ mod tests {
         };
         assert_eq!(p.opt_str(p.metadata().bazel_version), Some("9.0.0"));
         assert!(!p.threads().is_empty());
+    }
+
+    #[test]
+    #[cfg(any(unix, windows))]
+    fn a_truncated_plain_file_loads_by_recovery_as_the_whole_buffer_does() {
+        // Long enough for the streamed parse, which declines it.
+        let json = streamable_profile_json(8, 0);
+        let dir = test_dir();
+        let path = std::path::Path::new(&dir).join("truncated.profile");
+        for cut in [&json[..json.len() * 3 / 4], json.trim_end_matches("]}")] {
+            std::fs::write(&path, cut).unwrap();
+            let Ok(Recorded::CutOff(p)) = Profile::from_path(&path) else {
+                panic!("the profile is cut off");
+            };
+            let Ok(Recorded::CutOff(whole)) = from_whole_buffer(cut.as_bytes()) else {
+                panic!("the whole-buffer path recovers it cut off");
+            };
+            assert_eq!(semantic(&p), semantic(&whole));
+            assert_eq!(p.opt_str(p.metadata().bazel_version), Some("9.0.0"));
+        }
     }
 
     #[test]

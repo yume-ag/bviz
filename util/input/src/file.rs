@@ -52,6 +52,7 @@ impl Input {
                     reader: Box::new(reader),
                     size: None,
                 },
+                reached: Default::default(),
             });
         }
         let file = File::open(path)?;

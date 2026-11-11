@@ -5,6 +5,7 @@
 use std::io::{self, Read};
 use std::ops::Deref;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(any(unix, windows))]
 mod file;
@@ -13,8 +14,11 @@ mod no_file_system;
 
 pub mod delimited;
 mod named;
+mod progress;
 
 pub use named::{Named, Opened};
+use progress::Reaching;
+pub use progress::{Counted, ReadProgress};
 
 /// Bytes of an input read ahead as its [`head`](Input::head): every look a
 /// reader takes at a file's start, to tell what it holds or which invocation
@@ -97,6 +101,8 @@ pub struct Input {
     name: String,
     head: Option<Vec<u8>>,
     access: Access,
+    /// The furthest place from its start any reader of the input has reached.
+    reached: Arc<AtomicU64>,
 }
 
 impl Input {
@@ -115,6 +121,7 @@ impl Input {
             name,
             head: Some(head),
             access,
+            reached: Arc::default(),
         })
     }
 
@@ -134,6 +141,7 @@ impl Input {
             name,
             head: Some(head),
             access: Access::Memory(bytes),
+            reached: Arc::default(),
         }
     }
 
@@ -146,6 +154,15 @@ impl Input {
     /// The input's size in bytes, where it is known ahead of reading it.
     pub fn size(&self) -> Option<u64> {
         self.access.size()
+    }
+
+    /// How far the input is read, where its size is known: through its
+    /// [`reader`](Self::reader)s and [`into_reader`](Self::into_reader) by
+    /// the furthest place they reach, and by [`read_all`](Self::read_all) once
+    /// it has read the whole. A look at the head or a read at an offset counts
+    /// nothing.
+    pub fn progress(&self) -> Option<ReadProgress> {
+        Some(ReadProgress::counting(self.reached.clone(), self.size()?))
     }
 
     /// The first [`HEAD_BYTES`] of the input, or all of a shorter one; `None`
@@ -173,7 +190,8 @@ impl Input {
     /// which yields its bytes once.
     pub fn reader(&self) -> Option<impl Read + Send + '_> {
         let rest = At::new(self.seekable()?, self.read_ahead());
-        Some(self.head().unwrap_or_default().chain(rest))
+        let whole = self.head().unwrap_or_default().chain(rest);
+        Some(Reaching::new(whole, self.reached.clone()))
     }
 
     /// The input from its start.
@@ -187,7 +205,8 @@ impl Input {
                 Rest::Seekable(At::new(source, read_ahead))
             }
         };
-        io::Cursor::new(self.head.unwrap_or_default()).chain(rest)
+        let whole = io::Cursor::new(self.head.unwrap_or_default()).chain(rest);
+        Reaching::new(whole, self.reached)
     }
 
     /// The input, and what opens it afresh as often as asked, where it is
@@ -214,6 +233,7 @@ impl Input {
                 source: Box::new(source),
                 size,
             },
+            reached: self.reached,
         };
         Ok((input, reopener))
     }
@@ -223,6 +243,7 @@ impl Input {
     pub fn read_all(self) -> io::Result<Vec<u8>> {
         let read_ahead = self.read_ahead();
         let size = self.size();
+        let reached = self.reached;
         let with_room = |head: Option<Vec<u8>>| {
             let mut all = head.unwrap_or_default();
             if let Some(size) = size {
@@ -230,19 +251,21 @@ impl Input {
             }
             io::Result::Ok(all)
         };
-        match self.access {
-            Access::Memory(bytes) => Ok(bytes),
+        let all = match self.access {
+            Access::Memory(bytes) => bytes,
             Access::Seekable { source, .. } => {
                 let mut all = with_room(self.head)?;
                 source.read_to_end_from(read_ahead, &mut all)?;
-                Ok(all)
+                all
             }
             Access::Stream { mut reader, .. } => {
                 let mut all = with_room(self.head)?;
                 reader.read_to_end(&mut all)?;
-                Ok(all)
+                all
             }
-        }
+        };
+        reached.fetch_max(all.len() as u64, Ordering::Relaxed);
+        Ok(all)
     }
 }
 
@@ -431,6 +454,53 @@ mod tests {
                 assert_eq!(read(again.into_reader()), content, "{len}");
             }
         }
+    }
+
+    #[test]
+    fn progress_follows_the_furthest_reader_and_not_a_look_at_an_offset() {
+        let content = bytes(3 * HEAD_BYTES + 5);
+        let input = seekable(content.clone());
+        let progress = input.progress().expect("sized");
+        assert_eq!(progress.total(), content.len() as u64);
+        let mut tail = [0u8; 2];
+        let source = input.seekable().expect("seekable");
+        source
+            .read_exact_at(&mut tail, 2 * HEAD_BYTES as u64)
+            .unwrap();
+        assert_eq!(progress.read(), 0);
+
+        let mut ahead = input.reader().expect("seekable");
+        let mut buf = vec![0u8; HEAD_BYTES + 1];
+        ahead.read_exact(&mut buf).unwrap();
+        assert_eq!(progress.read(), buf.len() as u64);
+        read(input.reader().expect("seekable").take(1));
+        assert_eq!(progress.read(), buf.len() as u64);
+        drop(ahead);
+        read(input.into_reader());
+        assert!(progress.is_done());
+    }
+
+    #[test]
+    fn a_read_whole_is_counted_once_it_ends() {
+        let content = bytes(HEAD_BYTES + 5);
+        let input = seekable(content.clone());
+        let progress = input.progress().expect("sized");
+        assert_eq!(input.read_all().unwrap(), content);
+        assert!(progress.is_done());
+    }
+
+    #[test]
+    fn a_stream_of_no_known_size_reports_no_progress() {
+        assert!(stream(bytes(1)).progress().is_none());
+    }
+
+    #[test]
+    fn counted_readers_sharing_progress_add_up() {
+        let progress = ReadProgress::new(5);
+        read(Counted::new(&bytes(2)[..], &progress));
+        assert_eq!(progress.read(), 2);
+        read(Counted::new(&bytes(3)[..], &progress));
+        assert!(progress.is_done());
     }
 
     #[test]

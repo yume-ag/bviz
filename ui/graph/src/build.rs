@@ -4,15 +4,20 @@ use bviz_graph_layout::transition::Transitions;
 use bviz_graph_layout::{
     Anchor, Id, InputSet, Joint, LaidOut, Names, layout, quotient, streamed_proto, timed,
 };
-use bviz_input::Named;
+use bviz_input::{Counted, Named, ReadProgress};
 use bviz_ui_graph_args::{GraphSource, Input, InputKind};
 use rustc_hash::FxHashSet;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::Read;
 
-/// Reads every input's streamed_proto file and merges them into one joint graph,
-/// before any group quotienting, returned with its transitive reduction. Cached
-/// so toggling a group needn't re-read or re-parse.
-pub(crate) fn build_graph(inputs: Vec<Input<Named>>) -> Result<(Joint, Graph), String> {
+/// Reads every input's streamed_proto file, counting the bytes read in
+/// `progress`, and merges them into one joint graph, before any group
+/// quotienting, returned with its transitive reduction. Cached so toggling a
+/// group needn't re-read or re-parse.
+pub(crate) fn build_graph(
+    inputs: Vec<Input<Named>>,
+    progress: Option<&ReadProgress>,
+) -> Result<(Joint, Graph), String> {
     let mut aq = None;
     let mut cq = None;
     let mut q = None;
@@ -22,7 +27,10 @@ pub(crate) fn build_graph(inputs: Vec<Input<Named>>) -> Result<(Joint, Graph), S
             .map_err(|(_, e)| format!("{name}: {e}"))?
             .into_input();
         let size = opened.size();
-        let stream = opened.into_reader();
+        let stream: Box<dyn Read + Send> = match progress {
+            Some(progress) => Box::new(Counted::new(opened.into_reader(), progress)),
+            None => Box::new(opened.into_reader()),
+        };
         let unreadable = |e| match e {
             ReadError::Io(e) => format!("{name}: {e}"),
             e => undecodable(&name, kind, e),
@@ -216,8 +224,11 @@ mod tests {
             kind: InputKind::Query,
             file,
         };
-        let (joint, _) = build_graph(vec![input]).expect("the stream builds a graph");
+        let progress = ReadProgress::new(QUERY_STREAM.len() as u64);
+        let (joint, _) =
+            build_graph(vec![input], Some(&progress)).expect("the stream builds a graph");
         assert!(!joint.graph.nodes.is_empty());
+        assert!(progress.is_done());
     }
 
     /// A file other than the streamed_proto output its flag reads is reported
@@ -233,7 +244,7 @@ mod tests {
                 kind,
                 file: path.clone().into(),
             };
-            let Err(why) = build_graph(vec![input]) else {
+            let Err(why) = build_graph(vec![input], None) else {
                 panic!("a profile reads as no {kind:?} output");
             };
             let command = format!("bazel {} --output=streamed_proto", kind.command());

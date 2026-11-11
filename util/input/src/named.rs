@@ -47,6 +47,17 @@ impl Named {
         }
     }
 
+    /// The file's size in bytes, where it is known without opening it.
+    pub fn size(&self) -> Option<u64> {
+        match self {
+            Named::Path(path) => (std::fs::metadata(path).ok())
+                .filter(|metadata| metadata.is_file())
+                .map(|metadata| metadata.len()),
+            Named::Memory { bytes, .. } => Some(bytes.len() as u64),
+            Named::Seekable { size, .. } => Some(*size),
+        }
+    }
+
     /// What the user knows the file by: its path as given, or its name.
     pub fn name(&self) -> Cow<'_, str> {
         match self {
@@ -124,6 +135,7 @@ impl Opened {
                 name,
                 head: Some(head),
                 access: Access::Seekable { source, size },
+                reached: Default::default(),
             },
         }
     }

@@ -12,6 +12,7 @@ path = "src/lib.rs"
 
 [dependencies]
 gpui = { workspace = true }
+bviz_input = { workspace = true }
 bviz_invocation = { workspace = true }
 bviz_label = { workspace = true }
 bviz_parallel = { workspace = true }

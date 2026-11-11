@@ -10,7 +10,7 @@ use crate::model::Profile;
 use super::build::{Merge, seal};
 use super::decode::{gzip_size_hint_at, latin1_cow, latin1_to_utf8};
 use super::pipeline::{Chunk, TraceEventsArray, array_close, find_trace_events_array};
-use super::{GZIP_MAGIC, merge_other_data, recover_other_data, timed};
+use super::{merge_other_data, recover_other_data, timed};
 
 #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
 pub(super) mod pipelined;
@@ -28,12 +28,9 @@ const GZIP_READ_BUFFER_BYTES: usize = 1 << 20;
 const STREAM_MAX_EVENT_BYTES: usize = 64 << 20;
 
 /// A seekable gzipped `input` read from its start, and the decoded size its
-/// trailer hints at. `None` for an input that is not gzip, is read only once,
-/// or carries no usable trailer.
+/// trailer hints at. `None` for an input read only once, or one that carries no
+/// usable trailer.
 fn gzip_input(input: &Input) -> Option<(impl Read + Send + '_, usize)> {
-    if !input.head()?.starts_with(&GZIP_MAGIC) {
-        return None;
-    }
     let decoded_size = gzip_size_hint_at(input.seekable()?, input.size()?)?;
     let reader = BufReader::with_capacity(GZIP_READ_BUFFER_BYTES, input.reader()?);
     Some((reader, decoded_size))
