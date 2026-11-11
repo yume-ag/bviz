@@ -14,7 +14,7 @@ use crate::model::Profile;
 use crate::parse::build::{Builder, Merge};
 use crate::parse::decode::gzip_size_hint;
 use crate::parse::pipeline::{CHUNKS_PER_WORKER, MIN_CHUNK_BYTES, MIN_PARALLEL_BYTES, parse_chunk};
-use crate::parse::{BYTES_PER_DISTINCT, intern_prefault_bytes, timed};
+use crate::parse::{BYTES_PER_DISTINCT, GZIP_MAGIC, intern_prefault_bytes, timed};
 
 /// Ceiling on a pipelined chunk buffer, bounding the memory the bounded queue
 /// plus in-flight worker chunks can hold on an arbitrarily large profile.
@@ -35,13 +35,21 @@ pub(crate) fn parse_gz_pipelined(bytes: &[u8]) -> Option<Profile> {
     )
 }
 
-/// The pipelined decode streamed from a seekable gzipped `input`, sized from
-/// its trailer. `None` for plain JSON, and for an input [`parse_gz_pipelined`]
-/// declines.
-pub(crate) fn parse_gz_pipelined_input(input: &Input) -> Option<Profile> {
-    let (reader, decoded_size) = gzip_input(input)?;
-    timed("decode+parse (pipelined, streamed)", || {
-        parse_pipelined_text(MultiGzDecoder::new(reader), decoded_size)
+/// The pipelined decode streamed from a seekable `input`: gzipped, sized from
+/// its trailer, or plain, sized by the input's own length. `None` for a gzipped
+/// input without a usable trailer, a size [`pipeline_params`] declines, and any
+/// decode or parse failure.
+pub(crate) fn parse_pipelined_input(input: &Input) -> Option<Profile> {
+    if input.head()?.starts_with(&GZIP_MAGIC) {
+        let (reader, decoded_size) = gzip_input(input)?;
+        return timed("decode+parse (pipelined, streamed)", || {
+            parse_pipelined_text(MultiGzDecoder::new(reader), decoded_size)
+        });
+    }
+    let size = usize::try_from(input.size()?).ok()?;
+    let text = input.reader()?;
+    timed("parse (pipelined, streamed)", || {
+        parse_pipelined_text(text, size)
     })
 }
 
@@ -117,6 +125,16 @@ pub(crate) fn parse_gz_stream(bytes: &[u8], workers: usize, chunk_bytes: usize) 
         chunk_bytes,
         gzip_size_hint(bytes).unwrap_or(0),
     )
+}
+
+/// Takes the decoded size from the text's own length.
+#[cfg(test)]
+pub(crate) fn parse_plain_stream(
+    text: &[u8],
+    workers: usize,
+    chunk_bytes: usize,
+) -> Option<Profile> {
+    parse_stream_from(text, workers, chunk_bytes, text.len())
 }
 
 /// One chunk parser, running until the queue closes or the merger is gone.
@@ -250,7 +268,8 @@ fn decode_parse_fold(
 /// any chunk parse fails, if the folded builders do not account for every
 /// piece cut, if no piece was cut at all — an empty `traceEvents` array — or if
 /// the distinct text outgrows a string pool sized from `decoded_size`, which
-/// only the stream's trailer vouches for.
+/// understates it where a gzip trailer understates the stream or high Latin-1
+/// bytes widen in transcoding.
 fn parse_stream_from(
     text: impl Read + Send,
     workers: usize,
