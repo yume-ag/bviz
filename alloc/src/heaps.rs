@@ -1,9 +1,11 @@
 use std::alloc::{GlobalAlloc, Layout};
 use std::cell::UnsafeCell;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use dlmalloc::Dlmalloc;
+
+use crate::lock::{Lock, Park};
 
 /// The granule a WebAssembly memory grows by.
 pub const PAGE_SIZE: usize = 64 << 10;
@@ -11,20 +13,9 @@ pub const PAGE_SIZE: usize = 64 << 10;
 /// The pages of wasm32's whole address space.
 const ADDRESS_SPACE_PAGES: usize = 1 << (u32::BITS - PAGE_SIZE.trailing_zeros());
 
-/// The alignment dlmalloc gives every block.
-const NATURAL_ALIGN: usize = 2 * size_of::<usize>();
-
 /// The bytes withheld from a region that ends at the top of the address space,
 /// where a pointer one past a block's end would wrap to null.
 const ADDRESS_SPACE_END_RESERVE: usize = 16;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HeapId {
-    /// The heap of the one thread [`Threads::heap`] names main, which reaches
-    /// it without a lock.
-    Main,
-    Shared,
-}
 
 /// A memory that grows by whole pages.
 ///
@@ -41,71 +32,42 @@ pub unsafe trait Memory: Sync + 'static {
     fn grow(&self, count: usize) -> Option<usize>;
 }
 
-/// Which heap each thread allocates from, and how threads wait for the shared
-/// heap's lock.
+/// Heaps of each thread's own, which take their memory from [`Heaps::os_alloc`]
+/// as an operating system's.
 ///
 /// # Safety
 ///
-/// `heap` returns [`HeapId::Main`] on at most one thread over the value's life.
-pub unsafe trait Threads: Sync + 'static {
-    fn heap(&self) -> HeapId;
+/// Each method upholds [`GlobalAlloc`]'s contract for the blocks it serves.
+/// [`Heaps`] calls `alloc`, `alloc_zeroed` and `realloc` only on a thread that
+/// `serves_caller` names, with no size above `MAX_BLOCK`, and `free` only on
+/// a block of these heaps.
+pub unsafe trait ThreadHeaps: Sync + 'static {
+    /// The largest block the heaps serve.
+    const MAX_BLOCK: usize;
 
-    /// Blocks while `state` holds `value`; it may return early.
-    fn wait(&self, state: &AtomicU32, value: u32);
+    fn serves_caller(&self) -> bool;
 
-    fn wake_one(&self, state: &AtomicU32);
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8;
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8;
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8;
+
+    unsafe fn free(&self, ptr: *mut u8);
 }
 
-/// A memory and the heap that owns each of its pages.
-pub struct Pages<M> {
-    memory: M,
-    /// Whether the main heap owns each page; every other page is the shared
-    /// heap's. An entry is set before any block on its page exists, and is
-    /// never cleared.
-    main_owns: [AtomicBool; ADDRESS_SPACE_PAGES],
-}
-
-impl<M: Memory> Pages<M> {
-    pub const fn new(memory: M) -> Self {
-        Self {
-            memory,
-            main_owns: [const { AtomicBool::new(false) }; ADDRESS_SPACE_PAGES],
-        }
-    }
-
-    fn owner(&self, block: *mut u8) -> HeapId {
-        let page = (block as usize - self.memory.base()) / PAGE_SIZE;
-        // Relaxed: whoever frees a block learned of it through synchronization
-        // that follows its allocation, which follows its page's entry.
-        if self.main_owns[page].load(Ordering::Relaxed) {
-            HeapId::Main
-        } else {
-            HeapId::Shared
-        }
-    }
-}
-
-/// The memory one heap's dlmalloc grows by, recording each page it takes as
-/// that heap's.
-struct Source<M: 'static> {
-    pages: &'static Pages<M>,
-    heap: HeapId,
-}
+/// The pages the shared heap grows by.
+struct Source<M: 'static>(&'static M);
 
 // SAFETY: every region `alloc` returns is fresh pages of the memory, which
 // `Memory` guarantees no one else holds; no region is ever released.
 unsafe impl<M: Memory> dlmalloc::Allocator for Source<M> {
     fn alloc(&self, size: usize) -> (*mut u8, usize, u32) {
         let count = size.div_ceil(PAGE_SIZE);
-        let Some(first) = self.pages.memory.grow(count) else {
+        let Some(first) = self.0.grow(count) else {
             return (ptr::null_mut(), 0, 0);
         };
-        if self.heap == HeapId::Main {
-            for owned in &self.pages.main_owns[first..first + count] {
-                owned.store(true, Ordering::Relaxed);
-            }
-        }
-        let start = self.pages.memory.base() + first * PAGE_SIZE;
+        let start = self.0.base() + first * PAGE_SIZE;
         let mut len = count * PAGE_SIZE;
         if start.wrapping_add(len) == 0 {
             len -= ADDRESS_SPACE_END_RESERVE;
@@ -138,264 +100,172 @@ unsafe impl<M: Memory> dlmalloc::Allocator for Source<M> {
     }
 }
 
-/// A freed block, as it waits on a remote-free stack.
-struct Freed {
-    next: *mut Freed,
+/// The per-thread heaps `T`, and a dlmalloc heap all threads share behind a
+/// lock, which holds the per-thread heaps' memory and serves the blocks they
+/// do not.
+///
+/// The lock is held only for dlmalloc's bookkeeping and the memory's growth:
+/// blocks are zeroed and copied outside it, so a thread waits on another's
+/// allocation for no longer than that, however large the block. No dlmalloc
+/// call made under it panics on a block its caller's contract describes: blocks
+/// are freed and resized through its `c_` calls, as `free` and `realloc`
+/// assert the layout.
+pub struct Heaps<M: 'static, P, T> {
+    memory: &'static M,
+    lock: Lock,
+    park: P,
+    shared: UnsafeCell<Dlmalloc<Source<M>>>,
+    threads: T,
+    /// Whether `threads` owns each page of the memory; an entry is set before
+    /// `threads` is handed its page, and cleared before its page is taken back.
+    thread_owned: [AtomicU32; ADDRESS_SPACE_PAGES / u32::BITS as usize],
 }
 
-/// Blocks other threads freed into a heap. Only the owner takes from it, and
-/// only the whole stack at once, so a push never races a pop of the block it
-/// reads as the head.
-struct RemoteFrees(AtomicPtr<Freed>);
+// SAFETY: `shared` is reached only under `lock`.
+unsafe impl<M: Memory, P: Park + Sync, T: ThreadHeaps> Sync for Heaps<M, P, T> {}
 
-impl RemoteFrees {
+impl<M: Memory, P: Park, T: ThreadHeaps> Heaps<M, P, T> {
+    pub const fn new(memory: &'static M, park: P, threads: T) -> Self {
+        Self {
+            memory,
+            lock: Lock::new(),
+            park,
+            shared: UnsafeCell::new(Dlmalloc::new_with_allocator(Source(memory))),
+            threads,
+            thread_owned: [const { AtomicU32::new(0) }; ADDRESS_SPACE_PAGES / u32::BITS as usize],
+        }
+    }
+
+    fn with_shared<R>(&self, f: impl FnOnce(&mut Dlmalloc<Source<M>>) -> R) -> R {
+        let _held = self.lock.lock(&self.park);
+        // SAFETY: the lock is held.
+        f(unsafe { &mut *self.shared.get() })
+    }
+
     /// # Safety
     ///
-    /// `block` is a block of this stack's heap that no one uses any more.
-    unsafe fn push(&self, block: *mut u8) {
-        let block = block.cast::<Freed>();
-        let mut head = self.0.load(Ordering::Relaxed);
-        loop {
-            // SAFETY: the block is the caller's alone, and dlmalloc aligns
-            // every block for, and sizes it to at least, a pointer.
-            unsafe { block.write(Freed { next: head }) };
-            match self
-                .0
-                .compare_exchange_weak(head, block, Ordering::Release, Ordering::Relaxed)
-            {
-                Ok(_) => return,
-                Err(now) => head = now,
-            }
-        }
+    /// `layout.align()` is a power of two.
+    unsafe fn shared_alloc(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: the caller upholds the contract.
+        self.with_shared(|heap| unsafe { heap.c_memalign(layout.align(), layout.size()) })
     }
 
-    /// Frees into `dlmalloc`, the stack's own heap, every block on the stack.
-    fn drain<M: Memory>(&self, dlmalloc: &mut Dlmalloc<Source<M>>) {
-        if self.0.load(Ordering::Relaxed).is_null() {
-            return;
-        }
-        let mut block = self.0.swap(ptr::null_mut(), Ordering::Acquire);
-        while !block.is_null() {
-            // SAFETY: `push` wrote the block's link before publishing it, and
-            // the Acquire swap took the whole stack, so no one else reads it.
-            let next = unsafe { (*block).next };
-            // SAFETY: a pushed block is an unused block of this heap.
-            unsafe { dlmalloc.c_free(block.cast()) };
-            block = next;
-        }
-    }
-}
-
-struct Heap<M: 'static> {
-    dlmalloc: UnsafeCell<Dlmalloc<Source<M>>>,
-    remote: RemoteFrees,
-}
-
-impl<M: Memory> Heap<M> {
-    const fn new(pages: &'static Pages<M>, heap: HeapId) -> Self {
-        Self {
-            dlmalloc: UnsafeCell::new(Dlmalloc::new_with_allocator(Source { pages, heap })),
-            remote: RemoteFrees(AtomicPtr::new(ptr::null_mut())),
-        }
-    }
-}
-
-/// The bit of a [`Lock`]'s state set while a thread holds it.
-const LOCKED: u32 = 1;
-
-/// The bit of a [`Lock`]'s state set from when a release wakes a parked
-/// thread until a counted thread next acquires the lock or parks; a release
-/// while it is set wakes no one.
-const WOKEN: u32 = 2;
-
-/// The unit in which a [`Lock`]'s state counts the threads parked, or about
-/// to park, waiting for it.
-const PARKED: u32 = 4;
-
-/// The times a thread polls a held [`Lock`] before it parks. The shared heap's
-/// critical sections are short, so a spinning thread usually takes the lock
-/// without a wait and notify, which in Firefox take one process-wide lock.
-/// Measured on a graph layout's allocation load, longer spins took the CPU the
-/// holder needed, and shorter ones parked too often.
-const SPINS: u32 = 1000;
-
-/// A lock that parks a thread only after spinning.
-struct Lock(AtomicU32);
-
-struct Held<'a, T: Threads> {
-    lock: &'a Lock,
-    threads: &'a T,
-}
-
-impl Lock {
-    const fn new() -> Self {
-        Self(AtomicU32::new(0))
+    /// # Safety
+    ///
+    /// `ptr` is a live block of the shared heap, given up.
+    unsafe fn shared_free(&self, ptr: *mut u8) {
+        // SAFETY: the caller upholds the contract.
+        self.with_shared(|heap| unsafe { heap.c_free(ptr) });
     }
 
-    fn lock<'a, T: Threads>(&'a self, threads: &'a T) -> Held<'a, T> {
-        if self
-            .0
-            .compare_exchange_weak(0, LOCKED, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            self.lock_contended(threads);
-        }
-        Held {
-            lock: self,
-            threads,
-        }
+    /// Whether `threads` owns the page of `block`. Relaxed: whoever frees a
+    /// block learned of it through synchronization that follows its
+    /// allocation, which follows its page's entry.
+    fn thread_owns(&self, block: *mut u8) -> bool {
+        let page = (block.addr() - self.memory.base()) / PAGE_SIZE;
+        let word = self.thread_owned[page / u32::BITS as usize].load(Ordering::Relaxed);
+        word & (1 << (page % u32::BITS as usize)) != 0
     }
 
-    #[cold]
-    fn lock_contended<T: Threads>(&self, threads: &T) {
-        let state = &self.0;
-        for _ in 0..SPINS {
-            let seen = state.load(Ordering::Relaxed);
-            if seen & LOCKED == 0
-                && state
-                    .compare_exchange_weak(
-                        seen,
-                        seen | LOCKED,
-                        Ordering::Acquire,
-                        Ordering::Relaxed,
-                    )
-                    .is_ok()
-            {
-                return;
-            }
-            std::hint::spin_loop();
-        }
-        let mut seen = state.fetch_add(PARKED, Ordering::Relaxed) + PARKED;
-        loop {
-            seen = if seen & LOCKED == 0 {
-                let taken = (seen - PARKED) & !WOKEN | LOCKED;
-                match state.compare_exchange_weak(seen, taken, Ordering::Acquire, Ordering::Relaxed)
-                {
-                    Ok(_) => return,
-                    Err(now) => now,
-                }
-            } else if seen & WOKEN != 0 {
-                let unwoken = seen & !WOKEN;
-                match state.compare_exchange_weak(
-                    seen,
-                    unwoken,
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                ) {
-                    Ok(_) => unwoken,
-                    Err(now) => now,
-                }
+    fn set_thread_owns(&self, region: *mut u8, size: usize, owned: bool) {
+        let first = (region.addr() - self.memory.base()) / PAGE_SIZE;
+        for page in first..first + size / PAGE_SIZE {
+            let word = &self.thread_owned[page / u32::BITS as usize];
+            let bit = 1 << (page % u32::BITS as usize);
+            if owned {
+                word.fetch_or(bit, Ordering::Relaxed);
             } else {
-                threads.wait(state, seen);
-                state.load(Ordering::Relaxed)
-            };
-        }
-    }
-}
-
-impl<T: Threads> Drop for Held<'_, T> {
-    fn drop(&mut self) {
-        let state = &self.lock.0;
-        let mut seen = state.fetch_sub(LOCKED, Ordering::Release) - LOCKED;
-        while seen >= PARKED && seen & (LOCKED | WOKEN) == 0 {
-            match state.compare_exchange_weak(
-                seen,
-                seen | WOKEN,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => return self.threads.wake_one(state),
-                Err(now) => seen = now,
+                word.fetch_and(!bit, Ordering::Relaxed);
             }
         }
     }
-}
 
-/// The main and the shared heap. The main heap's dlmalloc is reached only by
-/// the thread `threads` names main, the shared heap's only under `lock`, so
-/// neither is ever borrowed twice at once. No dlmalloc call made here panics,
-/// so none reenters through a panic hook that allocates; blocks are freed and
-/// resized through its `c_` calls, as `free` and `realloc` assert the layout.
-/// Neither heap's free memory serves the other, so the memory grows to the sum
-/// of their peaks.
-pub struct Heaps<M: 'static, T> {
-    pages: &'static Pages<M>,
-    main: Heap<M>,
-    shared: Heap<M>,
-    lock: Lock,
-    threads: T,
-}
-
-// SAFETY: see the type's documentation.
-unsafe impl<M: Memory, T: Threads> Sync for Heaps<M, T> {}
-
-impl<M: Memory, T: Threads> Heaps<M, T> {
-    pub const fn new(pages: &'static Pages<M>, threads: T) -> Self {
-        Self {
-            pages,
-            main: Heap::new(pages, HeapId::Main),
-            shared: Heap::new(pages, HeapId::Shared),
-            lock: Lock::new(),
-            threads,
+    /// Hands `threads` whole pages of the shared heap, `size` bytes rounded
+    /// up, aligned to at least `align`; null if the memory cannot grow.
+    pub fn os_alloc(&self, size: usize, align: usize) -> *mut u8 {
+        let size = size.next_multiple_of(PAGE_SIZE);
+        let align = align.max(PAGE_SIZE).next_power_of_two();
+        // SAFETY: `align` is a power of two.
+        let region = unsafe { self.shared_alloc(Layout::from_size_align_unchecked(size, align)) };
+        if !region.is_null() {
+            self.set_thread_owns(region, size, true);
         }
+        region
     }
 
-    fn heap(&self, id: HeapId) -> &Heap<M> {
-        match id {
-            HeapId::Main => &self.main,
-            HeapId::Shared => &self.shared,
-        }
+    /// Takes back pages [`Heaps::os_alloc`] handed out.
+    ///
+    /// # Safety
+    ///
+    /// `region` and `size` are those of one `os_alloc` call, whose pages hold
+    /// no live block any more.
+    pub unsafe fn os_free(&self, region: *mut u8, size: usize) {
+        self.set_thread_owns(region, size.next_multiple_of(PAGE_SIZE), false);
+        // SAFETY: the caller upholds the contract.
+        unsafe { self.shared_free(region) };
     }
 
-    /// Runs `allocate` on the calling thread's heap, `own`, once that heap has
-    /// freed what other threads freed into it.
-    fn with_own<R>(&self, own: HeapId, allocate: impl FnOnce(&mut Dlmalloc<Source<M>>) -> R) -> R {
-        let heap = self.heap(own);
-        let _held = (own == HeapId::Shared).then(|| self.lock.lock(&self.threads));
-        // SAFETY: the calling thread is the main thread, or holds the lock.
-        let dlmalloc = unsafe { &mut *heap.dlmalloc.get() };
-        heap.remote.drain(dlmalloc);
-        allocate(dlmalloc)
+    fn threads_serve(&self, size: usize) -> bool {
+        size <= T::MAX_BLOCK && self.threads.serves_caller()
     }
 }
 
-// SAFETY: every block comes from one of the two dlmallocs, and goes back to
+// SAFETY: every block comes from `threads` or the shared heap, and goes back to
 // the one whose pages hold it.
-unsafe impl<M: Memory, T: Threads> GlobalAlloc for Heaps<M, T> {
+unsafe impl<M: Memory, P: Park + Sync, T: ThreadHeaps> GlobalAlloc for Heaps<M, P, T> {
+    #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        self.with_own(self.threads.heap(), |dlmalloc| {
-            // SAFETY: the caller upholds `alloc`'s contract.
-            unsafe { dlmalloc.malloc(layout.size(), layout.align()) }
-        })
-    }
-
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        self.with_own(self.threads.heap(), |dlmalloc| {
-            // SAFETY: the caller upholds `alloc_zeroed`'s contract.
-            unsafe { dlmalloc.calloc(layout.size(), layout.align()) }
-        })
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, _: Layout) {
-        let own = self.threads.heap();
-        match self.pages.owner(ptr) {
-            owner if owner == own => self.with_own(own, |dlmalloc| {
-                // SAFETY: the caller upholds `dealloc`'s contract.
-                unsafe { dlmalloc.c_free(ptr) }
-            }),
-            // SAFETY: the caller gives up `ptr`, a block of `owner`'s pages.
-            owner => unsafe { self.heap(owner).remote.push(ptr) },
+        // SAFETY: the caller upholds `alloc`'s contract.
+        unsafe {
+            if self.threads_serve(layout.size()) {
+                self.threads.alloc(layout)
+            } else {
+                self.shared_alloc(layout)
+            }
         }
     }
 
+    #[inline]
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        if self.threads_serve(layout.size()) {
+            // SAFETY: the caller upholds `alloc_zeroed`'s contract.
+            return unsafe { self.threads.alloc_zeroed(layout) };
+        }
+        // SAFETY: the caller upholds `alloc_zeroed`'s contract.
+        let block = unsafe { self.shared_alloc(layout) };
+        if !block.is_null() {
+            // SAFETY: the block holds `layout.size()` bytes.
+            unsafe { block.write_bytes(0, layout.size()) };
+        }
+        block
+    }
+
+    #[inline]
+    unsafe fn dealloc(&self, ptr: *mut u8, _: Layout) {
+        // SAFETY: the caller gives up `ptr`, a block of the heap whose pages
+        // hold it.
+        unsafe {
+            if self.thread_owns(ptr) {
+                self.threads.free(ptr);
+            } else {
+                self.shared_free(ptr);
+            }
+        }
+    }
+
+    #[inline]
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        let own = self.threads.heap();
-        let owner = self.pages.owner(ptr);
-        if owner == own {
-            return self.with_own(own, |dlmalloc| {
-                // SAFETY: the caller upholds `realloc`'s contract.
-                unsafe { realloc_in(dlmalloc, ptr, layout, new_size) }
-            });
+        if self.thread_owns(ptr) {
+            if self.threads_serve(new_size) {
+                // SAFETY: the caller upholds `realloc`'s contract for `ptr`, a
+                // block of `threads`.
+                return unsafe { self.threads.realloc(ptr, layout, new_size) };
+            }
+        } else if self.with_shared(|heap| {
+            // SAFETY: `ptr` is a live block of the shared heap.
+            unsafe { heap.c_realloc_in_place(ptr, new_size) }
+        }) {
+            return ptr;
         }
         // SAFETY: the caller guarantees `new_size` rounded up to `layout`'s
         // alignment does not overflow.
@@ -403,121 +273,116 @@ unsafe impl<M: Memory, T: Threads> GlobalAlloc for Heaps<M, T> {
         // SAFETY: `new_size` is nonzero by `realloc`'s contract.
         let moved = unsafe { self.alloc(new_layout) };
         if !moved.is_null() {
-            // SAFETY: both blocks hold the smaller size, and are distinct
-            // blocks of different heaps.
+            // SAFETY: both blocks hold the smaller size, and are distinct.
             unsafe { ptr::copy_nonoverlapping(ptr, moved, layout.size().min(new_size)) };
             // SAFETY: `realloc` frees `ptr` once it succeeds.
-            unsafe { self.heap(owner).remote.push(ptr) };
+            unsafe { self.dealloc(ptr, layout) };
         }
         moved
     }
 }
 
-/// Resizes `ptr`, a block of `dlmalloc`, keeping its alignment, which
-/// `c_realloc` keeps only up to [`NATURAL_ALIGN`].
-///
-/// # Safety
-///
-/// As [`GlobalAlloc::realloc`]'s.
-unsafe fn realloc_in<A: dlmalloc::Allocator>(
-    dlmalloc: &mut Dlmalloc<A>,
-    ptr: *mut u8,
-    layout: Layout,
-    new_size: usize,
-) -> *mut u8 {
-    if layout.align() <= NATURAL_ALIGN {
-        // SAFETY: `ptr` is a live block of `dlmalloc`.
-        return unsafe { dlmalloc.c_realloc(ptr, new_size) };
-    }
-    // SAFETY: `layout.align()` is a power of two.
-    let moved = unsafe { dlmalloc.c_memalign(layout.align(), new_size) };
-    if !moved.is_null() {
-        // SAFETY: both blocks hold the smaller size, and are distinct.
-        unsafe { ptr::copy_nonoverlapping(ptr, moved, layout.size().min(new_size)) };
-        // SAFETY: `ptr` is a live block of `dlmalloc`, given up once moved.
-        unsafe { dlmalloc.c_free(ptr) };
-    }
-    moved
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{Reserved, TestPark, filled, holds};
+    use std::cell::Cell;
     use std::ops::Deref;
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::mpsc;
-    use std::sync::{Condvar, Mutex, OnceLock};
-    use std::thread::{self, ThreadId};
+    use std::sync::{Mutex, OnceLock, mpsc};
 
-    /// A test's memory: enough for any test.
-    const RESERVED_PAGES: usize = 4096;
+    type TestHeaps = Heaps<Reserved, TestPark, Dlmallocs>;
 
-    /// The allocation a test's memory is aligned within. Zeroed with no
-    /// alignment, an allocation this large is fresh pages that calloc does not
-    /// write, so only the pages a heap grows into are touched.
-    fn region_layout() -> Layout {
-        Layout::from_size_align((RESERVED_PAGES + 1) * PAGE_SIZE, 1).unwrap()
-    }
+    /// Regions of a test's [`Heaps::os_alloc`].
+    struct Regions(&'static OnceLock<&'static TestHeaps>);
 
-    struct Reserved {
-        region: usize,
-        base: usize,
-        taken: AtomicUsize,
-    }
-
-    // SAFETY: the region is zeroed, the test's alone, and `grow` hands out
-    // each page once.
-    unsafe impl Memory for Reserved {
-        fn base(&self) -> usize {
-            self.base
-        }
-
-        fn grow(&self, count: usize) -> Option<usize> {
-            self.taken
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |taken| {
-                    Some(taken + count).filter(|&end| end <= RESERVED_PAGES)
-                })
-                .ok()
-        }
-    }
-
-    #[derive(Default)]
-    struct TestThreads {
-        main: OnceLock<ThreadId>,
-        wakes: AtomicUsize,
-        sleeps: AtomicUsize,
-        parking: Mutex<()>,
-        unparked: Condvar,
-    }
-
-    // SAFETY: `main` is set once.
-    unsafe impl Threads for TestThreads {
-        fn heap(&self) -> HeapId {
-            if self.main.get() == Some(&thread::current().id()) {
-                HeapId::Main
+    // SAFETY: `os_alloc` hands out pages of the memory no block holds, and no
+    // region is ever released.
+    unsafe impl dlmalloc::Allocator for Regions {
+        fn alloc(&self, size: usize) -> (*mut u8, usize, u32) {
+            let region = self.0.get().unwrap().os_alloc(size, PAGE_SIZE);
+            let len = if region.is_null() {
+                0
             } else {
-                HeapId::Shared
-            }
+                size.next_multiple_of(PAGE_SIZE)
+            };
+            (region, len, 0)
         }
 
-        /// Sleeps as a futex wait does: `wake_one` takes `parking` too, so it
-        /// cannot slip between the check and the sleep.
-        fn wait(&self, state: &AtomicU32, value: u32) {
-            let parking = self.parking.lock().unwrap();
-            if state.load(Ordering::SeqCst) == value {
-                self.sleeps.fetch_add(1, Ordering::Relaxed);
-                drop(self.unparked.wait(parking).unwrap());
-            }
+        fn remap(&self, _: *mut u8, _: usize, _: usize, _: bool) -> *mut u8 {
+            ptr::null_mut()
         }
 
-        fn wake_one(&self, _: &AtomicU32) {
-            self.wakes.fetch_add(1, Ordering::Relaxed);
-            let _parking = self.parking.lock().unwrap();
-            self.unparked.notify_one();
+        fn free_part(&self, _: *mut u8, _: usize, _: usize) -> bool {
+            false
+        }
+
+        fn free(&self, _: *mut u8, _: usize) -> bool {
+            false
+        }
+
+        fn can_release_part(&self, _: u32) -> bool {
+            false
+        }
+
+        fn allocates_zeros(&self) -> bool {
+            false
+        }
+
+        fn page_size(&self) -> usize {
+            PAGE_SIZE
         }
     }
 
-    type TestHeaps = Heaps<Reserved, TestThreads>;
+    thread_local! {
+        /// Whether the calling thread is one [`Dlmallocs`] does not serve.
+        static UNSERVED: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Per-thread heaps that are one locked dlmalloc, standing in for
+    /// mimalloc: the routing is the same however many there are.
+    struct Dlmallocs(Mutex<Dlmalloc<Regions>>);
+
+    // SAFETY: the dlmalloc is reached only under the mutex.
+    unsafe impl Sync for Dlmallocs {}
+
+    impl Dlmallocs {
+        /// The largest block they serve.
+        const MAX_BLOCK: usize = 4096;
+    }
+
+    // SAFETY: dlmalloc upholds `GlobalAlloc`'s contract.
+    unsafe impl ThreadHeaps for Dlmallocs {
+        const MAX_BLOCK: usize = Self::MAX_BLOCK;
+
+        fn serves_caller(&self) -> bool {
+            !UNSERVED.get()
+        }
+
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            // SAFETY: as `GlobalAlloc::alloc`'s.
+            unsafe { self.0.lock().unwrap().malloc(layout.size(), layout.align()) }
+        }
+
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            // SAFETY: as `GlobalAlloc::alloc_zeroed`'s.
+            unsafe { self.0.lock().unwrap().calloc(layout.size(), layout.align()) }
+        }
+
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            // SAFETY: as `GlobalAlloc::realloc`'s.
+            unsafe {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .realloc(ptr, layout.size(), layout.align(), new_size)
+            }
+        }
+
+        unsafe fn free(&self, ptr: *mut u8) {
+            // SAFETY: `ptr` is a live block of the heap.
+            unsafe { self.0.lock().unwrap().c_free(ptr) }
+        }
+    }
 
     /// A test's heaps, whose memory is freed as this drops.
     struct TestRun(&'static TestHeaps);
@@ -532,276 +397,163 @@ mod tests {
 
     impl Drop for TestRun {
         fn drop(&mut self) {
-            // SAFETY: the region came from `region_layout`, and the test
-            // allocates from it no more.
-            unsafe { std::alloc::dealloc(self.pages.memory.region as *mut u8, region_layout()) };
+            // SAFETY: the test allocates from the memory no more.
+            unsafe { self.memory.release() };
         }
     }
 
     fn heaps() -> TestRun {
-        // SAFETY: the layout is nonzero.
-        let region = unsafe { std::alloc::alloc_zeroed(region_layout()) } as usize;
-        assert_ne!(region, 0, "the test region could not be reserved");
-        let memory = Reserved {
-            region,
-            base: region.next_multiple_of(PAGE_SIZE),
-            taken: AtomicUsize::new(0),
-        };
-        let pages = Box::leak(Box::new(Pages::new(memory)));
-        TestRun(Box::leak(Box::new(Heaps::new(
-            pages,
-            TestThreads::default(),
-        ))))
+        let cell = Box::leak(Box::new(OnceLock::new()));
+        let heaps: &'static TestHeaps = Box::leak(Box::new(Heaps::new(
+            Reserved::leak(),
+            TestPark::default(),
+            Dlmallocs(Mutex::new(Dlmalloc::new_with_allocator(Regions(cell)))),
+        )));
+        cell.set(heaps).ok().unwrap();
+        TestRun(heaps)
     }
 
-    fn mark_main(heaps: &TestHeaps) {
-        heaps.threads.main.set(thread::current().id()).unwrap();
-    }
+    const SMALL: Layout = Layout::new::<[usize; 4]>();
 
-    const WORDS: Layout = Layout::new::<[usize; 4]>();
+    const LARGE: Layout = match Layout::from_size_align(4 * Dlmallocs::MAX_BLOCK, 8) {
+        Ok(layout) => layout,
+        Err(_) => panic!(),
+    };
 
-    /// A block of `layout` filled with `fill`, as an address that crosses
-    /// threads.
-    fn filled(heaps: &TestHeaps, layout: Layout, fill: u8) -> usize {
-        // SAFETY: the layout is nonzero.
-        let block = unsafe { heaps.alloc(layout) };
-        assert!(!block.is_null());
-        // SAFETY: the block holds `layout.size()` bytes.
-        unsafe { block.write_bytes(fill, layout.size()) };
-        block as usize
-    }
-
-    fn holds(block: *const u8, len: usize, fill: u8) -> bool {
-        // SAFETY: the caller passes a live block of at least `len` bytes.
-        unsafe { std::slice::from_raw_parts(block, len) }
-            .iter()
-            .all(|&byte| byte == fill)
-    }
-
-    fn has_remote_frees(heap: &Heap<Reserved>) -> bool {
-        !heap.remote.0.load(Ordering::Relaxed).is_null()
-    }
-
-    fn on_worker<R: Send>(work: impl FnOnce() -> R + Send) -> R {
-        bviz_parallel::scope(|scope| scope.spawn(work).join().unwrap())
+    fn unserved<R>(f: impl FnOnce() -> R) -> R {
+        UNSERVED.set(true);
+        let out = f();
+        UNSERVED.set(false);
+        out
     }
 
     #[test]
-    fn an_uncontended_lock_wakes_no_one() {
-        let lock = Lock::new();
-        let threads = TestThreads::default();
-        for _ in 0..1000 {
-            drop(lock.lock(&threads));
-        }
-        assert_eq!(threads.wakes.load(Ordering::Relaxed), 0);
-        assert_eq!(lock.0.load(Ordering::Relaxed), 0);
-    }
-
-    #[test]
-    fn a_release_wakes_a_parked_thread_once() {
-        let lock = Lock::new();
-        let threads = TestThreads::default();
-        let held = lock.lock(&threads);
-        bviz_parallel::scope(|scope| {
-            let waiter = scope.spawn(|| drop(lock.lock(&threads)));
-            while lock.0.load(Ordering::Relaxed) < PARKED {
-                thread::yield_now();
-            }
-            drop(held);
-            waiter.join().unwrap();
-        });
-        assert_eq!(threads.wakes.load(Ordering::Relaxed), 1);
-        assert_eq!(lock.0.load(Ordering::Relaxed), 0);
-    }
-
-    /// Each thread increments a counter by a load and a store with a yield
-    /// between them, so an increment made outside the lock is lost.
-    #[test]
-    fn threads_contending_for_the_lock_hold_it_one_at_a_time() {
-        const THREADS: usize = 4;
-        const INCREMENTS: usize = 2_000;
-        let lock = Lock::new();
-        let threads = TestThreads::default();
-        let counter = AtomicUsize::new(0);
-        bviz_parallel::scope(|scope| {
-            for _ in 0..THREADS {
-                scope.spawn(|| {
-                    for _ in 0..INCREMENTS {
-                        let _held = lock.lock(&threads);
-                        let count = counter.load(Ordering::Relaxed);
-                        thread::yield_now();
-                        counter.store(count + 1, Ordering::Relaxed);
-                    }
-                });
-            }
-        });
-        assert_eq!(counter.into_inner(), THREADS * INCREMENTS);
-        assert_eq!(lock.0.into_inner(), 0);
-    }
-
-    /// Threads whose waits return early every [`Self::SPURIOUS_EVERY`]th call
-    /// and are preempted before they compare, and whose wakes arrive late.
-    #[derive(Default)]
-    struct FaultyThreads {
-        threads: TestThreads,
-        waits: AtomicUsize,
-    }
-
-    impl FaultyThreads {
-        const SPURIOUS_EVERY: usize = 3;
-    }
-
-    // SAFETY: `heap` is `TestThreads`'.
-    unsafe impl Threads for FaultyThreads {
-        fn heap(&self) -> HeapId {
-            self.threads.heap()
-        }
-
-        fn wait(&self, state: &AtomicU32, value: u32) {
-            if self
-                .waits
-                .fetch_add(1, Ordering::Relaxed)
-                .is_multiple_of(Self::SPURIOUS_EVERY)
-            {
-                return;
-            }
-            thread::yield_now();
-            self.threads.wait(state, value);
-        }
-
-        fn wake_one(&self, state: &AtomicU32) {
-            thread::yield_now();
-            self.threads.wake_one(state);
-        }
-    }
-
-    /// As [`threads_contending_for_the_lock_hold_it_one_at_a_time`], with
-    /// enough threads that some park, under [`FaultyThreads`].
-    #[test]
-    fn the_lock_survives_spurious_and_late_wakes() {
-        const THREADS: usize = 10;
-        const INCREMENTS: usize = 2_000;
-        let lock = Lock::new();
-        let threads = FaultyThreads::default();
-        let counter = AtomicUsize::new(0);
-        bviz_parallel::scope(|scope| {
-            for _ in 0..THREADS {
-                scope.spawn(|| {
-                    for _ in 0..INCREMENTS {
-                        let _held = lock.lock(&threads);
-                        let count = counter.load(Ordering::Relaxed);
-                        thread::yield_now();
-                        counter.store(count + 1, Ordering::Relaxed);
-                    }
-                });
-            }
-        });
-        assert_eq!(counter.into_inner(), THREADS * INCREMENTS);
-        assert_eq!(lock.0.into_inner(), 0);
-        assert_ne!(threads.threads.sleeps.into_inner(), 0);
-    }
-
-    #[test]
-    fn a_block_freed_on_another_heaps_thread_waits_for_its_owner() {
+    fn blocks_go_to_the_thread_heaps_up_to_their_largest() {
         let heaps = &heaps();
-        mark_main(heaps);
-
-        let main_block = filled(heaps, WORDS, 1);
-        assert_eq!(heaps.pages.owner(main_block as *mut u8), HeapId::Main);
-        // SAFETY: the block is the main thread's, given up here.
-        on_worker(|| unsafe { heaps.dealloc(main_block as *mut u8, WORDS) });
-        assert!(has_remote_frees(&heaps.main));
-        filled(heaps, WORDS, 2);
-        assert!(!has_remote_frees(&heaps.main));
-
-        let worker_block = on_worker(|| filled(heaps, WORDS, 3));
-        assert_eq!(heaps.pages.owner(worker_block as *mut u8), HeapId::Shared);
-        // SAFETY: the worker gave the block up.
-        unsafe { heaps.dealloc(worker_block as *mut u8, WORDS) };
-        assert!(has_remote_frees(&heaps.shared));
-        on_worker(|| filled(heaps, WORDS, 4));
-        assert!(!has_remote_frees(&heaps.shared));
+        let small = filled(&**heaps, SMALL, 1) as *mut u8;
+        let large = filled(&**heaps, LARGE, 2) as *mut u8;
+        let early = unserved(|| filled(&**heaps, SMALL, 3)) as *mut u8;
+        assert!(heaps.thread_owns(small));
+        assert!(!heaps.thread_owns(large));
+        assert!(!heaps.thread_owns(early));
+        // SAFETY: the blocks are live and of these layouts.
+        unsafe {
+            heaps.dealloc(small, SMALL);
+            heaps.dealloc(large, LARGE);
+            heaps.dealloc(early, SMALL);
+        }
     }
 
     #[test]
-    fn realloc_moves_a_block_to_the_calling_threads_heap() {
+    fn a_shared_block_is_zeroed_however_it_was_used() {
         let heaps = &heaps();
-        mark_main(heaps);
-        let grown = 1000;
+        let used = filled(&**heaps, LARGE, 0xa5) as *mut u8;
+        // SAFETY: the block is live and of `LARGE`.
+        unsafe { heaps.dealloc(used, LARGE) };
+        // SAFETY: the layout is nonzero.
+        let zeroed = unsafe { heaps.alloc_zeroed(LARGE) };
+        assert_eq!(zeroed, used);
+        assert!(holds(zeroed, LARGE.size(), 0));
+    }
 
-        let worker_block = on_worker(|| filled(heaps, WORDS, 5)) as *mut u8;
-        // SAFETY: the worker gave the block up.
-        let moved = unsafe { heaps.realloc(worker_block, WORDS, grown) };
-        assert_eq!(heaps.pages.owner(moved), HeapId::Main);
-        assert!(holds(moved, WORDS.size(), 5));
-        assert!(has_remote_frees(&heaps.shared));
+    #[test]
+    fn a_shared_block_grows_in_place_into_free_space() {
+        let heaps = &heaps();
+        let block = filled(&**heaps, LARGE, 4) as *mut u8;
+        let grown = 2 * LARGE.size();
+        // SAFETY: the block is live and of `LARGE`.
+        let resized = unsafe { heaps.realloc(block, LARGE, grown) };
+        assert_eq!(resized, block);
+        assert!(holds(resized, LARGE.size(), 4));
+    }
 
-        let moved = moved as usize;
-        let back = on_worker(|| {
-            // SAFETY: the main thread gave the block up.
-            unsafe { heaps.realloc(moved as *mut u8, WORDS, grown) as usize }
-        }) as *mut u8;
-        assert_eq!(heaps.pages.owner(back), HeapId::Shared);
-        assert!(holds(back, WORDS.size(), 5));
-        assert!(has_remote_frees(&heaps.main));
+    #[test]
+    fn a_shared_block_that_cannot_grow_in_place_moves() {
+        let heaps = &heaps();
+        let block = filled(&**heaps, LARGE, 5) as *mut u8;
+        let neighbour = filled(&**heaps, LARGE, 6) as *mut u8;
+        let grown = 2 * LARGE.size();
+        // SAFETY: the block is live and of `LARGE`.
+        let moved = unsafe { heaps.realloc(block, LARGE, grown) };
+        assert_ne!(moved, block);
+        assert!(holds(moved, LARGE.size(), 5));
+        assert!(holds(neighbour, LARGE.size(), 6));
+    }
+
+    #[test]
+    fn realloc_past_the_thread_heaps_largest_moves_to_the_shared_heap_and_back() {
+        let heaps = &heaps();
+        let block = filled(&**heaps, SMALL, 7) as *mut u8;
+        // SAFETY: the block is live and of `SMALL`.
+        let large = unsafe { heaps.realloc(block, SMALL, LARGE.size()) };
+        assert!(!heaps.thread_owns(large));
+        assert!(holds(large, SMALL.size(), 7));
+        let _neighbour = filled(&**heaps, LARGE, 8);
+        // SAFETY: the block is live and of `LARGE`.
+        let small = unsafe { heaps.realloc(large, LARGE, SMALL.size()) };
+        assert_eq!(small, large, "a shrinking block stays where it is");
+        assert!(holds(small, SMALL.size(), 7));
     }
 
     #[test]
     fn realloc_keeps_an_over_aligned_block_aligned() {
         let heaps = &heaps();
-        let mut layout = Layout::from_size_align(WORDS.size(), PAGE_SIZE).unwrap();
-        let mut block = filled(heaps, layout, 9) as *mut u8;
-        for size in [PAGE_SIZE, 2 * WORDS.size()] {
-            // SAFETY: the block is live and of `layout`, and `size` is nonzero.
-            block = unsafe { heaps.realloc(block, layout, size) };
-            layout = Layout::from_size_align(size, PAGE_SIZE).unwrap();
-            assert_eq!(block as usize % PAGE_SIZE, 0);
-            assert!(holds(block, WORDS.size(), 9));
+        for size in [SMALL.size(), LARGE.size()] {
+            let mut layout = Layout::from_size_align(size, PAGE_SIZE).unwrap();
+            let mut block = filled(&**heaps, layout, 9) as *mut u8;
+            for grown in [2 * size, 8 * size, size] {
+                let _neighbour = filled(&**heaps, Layout::from_size_align(size, 8).unwrap(), 0);
+                // SAFETY: the block is live and of `layout`, and `grown` is
+                // nonzero.
+                block = unsafe { heaps.realloc(block, layout, grown) };
+                layout = Layout::from_size_align(grown, PAGE_SIZE).unwrap();
+                assert_eq!(block as usize % PAGE_SIZE, 0);
+                assert!(holds(block, size, 9));
+            }
         }
     }
 
     #[test]
-    fn blocks_allocated_before_the_mark_stay_the_shared_heaps() {
+    fn pages_taken_back_from_the_thread_heaps_are_the_shared_heaps() {
         let heaps = &heaps();
-        let early = filled(heaps, WORDS, 6) as *mut u8;
-        assert_eq!(heaps.pages.owner(early), HeapId::Shared);
-        mark_main(heaps);
-
-        assert_eq!(
-            heaps.pages.owner(filled(heaps, WORDS, 7) as *mut u8),
-            HeapId::Main
+        let region = heaps.os_alloc(PAGE_SIZE, PAGE_SIZE);
+        assert!(heaps.thread_owns(region));
+        // SAFETY: the region came from `os_alloc` and holds no block.
+        unsafe { heaps.os_free(region, PAGE_SIZE) };
+        assert!(!heaps.thread_owns(region));
+        let reused = filled(
+            &**heaps,
+            Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap(),
+            1,
         );
-        assert!(holds(early, WORDS.size(), 6));
-        // SAFETY: the block is the main thread's, given up here.
-        unsafe { heaps.dealloc(early, WORDS) };
-        assert!(has_remote_frees(&heaps.shared));
-        on_worker(|| filled(heaps, WORDS, 8));
-        assert!(!has_remote_frees(&heaps.shared));
+        assert_eq!(reused as *mut u8, region);
+        assert!(!heaps.thread_owns(region));
     }
 
-    /// Every thread allocates blocks of assorted sizes and alignments, passes
-    /// each to the next thread in a ring, and frees what it receives once it
-    /// finds the block intact.
+    /// Every thread allocates blocks of assorted sizes and alignments from
+    /// both heaps, passes each to the next thread in a ring, which grows or
+    /// shrinks it, and frees what it receives once it finds the block intact.
     #[test]
-    fn threads_freeing_each_others_blocks_keep_every_block_intact() {
+    fn threads_resizing_and_freeing_each_others_blocks_keep_every_block_intact() {
         const THREADS: usize = 4;
         const BLOCKS: usize = 5_000;
-        const MAX_SIZE: usize = 4096;
+        const MAX_SIZE: usize = 4 * Dlmallocs::MAX_BLOCK;
         const ALIGNMENTS: [usize; 3] = [8, 64, 4096];
         type Sent = (usize, Layout, u8);
         let heaps = &heaps();
-        mark_main(heaps);
 
         let (senders, receivers): (Vec<_>, Vec<_>) =
             (0..THREADS).map(|_| mpsc::channel::<Sent>()).unzip();
         let run = |id: usize, next: mpsc::Sender<Sent>, received: mpsc::Receiver<Sent>| {
             let mut rng = fastrand::Rng::with_seed(id as u64);
             for _ in 0..BLOCKS {
-                let size = rng.usize(1..=MAX_SIZE);
-                let align = ALIGNMENTS[rng.usize(..ALIGNMENTS.len())];
-                let layout = Layout::from_size_align(size, align).unwrap();
+                let layout = Layout::from_size_align(
+                    rng.usize(1..=MAX_SIZE),
+                    ALIGNMENTS[rng.usize(..ALIGNMENTS.len())],
+                )
+                .unwrap();
                 let fill = rng.u8(..);
-                next.send((filled(heaps, layout, fill), layout, fill))
+                next.send((filled(&**heaps, layout, fill), layout, fill))
                     .unwrap();
             }
             drop(next);
@@ -809,23 +561,27 @@ mod tests {
                 let block = block as *mut u8;
                 assert_eq!(block as usize % layout.align(), 0);
                 assert!(holds(block, layout.size(), fill));
+                let new_size = rng.usize(1..=MAX_SIZE);
                 // SAFETY: the sender gave the block up.
+                let block = unsafe { heaps.realloc(block, layout, new_size) };
+                assert_eq!(block as usize % layout.align(), 0);
+                assert!(holds(block, layout.size().min(new_size), fill));
+                let layout = Layout::from_size_align(new_size, layout.align()).unwrap();
+                // SAFETY: the block is live and of `layout`.
                 unsafe { heaps.dealloc(block, layout) };
             }
         };
 
-        let mut ring = receivers
+        let ring = receivers
             .into_iter()
             .enumerate()
             .map(|(id, received)| (id, senders[(id + 1) % THREADS].clone(), received));
-        let (main_id, main_next, main_received) = ring.next().unwrap();
         let workers: Vec<_> = ring.collect();
         drop(senders);
         bviz_parallel::scope(|scope| {
             for (id, next, received) in workers {
                 scope.spawn(move || run(id, next, received));
             }
-            run(main_id, main_next, main_received);
         });
     }
 }
