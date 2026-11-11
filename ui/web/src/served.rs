@@ -32,10 +32,12 @@ const ASKED: i32 = 1;
 const ANSWERED: i32 = 2;
 
 /// The answers that tell of no slice read: the DOM exception the server met
-/// by its name, any other as [`FAILED`].
+/// by its name, any other as [`FAILED`], or a slice shorter than the file
+/// handed over holds there as [`CHANGED`].
 const NOT_FOUND: i32 = -1;
 const NOT_READABLE: i32 = -2;
 const FAILED: i32 = -3;
+const CHANGED: i32 = -4;
 
 /// A request for a slice of a file, written by one thread at a time, which
 /// holds [`ASKING`] while it waits for the answer. The server finds each
@@ -177,6 +179,7 @@ fn layout() -> Object {
         ("states", states.into()),
         ("errors", errors.into()),
         ("failed", FAILED.into()),
+        ("changed", CHANGED.into()),
     ])
 }
 
@@ -231,6 +234,9 @@ impl ReadAt for Served {
             )),
             NOT_READABLE => Err(io::Error::other(
                 "the browser can no longer read the file, which may have changed since it was handed over",
+            )),
+            CHANGED => Err(io::Error::other(
+                "the file has changed since it was handed over",
             )),
             read => usize::try_from(read)
                 .map_err(|_| io::Error::other("the browser could not read the file")),

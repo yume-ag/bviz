@@ -64,9 +64,14 @@ function answer() {
   let told;
   try {
     const slice = start < end ? new Uint8Array(reader.readAsArrayBuffer(file.slice(start, end))) : new Uint8Array();
-    // A view made afresh, as the memory's buffer is replaced as it grows.
-    new Uint8Array(memory.buffer, Atomics.load(words, layout.into) >>> 0, slice.length).set(slice);
-    told = slice.length;
+    if (slice.length < end - start) {
+      // The file ended short of its size as handed over.
+      told = layout.changed;
+    } else {
+      // A view made afresh, as the memory's buffer is replaced as it grows.
+      new Uint8Array(memory.buffer, Atomics.load(words, layout.into) >>> 0, slice.length).set(slice);
+      told = slice.length;
+    }
   } catch (error) {
     told = layout.errors[error?.name] ?? layout.failed;
   }
