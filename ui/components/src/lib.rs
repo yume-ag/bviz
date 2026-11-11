@@ -72,7 +72,8 @@ pub use list_scroll::{ListScroll, list_scrollbar};
 pub use menu::{Menu, MenuEvent, MenuItem, SubmenuItem, over_window};
 pub use multi_select::{MultiOption, MultiSelect, MultiSelectEvent};
 pub use notice::{
-    NOTE_TEXT_SIZE, Source, centered_notice, centered_spinner, cut_off_note, note_frame, note_strip,
+    NOTE_TEXT_SIZE, Source, byte_progress, centered_notice, centered_spinner, cut_off_note,
+    note_frame, note_strip,
 };
 pub use query_field::{QueryField, QueryFieldEvent};
 pub use scrollbar::{Axis, DEFAULT_MIN_THUMB, SCROLLBAR_THICKNESS, Scrollbar, ScrollbarColors};

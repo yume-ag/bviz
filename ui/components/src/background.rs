@@ -1,5 +1,6 @@
 //! Helpers for running work off the UI thread and applying its result.
 
+use bviz_input::ReadProgress;
 use gpui::{Context, Task};
 
 /// Run `work` on the background executor, then apply its result to the view on
@@ -40,7 +41,10 @@ where
 /// and GPU-surface setup), so the UI thread waits on it only once it has a
 /// frame to draw. Built without, it runs where it is first awaited, so the task
 /// that starts it does not also run it.
-pub struct Pending<T>(Started<T>);
+pub struct Pending<T> {
+    started: Started<T>,
+    progress: Option<ReadProgress>,
+}
 
 #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
 type Started<T> = bviz_parallel::JoinHandle<Result<T, String>>;
@@ -51,7 +55,7 @@ type Started<T> = Deferred<T>;
 impl<T: Send + 'static> Pending<T> {
     #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
     pub fn start(work: impl FnOnce() -> Result<T, String> + Send + 'static) -> Self {
-        Self(bviz_parallel::spawn(work))
+        Self::of(bviz_parallel::spawn(work))
     }
 
     #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
@@ -63,7 +67,7 @@ impl<T: Send + 'static> Pending<T> {
     /// the page's one thread back while it runs.
     #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
     pub fn start_future(work: impl Future<Output = Result<T, String>> + Send + 'static) -> Self {
-        Self(Deferred::new(work))
+        Self::of(Deferred::new(work))
     }
 
     /// [`start`](Self::start) of work that awaits as it goes, run to its end on
@@ -73,18 +77,35 @@ impl<T: Send + 'static> Pending<T> {
         Self::start(move || block_on(work))
     }
 
+    fn of(started: Started<T>) -> Self {
+        Self {
+            started,
+            progress: None,
+        }
+    }
+
+    /// The work, whose read of its input `progress` counts.
+    pub fn reading(self, progress: Option<ReadProgress>) -> Self {
+        Self { progress, ..self }
+    }
+
+    /// How far the work's read of its input has got, where it is counted.
+    pub fn progress(&self) -> Option<ReadProgress> {
+        self.progress.clone()
+    }
+
     /// Blocks until the work finishes, reporting a panic in it the way the work
     /// reports a failure of its own.
     #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
     pub fn join(self) -> Result<T, String> {
-        self.0.join().unwrap_or_else(|_| Err(PANICKED.into()))
+        self.started.join().unwrap_or_else(|_| Err(PANICKED.into()))
     }
 
     /// The work's outcome, as [`join`](Self::join) gives it where the build
     /// has threads, waited on as [`bviz_parallel::JoinHandle::finished`] waits.
     #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
     pub async fn finished(self) -> Result<T, String> {
-        self.0
+        self.started
             .finished()
             .await
             .unwrap_or_else(|_| Err(PANICKED.into()))
@@ -94,7 +115,10 @@ impl<T: Send + 'static> Pending<T> {
     /// failure of its own.
     #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
     pub async fn finished(self) -> Result<T, String> {
-        self.0.run().await.unwrap_or_else(|_| Err(PANICKED.into()))
+        self.started
+            .run()
+            .await
+            .unwrap_or_else(|_| Err(PANICKED.into()))
     }
 }
 

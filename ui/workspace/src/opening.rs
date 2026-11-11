@@ -159,7 +159,7 @@ impl FileState {
         match self {
             #[cfg(any(test, target_family = "wasm"))]
             Self::Reading { read, total } => {
-                Shown::Plain(reading::byte_progress(*read, *total).into())
+                Shown::Plain(bviz_ui_components::byte_progress(*read, *total).into())
             }
             Self::Opening => Shown::Busy(OPENING),
             Self::Failed(reason) => Shown::Error(reason),
@@ -180,11 +180,6 @@ fn files_counted(count: usize) -> String {
 mod reading {
     use super::{FileState, Opening, OpeningFile};
     use gpui::SharedString;
-
-    /// The units a count of bytes reads in, smallest first, each this many
-    /// of the one before, as file choosers count them.
-    const BYTE_UNITS: [&str; 4] = ["KB", "MB", "GB", "TB"];
-    const BYTE_UNIT_STEP: f64 = 1000.0;
 
     impl Opening {
         /// Files of the labels and sizes `files` gives, none read yet.
@@ -229,29 +224,10 @@ mod reading {
             }
         }
     }
-
-    /// `read` of `total` bytes, both in the unit `total` reads best in.
-    pub(super) fn byte_progress(read: u64, total: u64) -> String {
-        let mut scale = BYTE_UNIT_STEP;
-        let mut unit = BYTE_UNITS[0];
-        for larger in &BYTE_UNITS[1..] {
-            if (total as f64) < scale * BYTE_UNIT_STEP {
-                break;
-            }
-            scale *= BYTE_UNIT_STEP;
-            unit = larger;
-        }
-        format!(
-            "{:.1} of {:.1} {unit}",
-            read as f64 / scale,
-            total as f64 / scale
-        )
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::reading::byte_progress;
     use super::*;
     use std::path::PathBuf;
 
@@ -391,15 +367,6 @@ mod tests {
     }
 
     const MB: u64 = 1_000_000;
-
-    #[test]
-    fn progress_reads_in_the_unit_of_the_whole() {
-        assert_eq!(byte_progress(12 * MB, 48 * MB), "12.0 of 48.0 MB");
-        assert_eq!(byte_progress(500, 1000), "0.5 of 1.0 KB");
-        assert_eq!(byte_progress(MB - 1000, MB - 1000), "999.0 of 999.0 KB");
-        assert_eq!(byte_progress(1000 * MB, 5000 * MB), "1.0 of 5.0 GB");
-        assert_eq!(byte_progress(0, 0), "0.0 of 0.0 KB");
-    }
 
     #[test]
     fn a_file_being_read_shows_how_much_of_it_is_read() {

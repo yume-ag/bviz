@@ -64,7 +64,7 @@ impl ExecLogModel {
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
-            source: Source::Loading,
+            source: Source::Loading(log.progress()),
             reports: Reports::new(session, cx),
             _joined: cx.subscribe(&clock, |model, _, _: &BecameJoined, cx| {
                 model.report_awaited(cx)

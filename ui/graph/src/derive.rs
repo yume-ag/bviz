@@ -2291,7 +2291,7 @@ mod tests {
     /// reads the same whether or not a panel is showing one.
     #[test]
     fn a_graph_still_being_read_says_so() {
-        assert_eq!(status(&Source::Loading, None, None), "Loading…");
+        assert_eq!(status(&Source::Loading(None), None, None), "Loading…");
     }
 
     #[test]

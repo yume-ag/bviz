@@ -7,6 +7,7 @@ use crate::track_label::shared_names;
 use crate::track_order::TrackSort;
 use crate::{METRICS, Source};
 use bviz_critical_path::{CriticalPath, NearlyCritical, Step, Work};
+use bviz_input::ReadProgress;
 use bviz_invocation::spawn::LoggedSpawns;
 use bviz_invocation::{
     ActionGraph, Chosen, ConfiguredTarget, CriticalStep, Recorded, Revision, Session,
@@ -533,6 +534,7 @@ impl TraceModel {
             reports: Reports::new(session, cx),
             on_clock: OnClock::new(clock, cx, Self::place_on_clock),
         };
+        let progress = profile.progress();
         let load = load_future_in_background(
             cx,
             async move {
@@ -556,7 +558,7 @@ impl TraceModel {
             },
         );
         Self {
-            state: TraceState::new(),
+            state: TraceState::new(progress),
             ties,
             _load: load,
         }
@@ -900,10 +902,11 @@ impl TraceModel {
 }
 
 impl TraceState {
-    /// The state of a document whose read has not finished.
-    fn new() -> Self {
+    /// The state of a document whose read has not finished, and has got as
+    /// far as `progress` counts.
+    fn new(progress: Option<ReadProgress>) -> Self {
         Self {
-            source: Source::Loading,
+            source: Source::Loading(progress),
             visible_tracks: Vec::new(),
             shared_track_names: Vec::new(),
             selected_tracks: Vec::new(),
@@ -1347,7 +1350,7 @@ mod tests {
     /// A document whose read has not finished, for exercising the state a panel
     /// drives it through.
     fn model() -> TraceState {
-        TraceState::new()
+        TraceState::new(None)
     }
 
     /// A profile of one slice over `[0, 100)` whose writer started at
@@ -1708,7 +1711,7 @@ mod tests {
         session.report_critical_path(by, steps, Vec::new());
         assert!(model.adopt_chosen(Chosen::Step(0)));
         assert!(session.choose(Some(Chosen::Step(0))));
-        assert!(model.replace_source(Source::Loading, &mut session));
+        assert!(model.replace_source(Source::Loading(None), &mut session));
         assert_eq!(session.chosen(), None);
         assert_eq!(model.kept_in_sample, None);
     }
@@ -1717,7 +1720,7 @@ mod tests {
     fn a_replaced_profile_leaves_no_group_headers() {
         let mut model = traced();
         assert!(model.group_chrome().is_some());
-        model.replace_source(Source::Loading, &mut Session::default());
+        model.replace_source(Source::Loading(None), &mut Session::default());
         assert!(model.group_chrome().is_none());
     }
 
