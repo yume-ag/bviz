@@ -8,7 +8,7 @@ use bviz_input::{Named, ReadAt};
 use js_sys::{Atomics, Int32Array, Object, Reflect, WebAssembly};
 use std::io;
 use std::mem::offset_of;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
@@ -22,14 +22,15 @@ const SERVER_SCRIPT: &str = "bvizFileServerScript";
 /// through the browser's memory a bounded piece at a time.
 const SLICE_BYTES: usize = 8 << 20;
 
-/// How long, in milliseconds, a thread waits on an answer between looks at
-/// whether the server has gone.
-const GONE_CHECK_MS: f64 = 1000.0;
-
 /// What the request is at, in its `state`.
 const IDLE: i32 = 0;
 const ASKED: i32 = 1;
 const ANSWERED: i32 = 2;
+/// The server has stopped answering for good, so that a reader waiting on it
+/// gives up. The window thread sets it on the server's error event, which
+/// reaches it only once the server has stopped or where it never ran, so no
+/// slice is written after.
+const GONE: i32 = 3;
 
 /// The answers that tell of no slice read: the DOM exception the server met
 /// by its name, any other as [`FAILED`], or a slice shorter than the file
@@ -66,9 +67,6 @@ static REQUEST: Request = Request {
 };
 
 static ASKING: Mutex<()> = Mutex::new(());
-
-/// Whether the file server has failed, so that no request is answered.
-static GONE: AtomicBool = AtomicBool::new(false);
 
 /// The name of the channel a thread tells the server on of each file it
 /// lets go of: the window thread hands the server its files, but any thread
@@ -132,7 +130,7 @@ fn start_server() -> Result<Worker, String> {
     options.set_type(WorkerType::Module);
     let server = Worker::new_with_options(&script, &options).map_err(js_error)?;
     let failed = Closure::<dyn Fn(web_sys::Event)>::new(|_| {
-        GONE.store(true, Ordering::SeqCst);
+        REQUEST.state.store(GONE, Ordering::SeqCst);
         if let Ok(words) = WORDS.try_with(Int32Array::clone) {
             Atomics::notify(&words, word(offset_of!(Request, state))).ok();
         }
@@ -199,9 +197,6 @@ impl ReadAt for Served {
         let _asking = ASKING
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if GONE.load(Ordering::SeqCst) {
-            return Err(gone());
-        }
         REQUEST.file.store(self.id, Ordering::Relaxed);
         REQUEST.offset_low.store(offset as u32, Ordering::Relaxed);
         REQUEST
@@ -212,21 +207,26 @@ impl ReadAt for Served {
             Ordering::Relaxed,
         );
         REQUEST.length.store(length as u32, Ordering::Relaxed);
-        REQUEST.state.store(ASKED, Ordering::SeqCst);
+        (REQUEST
+            .state
+            .compare_exchange(IDLE, ASKED, Ordering::SeqCst, Ordering::SeqCst))
+        .map_err(|_| gone())?;
         let state = word(offset_of!(Request, state));
         WORDS.with(|words| {
             Atomics::notify(words, state).ok();
             while REQUEST.state.load(Ordering::SeqCst) == ASKED {
-                if GONE.load(Ordering::SeqCst) {
-                    REQUEST.state.store(IDLE, Ordering::SeqCst);
-                    return Err(gone());
-                }
-                Atomics::wait_with_timeout(words, state, ASKED, GONE_CHECK_MS).ok();
+                // A read must not return while its slice is asked for: the
+                // server may yet write into `buf`.
+                Atomics::wait(words, state, ASKED).unwrap_or_else(|error| {
+                    panic!("cannot wait for the file server: {}", js_error(error))
+                });
             }
-            Ok(())
-        })?;
+        });
         let answer = REQUEST.answer.load(Ordering::SeqCst);
-        REQUEST.state.store(IDLE, Ordering::SeqCst);
+        (REQUEST
+            .state
+            .compare_exchange(ANSWERED, IDLE, Ordering::SeqCst, Ordering::SeqCst))
+        .map_err(|_| gone())?;
         match answer {
             NOT_FOUND => Err(io::Error::new(
                 io::ErrorKind::NotFound,

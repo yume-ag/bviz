@@ -14,6 +14,21 @@ let words;
 let layout;
 // Resolves the wait of a request for a file the server is yet to be handed.
 let handed = () => {};
+// Whether the server has stopped answering, for good.
+let stopped = false;
+
+// Stops the server and raises `error` on the worker's error event.
+function fail(error) {
+  stopped = true;
+  setTimeout(() => {
+    throw error;
+  });
+}
+
+self.addEventListener("error", () => {
+  stopped = true;
+});
+self.onmessageerror = () => fail(new Error("a file handed to the file server did not arrive"));
 
 self.onmessage = ({ data }) => {
   if (data.memory) {
@@ -26,17 +41,17 @@ self.onmessage = ({ data }) => {
         released.add(id);
       }
     };
-    serve();
+    serve().catch(fail);
   } else if (!released.delete(data.id)) {
     files.set(data.id, data.file);
     handed();
   }
 };
 
-// Answers each request as it is asked, for as long as the server stands.
+// Answers each request as it is asked, until the server stops.
 async function serve() {
   const { asked } = layout.states;
-  for (;;) {
+  while (!stopped) {
     const state = Atomics.load(words, layout.state);
     if (state === asked) {
       if (!answer()) {
