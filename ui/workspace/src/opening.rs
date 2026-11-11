@@ -15,7 +15,7 @@ pub(crate) struct OpeningFile {
 pub(crate) enum FileState {
     /// Being read into memory, as a browser hands a file over: `read` of its
     /// `total` bytes so far.
-    #[cfg(any(test, target_family = "wasm"))]
+    #[cfg(any(test, all(target_family = "wasm", not(target_feature = "atomics"))))]
     Reading { read: u64, total: u64 },
     /// Handed to the app, which is telling what it holds and opening its views.
     Opening,
@@ -55,7 +55,7 @@ pub(crate) struct Unopened(Vec<Unopenable>);
 
 /// How a line shows its file's state.
 pub(crate) enum Shown<'a> {
-    #[cfg(any(test, target_family = "wasm"))]
+    #[cfg(any(test, all(target_family = "wasm", not(target_feature = "atomics"))))]
     Plain(SharedString),
     /// Work under way with no progress to report, which the line marks as
     /// busy so it does not read as stalled.
@@ -73,14 +73,33 @@ const LOST: &str = "did not finish opening";
 impl Opening {
     /// `named`, each handed to the app to open.
     pub(crate) fn of<'a>(named: impl IntoIterator<Item = &'a Named>) -> Self {
+        Self::labelled(named.into_iter().map(named_label))
+    }
+
+    /// Files of the labels `labels` gives, each handed to the app to open.
+    pub(crate) fn labelled(labels: impl IntoIterator<Item = SharedString>) -> Self {
         Self(
-            (named.into_iter())
-                .map(|named| OpeningFile {
-                    label: named_label(named),
+            (labels.into_iter())
+                .map(|label| OpeningFile {
+                    label,
                     state: FileState::Opening,
                 })
                 .collect(),
         )
+    }
+
+    /// Records every file handed over, but those `unread` names by place,
+    /// with why.
+    #[cfg(any(test, target_family = "wasm"))]
+    pub(crate) fn read_out(&mut self, unread: Vec<(usize, SharedString)>) {
+        for file in &mut self.0 {
+            file.state = FileState::Opening;
+        }
+        for (file, reason) in unread {
+            if let Some(file) = self.0.get_mut(file) {
+                file.state = FileState::Failed(reason);
+            }
+        }
     }
 
     #[cfg(test)]
@@ -157,7 +176,7 @@ impl Unopened {
 impl FileState {
     fn shown(&self) -> Shown<'_> {
         match self {
-            #[cfg(any(test, target_family = "wasm"))]
+            #[cfg(any(test, all(target_family = "wasm", not(target_feature = "atomics"))))]
             Self::Reading { read, total } => {
                 Shown::Plain(bviz_ui_components::byte_progress(*read, *total).into())
             }
@@ -176,7 +195,7 @@ fn files_counted(count: usize) -> String {
 }
 
 /// What a window shows of files a browser is reading into memory.
-#[cfg(any(test, target_family = "wasm"))]
+#[cfg(any(test, all(target_family = "wasm", not(target_feature = "atomics"))))]
 mod reading {
     use super::{FileState, Opening, OpeningFile};
     use gpui::SharedString;
@@ -206,21 +225,6 @@ mod reading {
             }) = self.0.get_mut(file)
             {
                 *so_far = read.min(*total);
-            }
-        }
-
-        /// Records every file read, but those `unread` names by place, with
-        /// why.
-        pub(crate) fn read_out(&mut self, unread: Vec<(usize, SharedString)>) {
-            for file in &mut self.0 {
-                if let FileState::Reading { .. } = file.state {
-                    file.state = FileState::Opening;
-                }
-            }
-            for (file, reason) in unread {
-                if let Some(file) = self.0.get_mut(file) {
-                    file.state = FileState::Failed(reason);
-                }
             }
         }
     }

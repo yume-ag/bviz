@@ -3366,8 +3366,8 @@ fn browser_label(file: &bviz_ui_web::File) -> SharedString {
 }
 
 /// Receives `files`, handed over by the browser and held by the window `this`
-/// frames as `batch`, showing how much of each is read ahead, and hands them
-/// to the app's [`PathOpener`].
+/// frames as `batch`, showing how much of each is read ahead where the build
+/// reads files ahead, and hands them to the app's [`PathOpener`].
 #[cfg(target_family = "wasm")]
 async fn read_and_open(
     this: WeakEntity<Workspace>,
@@ -3375,20 +3375,44 @@ async fn read_and_open(
     batch: BatchId,
     cx: &mut gpui::AsyncWindowContext,
 ) {
-    use std::ops::ControlFlow;
     let (files, identities): (Vec<_>, Vec<_>) = (files.into_iter())
         .map(|Identified { file, identity }| (file, identity))
         .unzip();
-    let sizes = (files.iter()).map(|file| (browser_label(file), file.size() as u64));
-    let opening = Opening::reading(sizes);
+    #[cfg(not(target_feature = "atomics"))]
+    let opening =
+        Opening::reading((files.iter()).map(|file| (browser_label(file), file.size() as u64)));
+    #[cfg(target_feature = "atomics")]
+    let opening = Opening::labelled(files.iter().map(browser_label));
     let shown = this.update(cx, |workspace, cx| {
         workspace.show_opening(opening, batch, cx)
     });
     let Ok(pending) = shown else {
         return;
     };
-    let note = pending.note;
-    let read = bviz_ui_web::receive_files(files, |at, bytes| {
+    #[cfg(target_feature = "atomics")]
+    let read = bviz_ui_web::receive_files(files);
+    #[cfg(not(target_feature = "atomics"))]
+    let Some(read) = read_ahead(&this, pending.note, files, cx).await else {
+        return;
+    };
+    this.update_in(cx, |workspace, window, cx| {
+        workspace.open_read(pending, read, identities, window, cx)
+    })
+    .ok();
+}
+
+/// Reads `files` into memory, showing how much of each is read on the opening
+/// `note` shows in the window `this` frames; `None` where the window goes
+/// before the read ends.
+#[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
+async fn read_ahead(
+    this: &WeakEntity<Workspace>,
+    note: u64,
+    files: Vec<bviz_ui_web::File>,
+    cx: &mut gpui::AsyncWindowContext,
+) -> Option<Vec<Result<Named, bviz_ui_web::Unread>>> {
+    use std::ops::ControlFlow;
+    bviz_ui_web::receive_files(files, |at, bytes| {
         let shown = this.update(cx, |workspace, cx| {
             if let Some(opening) = workspace.opening_mut(note) {
                 opening.read(at, bytes);
@@ -3400,14 +3424,7 @@ async fn read_and_open(
             Err(_) => ControlFlow::Break(()),
         }
     })
-    .await;
-    let Some(read) = read else {
-        return;
-    };
-    this.update_in(cx, |workspace, window, cx| {
-        workspace.open_read(pending, read, identities, window, cx)
-    })
-    .ok();
+    .await
 }
 
 /// Handlers for the three actions pointing at `side`.
@@ -3488,7 +3505,7 @@ fn file_list(
     let line = |(at, (label, shown)): (usize, (&SharedString, Shown<'_>))| {
         let state = div().flex_1().min_w_0();
         let state = match shown {
-            #[cfg(any(test, target_family = "wasm"))]
+            #[cfg(any(test, all(target_family = "wasm", not(target_feature = "atomics"))))]
             Shown::Plain(text) => state.text_color(colors.text_muted).child(text),
             Shown::Busy(text) => state
                 .flex()

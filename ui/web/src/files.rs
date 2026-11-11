@@ -5,6 +5,7 @@
 use bviz_input::Named;
 use js_sys::Promise;
 use std::io;
+#[cfg(not(target_feature = "atomics"))]
 use std::ops::ControlFlow;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
@@ -128,13 +129,10 @@ pub async fn receive_files(
 }
 
 /// Each of `files`, under its name, read by bviz's threads as they go, so
-/// that nothing is read ahead and `progress` is never told.
+/// that nothing is read ahead.
 #[cfg(target_feature = "atomics")]
-pub async fn receive_files(
-    files: Vec<File>,
-    _progress: impl FnMut(usize, u64) -> ControlFlow<()>,
-) -> Option<Vec<Result<Named, Unread>>> {
-    Some(crate::served::serve(files))
+pub fn receive_files(files: Vec<File>) -> Vec<Result<Named, Unread>> {
+    crate::served::serve(files)
 }
 
 /// `file`'s bytes, in a buffer sized for them before the first is read,
