@@ -477,7 +477,7 @@ mod tests {
     use super::scanner::{find_special, scan_event};
     use super::serde_events::{arg_i64, arg_str};
     #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
-    use super::stream::pipelined::{parse_gz_stream, parse_gz_stream_into};
+    use super::stream::pipelined::{parse_gz_stream, parse_stream_into};
     use super::stream::serial::{
         Declined, MIN_STREAMED_BYTES, first_pool, parse_serial, parse_serial_into,
         parse_serial_retrying,
@@ -1806,7 +1806,7 @@ mod tests {
         const PAGE: usize = 16;
         let short_pool = || ConcurrentInterner::with_exact_pool(4 * PAGE, PAGE);
         #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
-        assert!(parse_gz_stream_into(&gz[..], short_pool(), 2, 64, 0).is_none());
+        assert!(parse_stream_into(MultiGzDecoder::new(&gz[..]), short_pool(), 2, 64, 0).is_none());
         assert!(matches!(
             run_here(parse_serial_into(
                 MultiGzDecoder::new(&gz[..]),

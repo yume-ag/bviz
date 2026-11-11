@@ -27,7 +27,12 @@ const PIPELINE_MAX_CHUNK_BYTES: usize = 32 << 20;
 pub(crate) fn parse_gz_pipelined(bytes: &[u8]) -> Option<Profile> {
     let decoded_size = gzip_size_hint(bytes)?;
     let (workers, chunk_bytes) = pipeline_params(decoded_size)?;
-    parse_gz_stream_from(bytes, workers, chunk_bytes, decoded_size)
+    parse_stream_from(
+        MultiGzDecoder::new(bytes),
+        workers,
+        chunk_bytes,
+        decoded_size,
+    )
 }
 
 /// The pipelined decode streamed from a seekable gzipped `input`, sized from
@@ -36,16 +41,16 @@ pub(crate) fn parse_gz_pipelined(bytes: &[u8]) -> Option<Profile> {
 pub(crate) fn parse_gz_pipelined_input(input: &Input) -> Option<Profile> {
     let (reader, decoded_size) = gzip_input(input)?;
     timed("decode+parse (pipelined, streamed)", || {
-        parse_gz_pipelined_reader(reader, decoded_size)
+        parse_pipelined_text(MultiGzDecoder::new(reader), decoded_size)
     })
 }
 
-/// The pipelined decode over a streaming reader whose size hint was read ahead
-/// of the stream: [`parse_gz_pipelined`] without the whole compressed
-/// buffer in hand. `None` for the same size gates.
-fn parse_gz_pipelined_reader(reader: impl Read + Send, decoded_size: usize) -> Option<Profile> {
+/// The pipelined parse of decoded `text` whose size was read ahead of it.
+/// `None` for a size [`pipeline_params`] declines, and for a stream
+/// [`parse_stream_from`] fails.
+fn parse_pipelined_text(text: impl Read + Send, decoded_size: usize) -> Option<Profile> {
     let (workers, chunk_bytes) = pipeline_params(decoded_size)?;
-    parse_gz_stream_from(reader, workers, chunk_bytes, decoded_size)
+    parse_stream_from(text, workers, chunk_bytes, decoded_size)
 }
 
 /// The buffer a pipelined decode reads into, for a stream declaring
@@ -106,8 +111,8 @@ impl PieceSink for PieceQueue {
 /// when it gives none.
 #[cfg(test)]
 pub(crate) fn parse_gz_stream(bytes: &[u8], workers: usize, chunk_bytes: usize) -> Option<Profile> {
-    parse_gz_stream_from(
-        bytes,
+    parse_stream_from(
+        MultiGzDecoder::new(bytes),
         workers,
         chunk_bytes,
         gzip_size_hint(bytes).unwrap_or(0),
@@ -176,13 +181,13 @@ fn fold_pieces(
     (!failed).then_some((merge, next))
 }
 
-/// Runs the producer decoding `reader`, the `workers` chunk parsers, and the
-/// merger against each other. The piece queue is bounded by the worker count,
-/// so the producer decodes no further than that many pieces ahead of the
-/// parsers. Returns the stream's ends and the folded merge, each `None` when
-/// its own stage failed.
+/// Runs the producer cutting `text` into pieces, the `workers` chunk parsers,
+/// and the merger against each other. The piece queue is bounded by the worker
+/// count, so the producer decodes no further than that many pieces ahead of
+/// the parsers. Returns the stream's ends and the folded merge, each `None`
+/// when its own stage failed.
 fn decode_parse_fold(
-    reader: impl Read + Send,
+    text: impl Read + Send,
     interner: &ConcurrentInterner,
     workers: usize,
     chunk_bytes: usize,
@@ -201,7 +206,7 @@ fn decode_parse_fold(
             let producer = scope.spawn(move || {
                 let mut queue = PieceQueue { tx, sent: 0 };
                 run_here(stream_pieces(
-                    MultiGzDecoder::new(reader),
+                    text,
                     chunk_bytes,
                     ring,
                     &mut queue,
@@ -238,7 +243,7 @@ fn decode_parse_fold(
     })
 }
 
-/// Parses a stream declaring `decoded_size` uncompressed bytes in pieces of
+/// Parses decoded `text` declaring `decoded_size` bytes in pieces of
 /// about `chunk_bytes`. Transcoding runs per chunk on the workers, off the
 /// decode leg, and chunk buffers are reused as pieces finish parsing, so the
 /// whole decoded text never exists in memory at once. `None` if the decode or
@@ -246,25 +251,25 @@ fn decode_parse_fold(
 /// piece cut, if no piece was cut at all — an empty `traceEvents` array — or if
 /// the distinct text outgrows a string pool sized from `decoded_size`, which
 /// only the stream's trailer vouches for.
-fn parse_gz_stream_from(
-    reader: impl Read + Send,
+fn parse_stream_from(
+    text: impl Read + Send,
     workers: usize,
     chunk_bytes: usize,
     decoded_size: usize,
 ) -> Option<Profile> {
     let interner = ConcurrentInterner::new(decoded_size, decoded_size / BYTES_PER_DISTINCT).ok()?;
-    parse_gz_stream_into(reader, interner, workers, chunk_bytes, decoded_size)
+    parse_stream_into(text, interner, workers, chunk_bytes, decoded_size)
 }
 
-/// [`parse_gz_stream_from`] interning into the given `interner`.
-pub(crate) fn parse_gz_stream_into(
-    reader: impl Read + Send,
+/// [`parse_stream_from`] interning into the given `interner`.
+pub(crate) fn parse_stream_into(
+    text: impl Read + Send,
     interner: ConcurrentInterner,
     workers: usize,
     chunk_bytes: usize,
     decoded_size: usize,
 ) -> Option<Profile> {
-    let (ends, merged) = decode_parse_fold(reader, &interner, workers, chunk_bytes, decoded_size);
+    let (ends, merged) = decode_parse_fold(text, &interner, workers, chunk_bytes, decoded_size);
     let ends = ends?;
     let (merge, folded) = merged?;
     if folded != ends.pieces || folded == 0 {
