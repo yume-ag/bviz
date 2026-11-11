@@ -46,9 +46,31 @@ pub fn assert_can_block() {}
 /// memory-bandwidth bound, so threads past the cores that own the memory
 /// channels mostly stall on bandwidth, burning CPU for a wall-time gain that has
 /// flattened. At least one worker, so a caller may size, multiply or divide by
-/// it unguarded.
+/// it unguarded. The switch [`WORKERS_SWITCH`] overrides it, for measuring
+/// how a pass scales.
 pub fn worker_count() -> usize {
-    physical_cores().max(1)
+    workers_override().unwrap_or_else(physical_cores).max(1)
+}
+
+/// The switch that sets [`worker_count`], to a positive count.
+pub const WORKERS_SWITCH: &str = "BVIZ_WORKERS";
+
+/// The count [`WORKERS_SWITCH`] sets, read once: in the browser it must be read
+/// only after the page's switches are set, which the page does before it starts
+/// any thread.
+fn workers_override() -> Option<usize> {
+    static OVERRIDE: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    *OVERRIDE.get_or_init(|| {
+        let value = bviz_switches::get(WORKERS_SWITCH)?;
+        let count = value.parse::<usize>().ok().filter(|&count| count > 0);
+        match count {
+            Some(count) => bviz_switches::report(format_args!("{WORKERS_SWITCH}: {count} workers")),
+            None => bviz_switches::report(format_args!(
+                "{WORKERS_SWITCH}={value} is not a positive count; ignored"
+            )),
+        }
+        count
+    })
 }
 
 /// The physical cores, clamped to the parallelism the process is actually

@@ -866,6 +866,7 @@ dependencies = [
 name = "bviz_parallel"
 version = "0.1.0"
 dependencies = [
+ "bviz_switches",
  "js-sys",
  "num_cpus",
  "rayon",

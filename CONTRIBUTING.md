@@ -77,6 +77,7 @@ documented in [`ui/graph/src/pan_bench.rs`](ui/graph/src/pan_bench.rs).
 | `BVIZ_PAN_BENCH_MOTION` | how the benchmark moves the view |
 | `BVIZ_PAN_BENCH_PRESS` | where the benchmark's motion starts |
 | `BVIZ_TRACE_TIMING` | times each stage of loading a profile and of laying out its lanes |
+| `BVIZ_WORKERS` | sets how many workers each parallel pass uses, which is otherwise one per physical core |
 
 In a browser, name them in the fragment of the page's address, separated by
 `&`, each with its value after an `=`, as in
