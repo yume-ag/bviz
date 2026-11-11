@@ -31,7 +31,7 @@ name; the parked worker ends if it wakes.
 License: Apache-2.0 (wasm_thread 0cf96c7708dfb97ccf3da50347e25edcf75d6937)
 
 diff --git a/src/wasm32/mod.rs b/src/wasm32/mod.rs
-index 169b19c..a42f814 100644
+index 169b19c..d366d9c 100644
 --- a/src/wasm32/mod.rs
 +++ b/src/wasm32/mod.rs
 @@ -4,7 +4,6 @@ use std::{
@@ -42,7 +42,7 @@ index 169b19c..a42f814 100644
      sync::{Arc, Mutex},
      thread::{Result, Thread},
  };
-@@ -17,20 +16,93 @@ pub use utils::{available_parallelism, get_wasm_bindgen_shim_script_path, get_wo
+@@ -17,20 +16,95 @@ pub use utils::{available_parallelism, get_wasm_bindgen_shim_script_path, get_wo
  use wasm_bindgen::prelude::*;
  use web_sys::{DedicatedWorkerGlobalScope, Worker, WorkerOptions, WorkerType};
  
@@ -98,6 +98,8 @@ index 169b19c..a42f814 100644
 -    let ctx = unsafe { Box::from_raw(ptr as *mut WebWorkerContext) };
 -    (ctx.func)();
 -    WorkerMessage::ThreadComplete.post();
++    // SAFETY: `ptr` is the context [Builder::spawn_for_context] leaked for this worker alone and posted in its one
++    // initialization message; [parked::HandedOver::take_back] reclaims only contexts handed to parked workers.
 +    let mut ctx = unsafe { Box::from_raw(ptr as *mut WebWorkerContext) };
 +    let worker = parked::Worker::new(&ctx.setup);
 +    loop {
@@ -140,7 +142,7 @@ index 169b19c..a42f814 100644
  }
  
  /// Used to relay spawn requests from web workers to main thread
-@@ -41,7 +113,10 @@ struct BuilderRequest {
+@@ -41,7 +115,10 @@ struct BuilderRequest {
  
  impl BuilderRequest {
      pub unsafe fn spawn(self) {
@@ -152,7 +154,7 @@ index 169b19c..a42f814 100644
      }
  }
  
-@@ -49,8 +124,8 @@ impl BuilderRequest {
+@@ -49,8 +126,8 @@ impl BuilderRequest {
  enum WorkerMessage {
      /// Request to spawn thread
      SpawnThread(BuilderRequest),
@@ -163,7 +165,7 @@ index 169b19c..a42f814 100644
  }
  
  impl WorkerMessage {
-@@ -242,27 +317,28 @@ impl Builder {
+@@ -242,27 +319,28 @@ impl Builder {
              // will call `decrement_num_running_threads` and therefore signal that this thread is
              // done.
              drop(their_packet);
@@ -202,7 +204,7 @@ index 169b19c..a42f814 100644
          Ok(JoinInner {
              signal: my_signal,
              packet: my_packet,
-@@ -270,16 +346,13 @@ impl Builder {
+@@ -270,16 +348,13 @@ impl Builder {
      }
  
      unsafe fn spawn_for_context(self, ctx: WebWorkerContext) {
@@ -225,7 +227,7 @@ index 169b19c..a42f814 100644
  
          let options = WorkerOptions::new();
          match (name, prefix) {
-@@ -306,10 +379,7 @@ impl Builder {
+@@ -306,10 +381,7 @@ impl Builder {
          }
  
          // Spawn the worker
@@ -237,7 +239,7 @@ index 169b19c..a42f814 100644
  
          let callback = Closure::wrap_assert_unwind_safe(Box::new(move |x: &web_sys::MessageEvent| {
              // All u32 bits map to f64 mantisa so it's safe to cast like that
-@@ -319,10 +389,7 @@ impl Builder {
+@@ -319,10 +391,7 @@ impl Builder {
                  WorkerMessage::SpawnThread(builder) => {
                      builder.spawn();
                  }
@@ -249,7 +251,7 @@ index 169b19c..a42f814 100644
              };
          }) as Box<dyn FnMut(&web_sys::MessageEvent)>);
          worker.set_onmessage(Some(callback.as_ref().unchecked_ref()));
-@@ -338,8 +405,8 @@ impl Builder {
+@@ -338,8 +407,8 @@ impl Builder {
          init.push(&wasm_bindgen::memory());
          init.push(&JsValue::from(ctx_ptr as u32));
          init.push(&match stack_size {
@@ -260,7 +262,7 @@ index 169b19c..a42f814 100644
          });
  
          // Send initialization message
-@@ -350,6 +417,8 @@ impl Builder {
+@@ -350,6 +419,8 @@ impl Builder {
                  Err(e)
              }
          }

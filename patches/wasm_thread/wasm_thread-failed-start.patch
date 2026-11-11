@@ -9,10 +9,10 @@ the panic reaches the page like any other.
 License: Apache-2.0 (wasm_thread 0cf96c7708dfb97ccf3da50347e25edcf75d6937)
 
 diff --git a/src/wasm32/mod.rs b/src/wasm32/mod.rs
-index a42f814..b083d42 100644
+index d366d9c..6e3ffad 100644
 --- a/src/wasm32/mod.rs
 +++ b/src/wasm32/mod.rs
-@@ -105,6 +105,11 @@ fn watch_hand_over(handed: parked::HandedOver) {
+@@ -107,6 +107,11 @@ fn watch_hand_over(handed: parked::HandedOver) {
          .unwrap();
  }
  
@@ -24,7 +24,7 @@ index a42f814..b083d42 100644
  /// Used to relay spawn requests from web workers to main thread
  struct BuilderRequest {
      builder: Builder,
-@@ -397,6 +402,16 @@ impl Builder {
+@@ -399,6 +404,16 @@ impl Builder {
          // TODO: cleanup this leak somehow
          callback.forget();
  
