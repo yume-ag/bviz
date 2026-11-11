@@ -1,0 +1,39 @@
+Run a hook as a worker's wasm thread ends
+
+A worker's wasm thread ends when wasm_thread_entry_point returns, after
+which the worker closes. Code that keeps state per wasm thread, such as a
+per-thread allocator heap, needs to release it then, while the thread's
+thread-local storage is still valid; nothing else marks that moment, as
+a parked worker keeps its wasm thread across the threads it runs.
+
+License: Apache-2.0 (wasm_thread 0cf96c7708dfb97ccf3da50347e25edcf75d6937)
+
+diff --git a/src/wasm32/mod.rs b/src/wasm32/mod.rs
+--- a/src/wasm32/mod.rs
++++ b/src/wasm32/mod.rs
+@@ -60,10 +60,25 @@
+     }
+ }
+ 
++/// Runs `hook` on each worker's wasm thread as it ends, the last code the thread runs: a parked worker keeps its wasm
++/// thread across the threads handed to it. A later call changes nothing.
++pub fn on_worker_exit(hook: fn()) {
++    let _ = WORKER_EXIT.set(hook);
++}
++
++static WORKER_EXIT: std::sync::OnceLock<fn()> = std::sync::OnceLock::new();
++
+ /// Entry point for web workers: runs the thread it is given, then each thread handed to the worker while it is parked,
+ /// and returns once the worker cannot park or a thread handed to it is taken back.
+ #[wasm_bindgen]
+ pub fn wasm_thread_entry_point(ptr: u32) {
++    run_worker(ptr);
++    if let Some(hook) = WORKER_EXIT.get() {
++        hook();
++    }
++}
++
++fn run_worker(ptr: u32) {
+     // SAFETY: `ptr` is the context [Builder::spawn_for_context] leaked for this worker alone and posted in its one
+     // initialization message; [parked::HandedOver::take_back] reclaims only contexts handed to parked workers.
+     let mut ctx = unsafe { Box::from_raw(ptr as *mut WebWorkerContext) };

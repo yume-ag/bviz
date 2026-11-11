@@ -354,6 +354,7 @@ crate.annotation(
         "//patches/wasm_thread:wasm_thread-stack-size.patch",
         "//patches/wasm_thread:wasm_thread-parked-workers.patch",
         "//patches/wasm_thread:wasm_thread-failed-start.patch",
+        "//patches/wasm_thread:wasm_thread-worker-exit-hook.patch",
     ],
 )
 
