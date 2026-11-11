@@ -7,6 +7,7 @@ use crate::files::Unread;
 use bviz_input::{Named, ReadAt};
 use js_sys::{Atomics, Int32Array, Object, Reflect, WebAssembly};
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::io;
 use std::mem::offset_of;
 use std::ptr;
@@ -14,7 +15,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
-use web_sys::{BroadcastChannel, File, Worker, WorkerOptions, WorkerType};
+use web_sys::{BroadcastChannel, File, MessageEvent, Worker, WorkerOptions, WorkerType};
 
 /// The global by which the page names the address of the file server's
 /// script.
@@ -80,9 +81,9 @@ struct Slot {
     /// Held by the one thread at a time that writes the request, while it
     /// waits for the answer.
     asking: Mutex<()>,
-    /// The name of the channel a thread tells the server on of each file it
-    /// lets go of: the window thread hands the server its files, but any
-    /// thread may drop one.
+    /// The name of the channel a thread tells the window thread on of each
+    /// file it lets go of: the window thread hands the server its files, but
+    /// any thread may drop one.
     releases: String,
 }
 
@@ -90,11 +91,19 @@ struct Slot {
 struct Server {
     worker: Worker,
     slot: &'static Slot,
+    /// The ids of the files handed over and not let go of. The server ends
+    /// once none is left, when no reader can be waiting on it.
+    live: HashSet<u32>,
+    /// The window thread's end of the channel of releases. It forwards each
+    /// release to the server on the port it handed the file over on, so the
+    /// release follows the file.
+    releases: BroadcastChannel,
 }
 
 impl Drop for Server {
     fn drop(&mut self) {
         self.worker.terminate();
+        self.releases.close();
     }
 }
 
@@ -119,7 +128,16 @@ pub(crate) fn serve(files: Vec<File>) -> Vec<Result<Named, Unread>> {
                     Some(running) => Ok(running),
                     None => start_server().map(|started| server.insert(started)),
                 };
-                match running.and_then(|running| hand_over(running, &file)) {
+                let served = running.and_then(|running| hand_over(running, &file));
+                // No release ends a server that holds no files.
+                if served.is_err()
+                    && server
+                        .as_ref()
+                        .is_some_and(|running| running.live.is_empty())
+                {
+                    *server = None;
+                }
+                match served {
                     Ok(source) => Ok(Named::Seekable {
                         name,
                         source: Box::new(source),
@@ -136,10 +154,11 @@ pub(crate) fn serve(files: Vec<File>) -> Vec<Result<Named, Unread>> {
 }
 
 /// Hands `file` to `server`, returning what reads it there.
-fn hand_over(server: &Server, file: &File) -> Result<Served, String> {
+fn hand_over(server: &mut Server, file: &File) -> Result<Served, String> {
     let id = NEXT_FILE.fetch_add(1, Ordering::Relaxed);
     let message = object(&[("id", id.into()), ("file", file.into())]);
     server.worker.post_message(&message).map_err(js_error)?;
+    server.live.insert(id);
     Ok(Served {
         id,
         slot: server.slot,
@@ -159,16 +178,47 @@ fn start_server() -> Result<Server, String> {
     let unique = crypto
         .ok_or("no window starts the file server")?
         .map_err(js_error)?;
-    let releases = format!("bviz:released:{}", unique.random_uuid());
+    let name = format!("bviz:released:{}", unique.random_uuid());
     let options = WorkerOptions::new();
     options.set_type(WorkerType::Module);
     let worker = Worker::new_with_options(&script, &options).map_err(js_error)?;
+    let releases = BroadcastChannel::new(&name)
+        .inspect_err(|_| worker.terminate())
+        .map_err(js_error)?;
     let slot: &'static Slot = Box::leak(Box::new(Slot {
         request: Request::idle(),
         asking: Mutex::new(()),
-        releases,
+        releases: name,
     }));
-    let server = Server { worker, slot };
+    let server = Server {
+        worker,
+        slot,
+        live: HashSet::new(),
+        releases,
+    };
+    let released = Closure::<dyn Fn(MessageEvent)>::new(move |event: MessageEvent| {
+        let Some(id) = event.data().as_f64() else {
+            return;
+        };
+        SERVER.with_borrow_mut(|server| {
+            let Some(running) = server
+                .as_mut()
+                .filter(|running| ptr::eq(running.slot, slot))
+            else {
+                return;
+            };
+            running.live.remove(&(id as u32));
+            if running.live.is_empty() {
+                *server = None;
+            } else {
+                let release = object(&[("id", id.into())]);
+                running.worker.post_message(&release).ok();
+            }
+        });
+    });
+    server
+        .releases
+        .set_onmessage(Some(released.into_js_value().unchecked_ref()));
     let failed = Closure::<dyn Fn(web_sys::Event)>::new(move |_| {
         slot.request.state.store(GONE, Ordering::SeqCst);
         Atomics::notify(&words_to(slot.state()), slot.state()).ok();
@@ -186,7 +236,6 @@ fn start_server() -> Result<Server, String> {
         .set_onerror(Some(failed.into_js_value().unchecked_ref()));
     let start = object(&[
         ("memory", memory().into()),
-        ("releases", slot.releases.as_str().into()),
         ("layout", slot.layout().into()),
     ]);
     server.worker.post_message(&start).map_err(js_error)?;

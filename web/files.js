@@ -1,12 +1,10 @@
 // The file server: holds the files a visitor hands bviz, and answers each
 // request bviz's threads make in bviz's memory for a slice of one, writing the
 // slice there. The window thread starts it on that memory, with the layout of
-// the request, and hands it each file by an id; any thread tells it on the
-// channel of releases when it lets go of one.
+// the request, hands it each file by an id, and tells it the id of each file
+// bviz lets go of.
 
 const files = new Map();
-// The ids of files let go of before the server was handed them.
-const released = new Set();
 const reader = new FileReaderSync();
 
 let memory;
@@ -36,15 +34,12 @@ self.onmessage = ({ data }) => {
     // A view of the memory as it stands, which holds the request however the
     // memory grows after.
     words = new Int32Array(memory.buffer);
-    new BroadcastChannel(data.releases).onmessage = ({ data: id }) => {
-      if (!files.delete(id)) {
-        released.add(id);
-      }
-    };
     serve().catch(fail);
-  } else if (!released.delete(data.id)) {
+  } else if (data.file) {
     files.set(data.id, data.file);
     handed();
+  } else {
+    files.delete(data.id);
   }
 };
 
