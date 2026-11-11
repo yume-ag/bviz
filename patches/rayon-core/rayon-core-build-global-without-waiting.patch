@@ -1,0 +1,28 @@
+Build the global pool without waiting for its threads
+
+ThreadPoolBuilder::build_global waits until every thread of the global
+pool has started. A browser's main thread cannot wait, yet it is the one
+thread that runs before any other, so building the pool there is what
+keeps another thread from installing rayon's one-thread fallback first.
+build_global_without_waiting installs the pool and returns.
+
+License: Apache-2.0 (rayon-core 1.13.0)
+
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -279,6 +279,15 @@
+         registry.wait_until_primed();
+         Ok(())
+     }
++
++    /// Initializes the global thread pool as
++    /// [`build_global`](#method.build_global) does, without waiting for
++    /// its threads to start. The pool takes jobs at once and its threads
++    /// run them once started, which suits a thread that cannot block.
++    pub fn build_global_without_waiting(self) -> Result<(), ThreadPoolBuildError> {
++        registry::init_global_registry(self)?;
++        Ok(())
++    }
+ }
+ 
+ impl ThreadPoolBuilder {

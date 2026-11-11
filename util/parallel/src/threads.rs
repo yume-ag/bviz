@@ -135,18 +135,17 @@ fn build(builder: rayon::ThreadPoolBuilder) -> Result<Pool, rayon::ThreadPoolBui
 /// Builds rayon's global pool, [`worker_count`] wide, on threads that the
 /// browser can start: where rayon cannot start one, it runs the pool on
 /// whichever thread first reaches it, which a parallel iterator left outside an
-/// `install` would then hold up. Building it waits for its workers to start, so
-/// it is built on the thread whose handle this returns; until that thread
-/// finishes, nothing may reach the global pool.
+/// `install` would then hold up. It must run before anything starts a thread,
+/// gpui's platform included, so that no thread reaches the global pool first.
+/// It waits neither for the pool's workers nor on starting them, so the
+/// browser's main thread may call it.
 #[cfg(target_family = "wasm")]
-pub fn build_global_pool() -> JoinHandle<()> {
-    spawn(|| {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(worker_count())
-            .spawn_handler(start_worker)
-            .build_global()
-            .expect("build rayon's global pool");
-    })
+pub fn build_global_pool() {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(worker_count())
+        .spawn_handler(start_worker)
+        .build_global_without_waiting()
+        .expect("build rayon's global pool");
 }
 
 /// Starts a rayon worker on a thread of its own, named and with the stack its

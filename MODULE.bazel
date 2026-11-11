@@ -308,6 +308,11 @@ crate.annotation(
     patches = ["//patches/home:home-empty-on-wasm.patch"],
 )
 crate.annotation(
+    crate = "rayon-core",
+    patch_args = ["-p1"],
+    patches = ["//patches/rayon-core:rayon-core-build-global-without-waiting.patch"],
+)
+crate.annotation(
     crate = "alacritty_terminal",
     patch_args = ["-p1"],
     patches = ["//patches/alacritty_terminal:alacritty_terminal-cfg-tty.patch"],

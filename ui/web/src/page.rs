@@ -27,7 +27,7 @@ pub fn fragment() -> String {
 
 /// Dispatches the event `name`, carrying `message` as its property of that
 /// name where there is one.
-pub(crate) fn dispatch(name: &str, message: Option<&str>) {
+fn dispatch(name: &str, message: Option<&str>) {
     let Some(window) = web_sys::window() else {
         return;
     };

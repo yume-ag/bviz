@@ -188,7 +188,6 @@ if (reason) {
 } else {
   addEventListener("gpui:graphicsunavailable", (event) => help("graphics", event.message));
   addEventListener("bviz:failed", (event) => help("failed", event.message));
-  addEventListener("bviz:crashed", () => crashed(crashOf()));
   addEventListener("bviz:closed", () => ended("bviz closed."));
   addEventListener("error", (event) => escaped(event.error) && crashed(crashOf(event.error)));
   addEventListener("unhandledrejection", (event) => escaped(event.reason) && crashed(crashOf(event.reason)));
