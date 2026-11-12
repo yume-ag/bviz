@@ -68,7 +68,7 @@ copy_to_directory(
         ":threads_bindings",
         "//:LICENSE",
         "//:NOTICE",
-        "//bviz:third_party_notices_web",
+        "//bviz:third_party_notices_web_threads",
     ],
     replace_prefixes = {
         "bindings/": "",
