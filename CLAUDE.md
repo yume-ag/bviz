@@ -254,6 +254,9 @@ text that Bazel already fetches.
 - Prefer specific visibility (`//pkg:__pkg__`) over `//visibility:public`.
 - Set `visibility` only on targets other packages depend on, including through
   an `alias`; omit it on leaf targets such as a `rust_binary`.
+- Export a source file with `exports_files` only when a rule, attribute default
+  or flag outside its package names it; a file named only from `MODULE.bazel`,
+  such as a patch, needs no export.
 - Give every crate a project-namespaced `crate_name` carrying the `bviz_` prefix,
   matching its Cargo package name (e.g. `bviz_graph_svg`, not a bare `graph_svg`).
 - Prefer symbolic macros over legacy macros.
