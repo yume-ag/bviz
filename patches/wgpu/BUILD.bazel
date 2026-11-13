@@ -3,8 +3,3 @@ package(default_package_metadata = [
     "//:package_metadata",
     "//LICENSES:wgpu_patches",
 ])
-
-exports_files(
-    ["wgpu-assert-unwind-safe-callbacks.patch"],
-    visibility = ["//visibility:public"],
-)

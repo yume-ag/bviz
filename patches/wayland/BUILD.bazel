@@ -1,1 +1,0 @@
-exports_files(["wayland-export-copying.patch"])

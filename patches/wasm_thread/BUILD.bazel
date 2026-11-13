@@ -1,7 +1,0 @@
-exports_files([
-    "wasm_thread-assert-unwind-safe-handler.patch",
-    "wasm_thread-failed-start.patch",
-    "wasm_thread-no-eval.patch",
-    "wasm_thread-parked-workers.patch",
-    "wasm_thread-stack-size.patch",
-])

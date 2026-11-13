@@ -1,4 +1,0 @@
-exports_files([
-    "zstd-export-headers.patch",
-    "zstd-export-license.patch",
-])
