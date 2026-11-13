@@ -308,6 +308,11 @@ crate.annotation(
     patches = ["//patches/home:home-empty-on-wasm.patch"],
 )
 crate.annotation(
+    crate = "dlmalloc",
+    patch_args = ["-p1"],
+    patches = ["//patches/dlmalloc:dlmalloc-realloc-in-place.patch"],
+)
+crate.annotation(
     crate = "rayon-core",
     patch_args = ["-p1"],
     patches = ["//patches/rayon-core:rayon-core-build-global-without-waiting.patch"],
@@ -354,6 +359,7 @@ crate.annotation(
         "//patches/wasm_thread:wasm_thread-stack-size.patch",
         "//patches/wasm_thread:wasm_thread-parked-workers.patch",
         "//patches/wasm_thread:wasm_thread-failed-start.patch",
+        "//patches/wasm_thread:wasm_thread-worker-exit-hook.patch",
     ],
 )
 
@@ -480,6 +486,51 @@ license(
     extra_aliased_targets = {"zstd-sys_wasm_shim": "wasm_shim"},
     gen_build_script = "off",  # otherwise it compiles the zstd it bundles
     deps = ["//third_party:zstd"],
+)
+crate.annotation(
+    additive_build_file_content = """load("@package_metadata//licenses/rules:license.bzl", "license")
+load("@package_metadata//rules:package_metadata.bzl", "package_metadata")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
+cc_library(
+    name = "mimalloc_sources",
+    hdrs = glob(["c_src/mimalloc/v3/include/**/*.h"]),
+    includes = [
+        "c_src/mimalloc/v3/include",
+        "c_src/mimalloc/v3/src",
+    ],
+    textual_hdrs = glob([
+        "c_src/mimalloc/v3/src/**/*.c",
+        "c_src/mimalloc/v3/src/**/*.h",
+    ]),
+    package_metadata = [":mimalloc_package_metadata"],
+    visibility = ["//visibility:public"],
+)
+
+package_metadata(
+    name = "mimalloc_package_metadata",
+    attributes = [":mimalloc_license"],
+    purl = "pkg:github/microsoft/mimalloc@v3.3.2",
+)
+
+license(
+    name = "mimalloc_license",
+    kind = "@package_metadata//licenses/spdx:MIT",
+    text = "c_src/mimalloc/v3/LICENSE",
+)
+
+filegroup(
+    name = "mimalloc_licence",
+    srcs = ["c_src/mimalloc/v3/LICENSE"],
+    visibility = ["//visibility:public"],
+)""",
+    crate = "libmimalloc-sys",
+    extra_aliased_targets = {
+        "libmimalloc-sys_mimalloc_licence": "mimalloc_licence",
+        "libmimalloc-sys_mimalloc_sources": "mimalloc_sources",
+    },
+    patch_args = ["-p1"],
+    patches = ["//patches/libmimalloc-sys:libmimalloc-sys-arena-max-reserve.patch"],
 )
 
 # rav1e records its build environment through the built crate, whose RUSTC entry

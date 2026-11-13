@@ -8,11 +8,12 @@
 //! On the desktop it is mimalloc. glibc malloc returns large freed buffers to
 //! the OS eagerly, and that munmap/madvise churn is a noticeable share of a big
 //! profile load; mimalloc retains freed ranges and reuses them. In the browser
-//! it is dlmalloc: without threads the standard library's own, and with threads
-//! two heaps of it, one for the main thread and one the workers share.
+//! without threads it is the standard library's dlmalloc, and with threads
+//! mimalloc, which gives each thread a heap of its own, backed by a dlmalloc
+//! heap the threads share.
 #![cfg_attr(
     all(target_family = "wasm", target_feature = "atomics"),
-    feature(stdarch_wasm_atomic_wait, thread_local)
+    feature(stdarch_wasm_atomic_wait)
 )]
 
 #[cfg(not(target_family = "wasm"))]
@@ -21,6 +22,12 @@ mod native;
 #[cfg(any(test, all(target_family = "wasm", target_feature = "atomics")))]
 mod heaps;
 
+#[cfg(any(test, all(target_family = "wasm", target_feature = "atomics")))]
+mod lock;
+
+#[cfg(test)]
+mod testing;
+
 #[cfg(all(target_family = "wasm", target_feature = "atomics"))]
 mod browser;
 
@@ -28,14 +35,14 @@ mod browser;
 pub use native::{MiMalloc as Allocator, retain_freed_memory_across_load};
 
 #[cfg(all(target_family = "wasm", target_feature = "atomics"))]
-pub use browser::{Allocator, mark_main_thread};
+pub use browser::{Allocator, end_worker_thread, start_on_main_thread};
 
 #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
 pub use std::alloc::System as Allocator;
 
 /// Does nothing, as a build without threads has only the main thread.
 #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
-pub fn mark_main_thread() {}
+pub fn start_on_main_thread() {}
 
 /// Does nothing: a WebAssembly memory never shrinks, so the allocator keeps
 /// every page it is freed already.

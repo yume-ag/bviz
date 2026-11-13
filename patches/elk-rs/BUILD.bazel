@@ -1,8 +1,3 @@
 # The patches reshape whole blocks of Eclipse Public License 2.0 source, so they
 # carry that source and are modifications of it.
 package(default_package_metadata = ["//LICENSES:elk_rs"])
-
-exports_files(
-    glob(["*.patch"]),
-    visibility = ["//visibility:public"],
-)

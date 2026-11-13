@@ -14,6 +14,7 @@ rust_library(
         "//trace/profile:__pkg__",
         "//ui/execlog:__pkg__",
         "//ui/trace:__pkg__",
+        "//ui/web:__pkg__",
     ],
     deps = select({
         "@platforms//cpu:wasm32": [],
@@ -22,7 +23,10 @@ rust_library(
             "@crates//:mimalloc",
         ],
     }) + select({
-        "@rules_rs//rs/platforms/constraints:wasm_threads_on": ["@crates//:dlmalloc"],
+        "@rules_rs//rs/platforms/constraints:wasm_threads_on": [
+            "//third_party/mimalloc_web",
+            "@crates//:dlmalloc",
+        ],
         "//conditions:default": [],
     }),
 )

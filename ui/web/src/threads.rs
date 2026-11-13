@@ -18,6 +18,7 @@ pub fn when_threads_start(start: impl FnOnce() + 'static) {
     wasm_thread::Builder::new()
         .worker_script_url(script)
         .set_default();
+    wasm_thread::on_worker_exit(bviz_alloc::end_worker_thread);
     bviz_parallel::build_global_pool();
     start();
 }

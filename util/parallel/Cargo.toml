@@ -11,6 +11,7 @@ name = "bviz_parallel"
 path = "src/lib.rs"
 
 [dependencies]
+bviz_switches = { workspace = true }
 rayon = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]

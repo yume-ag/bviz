@@ -1,0 +1,29 @@
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
+# The browser has no C library: these headers stand in for the few parts of
+# one that mimalloc names.
+cc_library(
+    name = "libc_shim",
+    hdrs = glob(["include/*.h"]),
+    includes = ["include"],
+)
+
+# mimalloc, from the sources libmimalloc-sys vendors, for the browser's threads.
+cc_library(
+    name = "mimalloc_web",
+    srcs = select({
+        "@rules_rs//rs/platforms/constraints:wasm_threads_on": ["mimalloc_web.c"],
+        "//conditions:default": [],
+    }),
+    implementation_deps = [
+        ":libc_shim",
+        "@crates//:libmimalloc-sys_mimalloc_sources",
+    ],
+    local_defines = [
+        "MI_DEBUG=0",
+        "MI_BUILD_RELEASE",
+        "NDEBUG",
+    ],
+    package_metadata = ["//LICENSES:mimalloc_derived_source"],
+    visibility = ["//alloc:__pkg__"],
+)

@@ -102,3 +102,16 @@ license(
     kind = "@package_metadata//licenses/spdx:Apache-2.0",
     text = "@crates//:wgpu_licence",
 )
+
+package_metadata(
+    name = "mimalloc_derived_source",
+    attributes = [":mimalloc_license"],
+    purl = "pkg:github/microsoft/mimalloc@v3.3.2",
+    visibility = ["//third_party/mimalloc_web:__pkg__"],
+)
+
+license(
+    name = "mimalloc_license",
+    kind = "@package_metadata//licenses/spdx:MIT",
+    text = "@crates//:libmimalloc-sys_mimalloc_licence",
+)

@@ -1,0 +1,25 @@
+Let a build cap the size of the arenas mimalloc reserves
+
+mimalloc doubles the size of the arenas it reserves every eight arenas,
+which costs nothing where reserving only maps address space. Where it
+takes real memory, as in a WebAssembly memory that never shrinks, the
+late arenas are each a large share of the memory for what may be a small
+need. MI_ARENA_MAX_RESERVE, when defined, caps that growth; the default
+build leaves it undefined and is unchanged.
+
+License: MIT (mimalloc v3.3.2, as libmimalloc-sys 0.1.49 vendors it)
+
+--- a/c_src/mimalloc/v3/src/arena.c
++++ b/c_src/mimalloc/v3/src/arena.c
+@@ -328,6 +328,11 @@
+     if (!mi_mul_overflow(multiplier, arena_reserve, &reserve)) {
+       arena_reserve = reserve;
+     }
++    #ifdef MI_ARENA_MAX_RESERVE
++    if (arena_reserve > MI_ARENA_MAX_RESERVE) {
++      arena_reserve = MI_ARENA_MAX_RESERVE;
++    }
++    #endif
+   }
+ 
+   // try to accommodate the requested size for huge allocations

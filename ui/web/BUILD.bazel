@@ -13,6 +13,7 @@ rust_library(
     ],
     deps = select({
         "@platforms//cpu:wasm32": [
+            "//alloc",
             "//util/input",
             "//util/parallel",
             "@crates//:console_error_panic_hook",

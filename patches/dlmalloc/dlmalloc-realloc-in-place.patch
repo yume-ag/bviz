@@ -1,0 +1,61 @@
+Resize a block only in place
+
+C dlmalloc offers realloc_in_place, which grows or shrinks a block where
+it stands and fails instead of moving it; this crate's realloc always
+moves a block it cannot resize in place, copying it inside the call. An
+allocator that guards the heap with a lock needs the in-place step on its
+own, so that it can copy a moved block after releasing the lock.
+c_realloc_in_place exposes it.
+
+License: MIT OR Apache-2.0 (dlmalloc 0.2.14)
+
+diff --git a/src/dlmalloc.rs b/src/dlmalloc.rs
+--- a/src/dlmalloc.rs
++++ b/src/dlmalloc.rs
+@@ -536,6 +536,20 @@
+         return ptr;
+     }
+ 
++    pub unsafe fn realloc_in_place(&mut self, oldmem: *mut u8, bytes: usize) -> bool {
++        if bytes >= self.max_request() {
++            return false;
++        }
++        let nb = self.request2size(bytes);
++        let oldp = Chunk::from_mem(oldmem);
++        let newp = self.try_realloc_chunk(oldp, nb, false);
++        if newp.is_null() {
++            return false;
++        }
++        self.check_inuse_chunk(newp);
++        true
++    }
++
+     unsafe fn try_realloc_chunk(&mut self, p: *mut Chunk, nb: usize, can_move: bool) -> *mut Chunk {
+         let oldsize = Chunk::size(p);
+         let next = Chunk::plus_offset(p, oldsize);
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -383,6 +383,22 @@
+         self.0.realloc(ptr, new_size)
+     }
+ 
++    /// Resizes `ptr` to `new_size` bytes without moving it, as C dlmalloc's
++    /// `realloc_in_place` does.
++    ///
++    /// Returns `true` if the block now holds `new_size` bytes at the same
++    /// address, keeping its contents and alignment. Returns `false`, leaving
++    /// the block unchanged, if it could not be resized where it is.
++    ///
++    /// # Safety
++    ///
++    /// `ptr` must come from this allocator instance and must not have been
++    /// freed already.
++    #[inline]
++    pub unsafe fn c_realloc_in_place(&mut self, ptr: *mut u8, new_size: usize) -> bool {
++        self.0.realloc_in_place(ptr, new_size)
++    }
++
+     /// Frees `ptr`.
+     ///
+     /// Layout-free counterpart for wrapping the C `free(void *)` ABI. A
