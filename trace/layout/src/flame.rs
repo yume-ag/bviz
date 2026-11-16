@@ -6,7 +6,9 @@ use bviz_trace_profile::{
     CategoryId, OptStr, Profile, Slice, SliceDetail, Span32, SpanRole, Str, ThreadTrack, TimeSpan,
     Workload, encloses, occupied_span,
 };
-use rayon::iter::{IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator};
+use rayon::iter::{
+    IntoParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator,
+};
 use rayon::slice::{ParallelSlice, ParallelSliceMut};
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -221,16 +223,74 @@ pub(crate) fn run_sharded<S: Default + Send>(
     bviz_parallel::fan_out(workers, |_| run_one())
 }
 
-/// Sort distinct handles into byte-wise text order. Small inputs sort
-/// serially — the parallel split only pays off at scale.
+/// Sort distinct handles into byte-wise text order.
 fn sort_by_text(profile: &Profile, handles: &mut [Str]) {
-    /// Input size below which the serial sort wins over the parallel split.
+    sort_by_text_from(profile, handles, 0);
+}
+
+/// The word of `text`'s bytes from `at`, big-endian and zero-padded, beside
+/// how many bytes of the text it holds. Pairs order as the texts' bytes from
+/// `at` do, up to the word's end.
+fn text_word(text: &[u8], at: usize) -> (u64, u8) {
+    const WORD: usize = std::mem::size_of::<u64>();
+    let rest = text.get(at..).unwrap_or_default();
+    let n = rest.len().min(WORD);
+    let mut word = [0u8; WORD];
+    word[..n].copy_from_slice(&rest[..n]);
+    (u64::from_be_bytes(word), n as u8)
+}
+
+/// Sort handles whose texts share their first `at` bytes by the rest: an MSD
+/// radix sort whose digits are [`text_word`]s, so a comparison is between
+/// integers and a shared prefix is read once per group, not once per
+/// comparison.
+fn sort_by_text_from(profile: &Profile, handles: &mut [Str], at: usize) {
+    /// Group size up to which comparing the texts outright beats keying them.
+    const SMALL: usize = 32;
+    /// Group size from which the sort spreads across the workers.
     const PARALLEL_MIN: usize = 1 << 13;
-    let by_text = |a: &Str, b: &Str| profile.str(*a).cmp(profile.str(*b));
-    if handles.len() < PARALLEL_MIN {
-        handles.sort_unstable_by(by_text);
+    const WORD: u8 = std::mem::size_of::<u64>() as u8;
+    let text = |h: Str| profile.str(h).as_bytes();
+    if handles.len() <= SMALL {
+        handles.sort_unstable_by(|&a, &b| text(a)[at..].cmp(&text(b)[at..]));
+        return;
+    }
+    let wide = handles.len() >= PARALLEL_MIN;
+    let mut keyed: Vec<((u64, u8), Str)> = handles
+        .iter()
+        .map(|&h| (text_word(text(h), at), h))
+        .collect();
+    if wide {
+        workers().install(|| keyed.par_sort_unstable_by_key(|&(word, _)| word));
     } else {
-        workers().install(|| handles.par_sort_unstable_by(by_text));
+        keyed.sort_unstable_by_key(|&(word, _)| word);
+    }
+    for (slot, &(_, h)) in handles.iter_mut().zip(&keyed) {
+        *slot = h;
+    }
+    // Texts sharing a whole word go on to the next one; distinct texts never
+    // share a word that ends one of them.
+    let mut groups: Vec<&mut [Str]> = Vec::new();
+    let mut rest = handles;
+    for run in keyed.chunk_by(|a, b| a.0 == b.0) {
+        let (group, tail) = std::mem::take(&mut rest).split_at_mut(run.len());
+        rest = tail;
+        if run.len() > 1 && run[0].0.1 == WORD {
+            groups.push(group);
+        }
+    }
+    drop(keyed);
+    let next = at + WORD as usize;
+    if wide {
+        workers().install(|| {
+            groups
+                .into_par_iter()
+                .for_each(|g| sort_by_text_from(profile, g, next))
+        });
+    } else {
+        for g in groups {
+            sort_by_text_from(profile, g, next);
+        }
     }
 }
 
@@ -2589,12 +2649,19 @@ mod tests {
     fn parallel_text_sort_matches_serial() {
         // Enough names to cross the parallel threshold, with heavy shared
         // prefixes, case splits, and non-ASCII segments, so the parallel sort is
-        // exercised on clustered keys.
+        // exercised on clustered keys and on groups sharing several words.
         let slices = (0..20_000)
             .map(|i| {
                 let name = format!("prefix/{}/x{:05}", ["a", "A", "é", ""][i % 4], i);
                 slice(&name, "generic", 2 * i as i64, 1)
             })
+            .chain(
+                // Texts ending at, just before, and just past a word's end.
+                ["a", "abcdefg", "abcdefgh", "abcdefgha", "abcdefgh~"]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, name)| slice(name, "generic", 50_000 + 2 * i as i64, 1)),
+            )
             .collect();
         let p = profile(vec![track(1, LaneClass::Execution, slices)]);
         let mut handles: Vec<Str> = p.slices(&p.threads()[0]).iter().map(|s| s.name).collect();
