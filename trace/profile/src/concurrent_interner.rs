@@ -62,9 +62,13 @@ const PAGE_SIZE: usize = 256 * 1024;
 
 /// Shard-count bounds. Too few shards and disjoint strings contend on a lock;
 /// too many wastes an empty table per shard. A power of two so the shard index
-/// is a shift of the hash's high bits.
+/// is a shift.
 const MIN_SHARDS: usize = 16;
 const MAX_SHARDS: usize = 256;
+
+/// 2^64 divided by the golden ratio (Fibonacci hashing): the high bits of a
+/// product with it depend on every bit of the multiplicand.
+const SHARD_MIX: u64 = 0x9E37_79B9_7F4A_7C15;
 
 /// Slots in a [`Writer`]'s direct-mapped read cache, keyed by the low hash bits.
 /// A power of two so the index is a mask. At 16 bytes/slot this is 16 KB — small
@@ -177,9 +181,7 @@ pub(crate) struct ConcurrentInterner {
     /// Each shard on its own cache line, so a shard's write-lock traffic can't
     /// invalidate a neighbouring shard's line held on another core.
     shards: Box<[CachePadded<RwLock<HashTable<Str>>>]>,
-    /// `64 - log2(shards.len())`: shifting an FxHash right by this yields the
-    /// shard index from its high bits (FxHash 2.x finalizes, so the high bits
-    /// are well mixed).
+    /// `64 - log2(shards.len())`.
     shard_shift: u32,
     arena: Arena,
 }
@@ -350,6 +352,14 @@ impl ConcurrentInterner {
         self.arena.exhausted.load(Ordering::Relaxed)
     }
 
+    /// The shard indexing `hash`, drawn from all of its bits: a 32-bit FxHash
+    /// leaves the high half of the `u64` zero, and an index sharing bits with
+    /// hashbrown's bucket index (the low bits) or tag (the top 7 of the `usize`
+    /// width) would hold those bits constant across a shard's table.
+    fn shard_index(&self, hash: u64) -> usize {
+        (hash.wrapping_mul(SHARD_MIX) >> self.shard_shift) as usize
+    }
+
     /// Consumes the interner and returns its text pool, dropping the shard
     /// index. Every byte below the page cursor is written or placeholder/slack
     /// NUL, all valid UTF-8, so the pool resolves the handles this interner
@@ -418,7 +428,7 @@ impl Writer<'_> {
     /// bytes are written under that lock before the handle is published, and
     /// every later observer takes the same lock, so it sees them.
     fn intern_shard(&mut self, hash: u64, s: &str) -> Str {
-        let shard = (hash >> self.interner.shard_shift) as usize;
+        let shard = self.interner.shard_index(hash);
         let arena = &self.interner.arena;
         if let Some(&handle) = self.interner.shards[shard]
             .read()
@@ -676,6 +686,26 @@ mod tests {
         }
         assert!(interner.exhausted());
         assert_eq!(interner.into_text(), Err(PoolOverflow::Exhausted));
+    }
+
+    /// A 32-bit target's FxHash has only its low 32 bits set.
+    #[test]
+    fn low_32_bit_hashes_spread_across_every_shard() {
+        let interner = ConcurrentInterner::new(256, 0).expect("a small pool");
+        let shards = interner.shards.len();
+        let per_shard = 1000;
+        let mut counts = vec![0usize; shards];
+        for i in 0..shards * per_shard {
+            let hash = intern_hash(&format!("//pkg{}:target{i}", i % 97)) & u64::from(u32::MAX);
+            counts[interner.shard_index(hash)] += 1;
+        }
+        for (shard, &n) in counts.iter().enumerate() {
+            assert!(
+                n > 0 && n <= 2 * per_shard,
+                "shard {shard} of {shards} holds {n} of {} strings",
+                shards * per_shard
+            );
+        }
     }
 
     #[test]
