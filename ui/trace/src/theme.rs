@@ -208,12 +208,6 @@ impl Palette {
         }
     }
 
-    /// The fill under the cursor on a picked row of the background canvas, so
-    /// that pointing at a picked row leaves it marked.
-    pub(crate) fn picked_hover(&self) -> Rgba {
-        over(self.hover, over(self.selection, self.background))
-    }
-
     /// Fill for a span, keyed by its [`SpanRole`]: the workload picks the data
     /// slot and the payload flag its weight. Both the flame chart and the flame
     /// graph paint with it, so a role is one color in both. The Other workload —
@@ -373,21 +367,6 @@ mod tests {
                 let apart = distance(hovered, over(palette.selection, surface));
                 assert!(apart >= MIN_DISTINCT_COLOR, "{apart}");
             }
-        }
-    }
-
-    /// The fill is the whole of what marks a picked row, so bringing the cursor
-    /// onto one must neither wipe the mark nor leave the row reading like any
-    /// other row under the cursor.
-    #[test]
-    fn a_picked_row_stays_marked_under_the_cursor() {
-        for palette in palettes() {
-            let canvas = palette.background;
-            let hovered_pick = palette.picked_hover();
-            let apart = distance(hovered_pick, over(palette.hover, canvas));
-            assert!(apart >= MIN_DISTINCT_COLOR, "{apart}");
-            let step = level_step(hovered_pick, over(palette.selection, canvas));
-            assert!(step >= MIN_VISIBLE_STEP, "{step} levels");
         }
     }
 

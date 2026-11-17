@@ -33,6 +33,7 @@ mod scrollbar;
 mod scrubber;
 mod sort;
 mod spinner;
+mod table_row;
 pub mod text_input;
 mod toggle_group;
 mod toolbar;
@@ -80,6 +81,7 @@ pub use scrollbar::{Axis, DEFAULT_MIN_THUMB, SCROLLBAR_THICKNESS, Scrollbar, Scr
 pub use scrubber::{ScrubberColors, ScrubberState, scrubber};
 pub use sort::{Sort, sort_gesture, sort_header, sort_hint};
 pub use spinner::spinner;
+pub use table_row::table_row;
 pub use text_input::TextInput;
 pub use toggle_group::{Presentation, Switch, ToggleGroup, ToggleSegment};
 pub use toolbar::{

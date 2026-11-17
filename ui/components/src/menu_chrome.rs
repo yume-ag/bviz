@@ -3,6 +3,7 @@
 //! the window at a point — so they read alike wherever they sit.
 
 use crate::scrollbar::SCROLLBAR_THICKNESS;
+use crate::table_row::picked_hover;
 use crate::{CONTROL_HEIGHT, Hint, laid_out_width};
 use bviz_ui_theme::{ThemeColors, over};
 use gpui::{
@@ -62,13 +63,9 @@ fn aimed_fill(colors: &ThemeColors) -> Hsla {
     Hsla::from(over(colors.element_hover, colors.panel))
 }
 
-/// The fill under the cursor on a row already chosen, composited so that row
-/// keeps its accent while the cursor is on it.
+/// The fill under the cursor on a row already chosen.
 fn chosen_hover(colors: &ThemeColors) -> Hsla {
-    Hsla::from(over(
-        colors.element_hover,
-        over(colors.selection, colors.panel),
-    ))
+    picked_hover(colors, colors.panel)
 }
 
 /// The button a picker's menu opens under, reading `label` within `width`

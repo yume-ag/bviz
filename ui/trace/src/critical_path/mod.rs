@@ -24,7 +24,7 @@ use bviz_ui_components::gesture::{self, Entry, GestureRow, Gestures, Input, Plac
 use bviz_ui_components::{
     ByRoom, KeyScope, LegendEntry, ListScroll, SCROLLBAR_THICKNESS, Sort, Swatch, TextTooltip,
     ToggleGroup, ToggleSegment, centered_notice, centered_spinner, list_scrollbar, sort_gesture,
-    sort_header, sort_hint,
+    sort_header, sort_hint, table_row,
 };
 use bviz_ui_workspace::{Caching, Panel, PanelEvent, PanelKind, Role, ViewKind};
 use fills::{Fills, outside};
@@ -476,21 +476,18 @@ impl CriticalPathPanel {
                     range
                         .map(|row| {
                             let index = order[row];
-                            nearly_critical_row(
-                                index,
-                                &modeled.nearly_critical()[index],
-                                repos,
-                                &palette,
-                            )
-                            .map(|row| {
-                                choosable(
-                                    row,
-                                    Chosen::NearlyCritical(index),
-                                    chosen,
-                                    entity.clone(),
+                            let stands_for = Chosen::NearlyCritical(index);
+                            choosable(
+                                nearly_critical_row(
+                                    index,
+                                    &modeled.nearly_critical()[index],
+                                    repos,
+                                    chosen == Some(stands_for),
                                     &palette,
-                                )
-                            })
+                                ),
+                                stands_for,
+                                entity.clone(),
+                            )
                         })
                         .collect()
                 }
@@ -560,16 +557,20 @@ impl CriticalPathPanel {
                 range
                     .map(|row| {
                         let index = order[row];
-                        let entity = entity.clone();
-                        step_row(
-                            index,
-                            &path.steps()[index],
-                            repos,
-                            against,
-                            &palette,
-                            &fills,
+                        let stands_for = Chosen::Step(index);
+                        choosable(
+                            step_row(
+                                index,
+                                &path.steps()[index],
+                                repos,
+                                against,
+                                chosen == Some(stands_for),
+                                &palette,
+                                &fills,
+                            ),
+                            stands_for,
+                            entity.clone(),
                         )
-                        .map(|row| choosable(row, Chosen::Step(index), chosen, entity, &palette))
                     })
                     .collect()
             }
@@ -607,36 +608,25 @@ fn traced_path(model: &TraceModel) -> Option<&CriticalPath> {
     }
 }
 
-/// `row`, standing for `stands_for`, marked where that is `chosen` and
-/// toggling it on a click in the panel `entity`. It owns the row's fill and
-/// hover style, which gpui lets an element set only once.
+/// `row`, standing for `stands_for`, toggling it on a click in the panel
+/// `entity`.
 fn choosable(
     row: Stateful<Div>,
     stands_for: Chosen,
-    chosen: Option<Chosen>,
     entity: Entity<CriticalPathPanel>,
-    palette: &Palette,
 ) -> Stateful<Div> {
-    let picked = chosen == Some(stands_for);
-    let hover = if picked {
-        palette.picked_hover()
-    } else {
-        palette.hover
-    };
-    row.when(picked, |row| row.bg(palette.selection))
-        .hover(move |row| row.bg(hover))
-        .on_click(move |e, window, cx| {
-            entity.update(cx, |panel, cx| {
-                GESTURES.dispatch(Pointer::click(e), |intent| match intent {
-                    CriticalPathIntent::Choose => {
-                        panel.focus.focus(window, cx);
-                        panel.toggle(stands_for, cx);
-                        true
-                    }
-                    _ => false,
-                });
-            })
+    row.on_click(move |e, window, cx| {
+        entity.update(cx, |panel, cx| {
+            GESTURES.dispatch(Pointer::click(e), |intent| match intent {
+                CriticalPathIntent::Choose => {
+                    panel.focus.focus(window, cx);
+                    panel.toggle(stands_for, cx);
+                    true
+                }
+                _ => false,
+            });
         })
+    })
 }
 
 /// `rows` taking the table's room under its header, scrolled through
@@ -971,12 +961,14 @@ struct Against {
     modeled: bool,
 }
 
-/// Row `index` of the steps table, showing `step`.
+/// Row `index` of the steps table, showing `step`, filled as the chosen one
+/// where `picked`.
 fn step_row(
     index: usize,
     step: &Step,
     repos: &RepoNames,
     against: Against,
+    picked: bool,
     palette: &Palette,
     fills: &Fills,
 ) -> Stateful<Div> {
@@ -1041,14 +1033,9 @@ fn step_row(
             .into_any_element(),
     };
     let bar_of = div().min_w(MIN_BAR_WIDTH).w(width).child(bar_of);
-    div()
-        .id(("critical-path-row", index))
-        .flex()
-        .flex_row()
+    table_row(("critical-path-row", index), &palette.colors, picked)
         .items_center()
         .h(px(STATS_ROW_HEIGHT))
-        .w_full()
-        .pr(px(SCROLLBAR_THICKNESS))
         .text_size(px(STATS_TEXT_SIZE))
         .child(table_cell(name.width, [described]))
         .child(table_cell(start.width, [format_duration(step.start_us())]))
@@ -1100,11 +1087,13 @@ fn ran(
 /// Between the mnemonic and the label of what ran.
 const RAN_SEPARATOR: &str = " · ";
 
-/// Row `index` of the table of actions nearly critical, showing `action`.
+/// Row `index` of the table of actions nearly critical, showing `action`,
+/// filled as the chosen one where `picked`.
 fn nearly_critical_row(
     index: usize,
     action: &NearlyCritical,
     repos: &RepoNames,
+    picked: bool,
     palette: &Palette,
 ) -> Stateful<Div> {
     let [name, took, slack] = &NEARLY_CRITICAL_COLUMNS;
@@ -1128,18 +1117,17 @@ fn nearly_critical_row(
         ))
         .child(line(action.description.clone()))
         .children(ran);
-    div()
-        .id(("critical-path-nearly-critical-row", index))
-        .flex()
-        .flex_row()
-        .items_center()
-        .h(px(STATS_ROW_HEIGHT))
-        .w_full()
-        .pr(px(SCROLLBAR_THICKNESS))
-        .text_size(px(STATS_TEXT_SIZE))
-        .child(table_cell(name.width, [described]))
-        .child(table_cell(took.width, [words::duration(action.duration)]))
-        .child(table_cell(slack.width, [words::duration(action.slack)]))
+    table_row(
+        ("critical-path-nearly-critical-row", index),
+        &palette.colors,
+        picked,
+    )
+    .items_center()
+    .h(px(STATS_ROW_HEIGHT))
+    .text_size(px(STATS_TEXT_SIZE))
+    .child(table_cell(name.width, [described]))
+    .child(table_cell(took.width, [words::duration(action.duration)]))
+    .child(table_cell(slack.width, [words::duration(action.slack)]))
 }
 
 /// The spawn phases of a step's action under the step's bar of `parts`,
