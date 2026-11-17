@@ -148,9 +148,9 @@ pub struct Pane {
     /// How far the tabs are scrolled along the strip, and where the frame last
     /// laid them out.
     tab_scroll: ScrollHandle,
-    /// The height the last frame laid the shown panel out at, which the keys
+    /// Where the last frame laid the shown panel out, whose height the keys
     /// help over it is kept within. `None` until a frame has drawn the pane.
-    body_height: Option<Pixels>,
+    body_bounds: Option<Bounds<Pixels>>,
     keys_help: Option<OpenHelp>,
 }
 
@@ -222,7 +222,7 @@ impl Pane {
             joined_by_drag: false,
             band: None,
             tab_scroll: ScrollHandle::new(),
-            body_height: None,
+            body_bounds: None,
             keys_help: None,
         };
         pane.show_active(window, cx);
@@ -313,6 +313,10 @@ impl Pane {
     /// The panels the pane holds, in the order it holds them.
     pub(crate) fn panels(&self) -> impl Iterator<Item = &AnyPanel> {
         self.tabs.iter().map(|tab| &tab.panel)
+    }
+
+    pub(crate) fn body_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.body_bounds
     }
 
     /// The panel the pane holds at `index` of its tabs.
@@ -489,7 +493,8 @@ impl Pane {
 
     /// The tallest the keys help may stand over the shown panel.
     pub(crate) fn keys_help_room(&self, window: &Window) -> Pixels {
-        keys_help_room(self.body_height.unwrap_or(window.viewport_size().height))
+        let body_height = self.body_bounds.map(|bounds| bounds.size.height);
+        keys_help_room(body_height.unwrap_or(window.viewport_size().height))
     }
 
     pub(crate) fn close_keys_help(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -957,7 +962,8 @@ fn body_laid_out(
         };
         let height = bounds.size.height;
         let refit = pane.update(cx, |pane, _| {
-            let changed = pane.body_height.replace(height) != Some(height);
+            let laid_out_before = pane.body_bounds.replace(bounds);
+            let changed = laid_out_before.map(|before| before.size.height) != Some(height);
             let help = pane.keys_help.as_ref().map(|open| open.help.clone());
             help.filter(|_| changed)
         });

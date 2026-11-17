@@ -2262,6 +2262,22 @@ impl Workspace {
         Some(self.frame()?.active_panel(cx))
     }
 
+    /// Every panel the window frames, each with the body bounds of the pane
+    /// holding it, the room its shown panel draws in.
+    pub fn framed_panels(&self, cx: &App) -> Vec<(AnyPanel, Option<Bounds<Pixels>>)> {
+        let Some(frame) = self.frame() else {
+            return Vec::new();
+        };
+        let panes = || frame.arrangement.layout().panes();
+        let mut framed = Vec::with_capacity(panes().map(|pane| pane.read(cx).tab_count()).sum());
+        for pane in panes() {
+            let pane = pane.read(cx);
+            let body = pane.body_bounds();
+            framed.extend(pane.panels().map(|panel| (panel.clone(), body)));
+        }
+        framed
+    }
+
     /// What names the window: the application, then, where a panel is on
     /// show, the name of its document where that is an invocation's, then the
     /// panel's title.
