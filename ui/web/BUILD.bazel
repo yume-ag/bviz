@@ -15,6 +15,7 @@ rust_library(
         "@platforms//cpu:wasm32": [
             "//alloc",
             "//util/input",
+            "//util/links",
             "//util/parallel",
             "@crates//:console_error_panic_hook",
             "@crates//:js-sys",

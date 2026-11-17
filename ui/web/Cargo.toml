@@ -13,6 +13,7 @@ path = "src/lib.rs"
 [target.'cfg(target_family = "wasm")'.dependencies]
 bviz_alloc = { workspace = true }
 bviz_input = { workspace = true }
+bviz_links = { workspace = true }
 bviz_parallel = { workspace = true }
 console_error_panic_hook = { workspace = true }
 js-sys = { workspace = true }
@@ -20,6 +21,8 @@ wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 wasm_thread = { workspace = true }
 web-sys = { workspace = true, features = [
+    "AbortController",
+    "AbortSignal",
     "Blob",
     "BroadcastChannel",
     "Crypto",
@@ -31,12 +34,23 @@ web-sys = { workspace = true, features = [
     "EventTarget",
     "File",
     "FileList",
+    "Headers",
     "HtmlElement",
     "HtmlInputElement",
     "Location",
     "MessageEvent",
     "MouseEvent",
     "Node",
+    "ReadableStream",
+    "ReadableStreamDefaultReader",
+    "ReadableStreamReadResult",
+    "ReferrerPolicy",
+    "RequestCache",
+    "RequestCredentials",
+    "RequestInit",
+    "RequestMode",
+    "RequestRedirect",
+    "Response",
     "UiEvent",
     "Window",
     "Worker",

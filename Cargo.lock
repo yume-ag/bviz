@@ -1189,6 +1189,7 @@ version = "0.1.0"
 dependencies = [
  "bviz_alloc",
  "bviz_input",
+ "bviz_links",
  "bviz_parallel",
  "console_error_panic_hook",
  "js-sys",

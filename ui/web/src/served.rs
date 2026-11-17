@@ -5,6 +5,7 @@
 //! memory.
 
 use crate::files::Unread;
+use crate::js_message;
 use bviz_input::{Named, ReadAt};
 use js_sys::{Atomics, Int32Array, Object, Reflect, WebAssembly};
 use std::cell::RefCell;
@@ -171,7 +172,7 @@ fn hand_over(server: &mut Server, file: &File) -> Result<Served, String> {
     ]);
     if let Err(error) = server.worker.post_message(&message) {
         FREE_SLOTS.with_borrow_mut(|free| free.push(slot));
-        return Err(js_error(error));
+        return Err(js_message(error));
     }
     server.live.insert(id, slot);
     Ok(Served {
@@ -194,14 +195,14 @@ fn start_server(files: usize) -> Result<Server, String> {
     let crypto = web_sys::window().map(|window| window.crypto());
     let unique = crypto
         .ok_or("no window starts the file server")?
-        .map_err(js_error)?;
+        .map_err(js_message)?;
     let name = format!("bviz:released:{}", unique.random_uuid());
     let options = WorkerOptions::new();
     options.set_type(WorkerType::Module);
-    let worker = Worker::new_with_options(&script, &options).map_err(js_error)?;
+    let worker = Worker::new_with_options(&script, &options).map_err(js_message)?;
     let releases = BroadcastChannel::new(&name)
         .inspect_err(|_| worker.terminate())
-        .map_err(js_error)?;
+        .map_err(js_message)?;
     let number = NEXT_SERVER.fetch_add(1, Ordering::Relaxed);
     let server = Server {
         number,
@@ -255,7 +256,7 @@ fn start_server(files: usize) -> Result<Server, String> {
         .worker
         .set_onerror(Some(failed.into_js_value().unchecked_ref()));
     let start = object(&[("memory", memory().into()), ("answers", answers().into())]);
-    server.worker.post_message(&start).map_err(js_error)?;
+    server.worker.post_message(&start).map_err(js_message)?;
     Ok(server)
 }
 
@@ -367,7 +368,7 @@ impl ReadAt for Served {
             // A read must not return while its slice is asked for: the server
             // may yet write into `buf`.
             Atomics::wait(&words, state, ASKED).unwrap_or_else(|error| {
-                panic!("cannot wait for the file server: {}", js_error(error))
+                panic!("cannot wait for the file server: {}", js_message(error))
             });
         }
         let answer = request.answer.load(Ordering::SeqCst);
@@ -427,11 +428,4 @@ fn object(entries: &[(&str, JsValue)]) -> Object {
         Reflect::set(&object, &(*key).into(), value).ok();
     }
     object
-}
-
-fn js_error(error: JsValue) -> String {
-    match error.dyn_ref::<js_sys::Error>() {
-        Some(error) => String::from(error.message()),
-        None => format!("{error:?}"),
-    }
 }

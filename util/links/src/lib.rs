@@ -5,6 +5,7 @@
 //! could not use.
 
 pub mod config;
+pub mod fetch;
 mod fetchable;
 pub mod fragment;
 mod kind;

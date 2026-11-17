@@ -168,8 +168,5 @@ async fn read_file(
 
 #[cfg(not(target_feature = "atomics"))]
 fn js_error(error: wasm_bindgen::JsValue) -> io::Error {
-    match error.dyn_ref::<js_sys::Error>() {
-        Some(error) => io::Error::other(String::from(error.message())),
-        None => io::Error::other(format!("{error:?}")),
-    }
+    io::Error::other(crate::js_message(error))
 }
