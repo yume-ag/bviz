@@ -48,7 +48,7 @@ pub use canvas::{Inked, LabelBoxStyle, paint_labeled_box, shape_truncated};
 pub use choice_dialog::{ChoiceDialog, ChoiceDialogEvent, ChoiceItem};
 pub use divider::{Divider, DividerSide};
 pub use drag::{DragEnd, track_drag};
-pub use dropdown::{Dropdown, DropdownEvent};
+pub use dropdown::{Dropdown, DropdownEvent, menu_open};
 pub use find_keys::find_key_bindings;
 pub use focus::focus_went_nowhere;
 pub use hint::Hint;

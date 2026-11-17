@@ -32,6 +32,15 @@ pub enum DropdownEvent {
     Changed(usize),
 }
 
+/// Whether a menu dropped from a trigger holds the focus in `window`, as one
+/// does while it stands open.
+pub fn menu_open(window: &Window) -> bool {
+    window
+        .context_stack()
+        .iter()
+        .any(|context| context.contains(KEY_CONTEXT.id()))
+}
+
 /// One option a [`Dropdown`] offers.
 struct Choice {
     label: SharedString,
