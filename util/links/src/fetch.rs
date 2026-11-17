@@ -36,6 +36,23 @@ pub struct Request {
     pub max_bytes: u64,
 }
 
+/// The largest length bviz reads from a response's declaration, the largest
+/// whole number a JavaScript number holds exactly, so that the browser's
+/// script and bviz agree on every length they read.
+pub const MAX_DECLARED_LENGTH: u64 = (1 << 53) - 1;
+
+/// The length a Content-Length `header` declares: digits alone, of at most
+/// [`MAX_DECLARED_LENGTH`].
+pub fn declared_length(header: &str) -> Option<u64> {
+    if header.is_empty() || !header.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    header
+        .parse()
+        .ok()
+        .filter(|&length| length <= MAX_DECLARED_LENGTH)
+}
+
 /// What a response tells of itself ahead of its body.
 #[derive(Clone, Copy, Debug)]
 pub struct Answered<'a> {
@@ -76,6 +93,46 @@ impl Request {
     }
 }
 
+/// The status of a response serving the byte range asked for.
+pub const PARTIAL_CONTENT: u16 = 206;
+
+/// What a request beyond a document's first response found of it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Probed {
+    /// The bytes past the length the first response declares were refused
+    /// as unsatisfiable, so the response holds the whole document.
+    pub whole: bool,
+    /// The response carries a validator, a Last-Modified or a strong ETag,
+    /// that the response to each later range request must repeat, so that
+    /// a document changed between them is told.
+    pub validated: bool,
+}
+
+/// How bviz reads a fetched document.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reading {
+    /// At any offset, through a request for each range, once its first
+    /// response is found whole and validated.
+    Seekable { size: u64 },
+    /// Once, in order.
+    Stream,
+}
+
+impl Answered<'_> {
+    /// How bviz reads the document this first response, to a request for
+    /// its every byte from the first, begins, by what `probed` found of it.
+    pub fn reading(&self, probed: Probed) -> Result<Reading, FetchError> {
+        if self.status != PARTIAL_CONTENT {
+            return Ok(Reading::Stream);
+        }
+        match self.length {
+            Some(size) if probed.whole && probed.validated => Ok(Reading::Seekable { size }),
+            Some(_) if probed.whole => Ok(Reading::Stream),
+            _ => Err(FetchError::Partial),
+        }
+    }
+}
+
 /// Why a fetched document could not be read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FetchError {
@@ -90,6 +147,8 @@ pub enum FetchError {
         declared: Option<u64>,
         max: u64,
     },
+    /// The server sent part of the document where it was asked for all.
+    Partial,
     /// The server sent nothing for [`STALL`].
     Stalled,
     Cancelled,
@@ -111,6 +170,9 @@ impl fmt::Display for FetchError {
             Self::TooLarge { declared, max } => f.write_str(&too_large(*declared, *max, |bytes| {
                 format!("{bytes} bytes")
             })),
+            Self::Partial => {
+                f.write_str("the server sent part of the document where bviz asked for all of it")
+            }
             Self::Stalled => write!(f, "the server sent nothing for {} seconds", STALL.as_secs()),
             Self::Cancelled => f.write_str("the download was cancelled"),
             Self::Failed(why) => write!(
@@ -270,6 +332,74 @@ mod tests {
             request().check(&failed, accepts_nothing),
             Err(FetchError::Redirected(_))
         ));
+    }
+
+    #[test]
+    fn a_partial_response_is_read_at_any_offset_only_once_found_whole() {
+        let partial = Answered {
+            status: PARTIAL_CONTENT,
+            ..answered(REQUESTED)
+        };
+        let whole = Probed {
+            whole: true,
+            validated: true,
+        };
+        assert_eq!(partial.reading(whole), Ok(Reading::Seekable { size: MAX }));
+        assert_eq!(partial.reading(Probed::default()), Err(FetchError::Partial));
+        let undeclared = Answered {
+            length: None,
+            ..partial
+        };
+        assert_eq!(undeclared.reading(whole), Err(FetchError::Partial));
+    }
+
+    #[test]
+    fn a_partial_response_without_a_validator_is_read_once_in_order() {
+        let partial = Answered {
+            status: PARTIAL_CONTENT,
+            ..answered(REQUESTED)
+        };
+        let unvalidated = Probed {
+            whole: true,
+            validated: false,
+        };
+        assert_eq!(partial.reading(unvalidated), Ok(Reading::Stream));
+    }
+
+    #[test]
+    fn a_whole_response_is_read_once_in_order() {
+        let ok = answered(REQUESTED);
+        let whole = Probed {
+            whole: true,
+            validated: true,
+        };
+        assert_eq!(ok.reading(whole), Ok(Reading::Stream));
+        assert_eq!(ok.reading(Probed::default()), Ok(Reading::Stream));
+    }
+
+    #[test]
+    fn a_declared_length_is_digits_alone_within_the_most() {
+        assert_eq!(declared_length("0"), Some(0));
+        assert_eq!(declared_length("0012"), Some(12));
+        assert_eq!(
+            declared_length(&MAX_DECLARED_LENGTH.to_string()),
+            Some(MAX_DECLARED_LENGTH)
+        );
+        for header in [
+            "",
+            " 12",
+            "12 ",
+            "+12",
+            "-1",
+            "1e3",
+            "1.0",
+            "0x10",
+            "12, 12",
+            "9007199254740992",
+            "18446744073709551616",
+        ] {
+            assert_eq!(declared_length(header), None, "{header:?}");
+        }
     }
 
     #[test]

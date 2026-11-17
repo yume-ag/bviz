@@ -1,5 +1,7 @@
 //! Documents bviz fetches by URL.
 
+#[cfg(target_feature = "atomics")]
+pub use crate::served::{Cancel, fetch};
 use bviz_links::fetch::{Credentials, STALL};
 #[cfg(not(target_feature = "atomics"))]
 pub use single::{Cancel, fetch};
@@ -167,7 +169,7 @@ mod single {
     /// The length `response` declares for its body.
     fn declared_length(response: &Response) -> Option<u64> {
         let length = response.headers().get("content-length").ok()??;
-        length.trim().parse().ok()
+        bviz_links::fetch::declared_length(&length)
     }
 
     /// The body of `response`, of `length` bytes where that is known and at

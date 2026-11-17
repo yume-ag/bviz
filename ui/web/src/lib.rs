@@ -4,7 +4,6 @@
 
 mod cede;
 mod crash;
-#[cfg(not(target_feature = "atomics"))]
 mod fetched;
 mod files;
 mod page;
@@ -14,7 +13,6 @@ mod threads;
 
 pub use cede::cede;
 pub use crash::report_crashes;
-#[cfg(not(target_feature = "atomics"))]
 pub use fetched::{Cancel, fetch};
 pub use files::{Unread, choose_files, on_files_dropped, receive_files};
 pub use page::{closed, failed, fragment, ready};
