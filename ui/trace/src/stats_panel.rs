@@ -13,7 +13,7 @@ use bviz_ui_components::gesture::{Button, Entry, GestureRow, Gestures, Input, Pl
 use bviz_ui_components::{
     Axis, DEFAULT_MIN_THUMB, DragEnd, KeyScope, OneRow, SCROLLBAR_THICKNESS, Scrollbar, Sort,
     TextTooltip, TruncatingLabel, centered_spinner, load_in_background, overlay_canvas,
-    sort_gesture, sort_header, sort_hint, track_drag,
+    sort_gesture, sort_header, sort_hint, table_row, track_drag,
 };
 use bviz_ui_workspace::{Caching, Panel, PanelEvent, PanelKind, Role, ViewKind};
 use gpui::{
@@ -396,9 +396,7 @@ impl StatsPanel {
         };
 
         let row_count = order.order().len();
-        let row_hover = palette.hover;
-        let row_pick = palette.selection;
-        let row_pick_hover = palette.picked_hover();
+        let colors = palette.colors;
         let picked = self.picked_row(&order);
         let version = order.aggregate_version;
         let entity = cx.entity();
@@ -415,8 +413,6 @@ impl StatsPanel {
                     let pct =
                         100.0 * row.self_us as f64 / order.aggregates.grand_total.max(1) as f64;
                     let entity = entity.clone();
-                    let is_picked = picked == Some(index);
-                    let hover_fill = if is_picked { row_pick_hover } else { row_hover };
                     let cells = STATS_COLUMNS.iter().map(|spec| {
                         let text: SharedString = match spec.column {
                             StatsColumn::Key => {
@@ -435,47 +431,39 @@ impl StatsPanel {
                         };
                         table_cell(spec.width, [text.into_any_element()])
                     });
-                    // The row's fill runs under the reserved scroll-bar strip
-                    // as well as under the cells, and only the cells take a
-                    // click, so a press that drives the bar picks no row. The
-                    // fill's id is what gets its hover repainted.
-                    div()
-                        .id(("stats-row", index as usize))
-                        .flex()
-                        .flex_row()
-                        .h(px(STATS_ROW_HEIGHT))
-                        .w_full()
-                        .pr(px(SCROLLBAR_THICKNESS))
-                        .when(is_picked, |d| d.bg(row_pick))
-                        .hover(move |s| s.bg(hover_fill))
-                        .child(
-                            div()
-                                .id(("stats-row-cells", index as usize))
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .size_full()
-                                .cursor_pointer()
-                                .on_click(move |e, _, cx: &mut App| {
-                                    entity.update(cx, |panel, cx| {
-                                        GESTURES.dispatch(
-                                            Pointer::click(e),
-                                            |intent| match intent {
-                                                StatsIntent::Pick => {
-                                                    panel.picked = Some(StatsPick {
-                                                        aggregate_version: version,
-                                                        index,
-                                                    });
-                                                    cx.notify();
-                                                    true
-                                                }
-                                                _ => false,
-                                            },
-                                        );
+                    // Only the cells take a click, so a press that drives the
+                    // scroll bar over the row's trailing strip picks no row.
+                    table_row(
+                        ("stats-row", index as usize),
+                        &colors,
+                        picked == Some(index),
+                    )
+                    .h(px(STATS_ROW_HEIGHT))
+                    .child(
+                        div()
+                            .id(("stats-row-cells", index as usize))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .size_full()
+                            .cursor_pointer()
+                            .on_click(move |e, _, cx: &mut App| {
+                                entity.update(cx, |panel, cx| {
+                                    GESTURES.dispatch(Pointer::click(e), |intent| match intent {
+                                        StatsIntent::Pick => {
+                                            panel.picked = Some(StatsPick {
+                                                aggregate_version: version,
+                                                index,
+                                            });
+                                            cx.notify();
+                                            true
+                                        }
+                                        _ => false,
                                     });
-                                })
-                                .children(cells),
-                        )
+                                });
+                            })
+                            .children(cells),
+                    )
                 })
                 .collect()
         })
