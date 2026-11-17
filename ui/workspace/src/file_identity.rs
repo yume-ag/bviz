@@ -82,7 +82,7 @@ impl Identified<Named> {
     pub fn of_named(named: Named) -> Self {
         let identity = match &named {
             Named::Path(path) => FileIdentity::of_path(path).ok(),
-            Named::Memory { .. } | Named::Seekable { .. } => None,
+            Named::Memory { .. } | Named::Seekable { .. } | Named::Stream { .. } => None,
         };
         Self {
             file: named,

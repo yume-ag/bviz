@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::fmt;
-use std::io;
+use std::io::{self, Read};
 use std::path::PathBuf;
 
 use crate::{Access, HEAD_BYTES, Input, ReadAt};
@@ -24,6 +24,13 @@ pub enum Named {
         source: Box<dyn ReadAt>,
         size: u64,
     },
+    /// A file read once, in order, through `reader`, of `size` bytes where
+    /// that is known ahead of reading it.
+    Stream {
+        name: String,
+        reader: Box<dyn Read + Send + Sync>,
+        size: Option<u64>,
+    },
 }
 
 impl Named {
@@ -44,6 +51,25 @@ impl Named {
                 })),
                 Err(error) => Err((Named::Seekable { name, source, size }, error)),
             },
+            Named::Stream {
+                name,
+                mut reader,
+                size,
+            } => {
+                let mut head = Vec::with_capacity(crate::head_bytes(size));
+                match (&mut reader).take(HEAD_BYTES as u64).read_to_end(&mut head) {
+                    Ok(_) => Ok(Opened(Open::Stream {
+                        name,
+                        reader,
+                        size,
+                        head,
+                    })),
+                    Err(error) => {
+                        let reader = replaying(head, reader);
+                        Err((Named::Stream { name, reader, size }, error))
+                    }
+                }
+            }
         }
     }
 
@@ -55,6 +81,7 @@ impl Named {
                 .map(|metadata| metadata.len()),
             Named::Memory { bytes, .. } => Some(bytes.len() as u64),
             Named::Seekable { size, .. } => Some(*size),
+            Named::Stream { size, .. } => *size,
         }
     }
 
@@ -62,7 +89,9 @@ impl Named {
     pub fn name(&self) -> Cow<'_, str> {
         match self {
             Named::Path(path) => path.to_string_lossy(),
-            Named::Memory { name, .. } | Named::Seekable { name, .. } => Cow::Borrowed(name),
+            Named::Memory { name, .. }
+            | Named::Seekable { name, .. }
+            | Named::Stream { name, .. } => Cow::Borrowed(name),
         }
     }
 }
@@ -84,6 +113,11 @@ impl fmt::Debug for Named {
                 .finish(),
             Named::Seekable { name, size, .. } => f
                 .debug_struct("Seekable")
+                .field("name", name)
+                .field("size", size)
+                .finish(),
+            Named::Stream { name, size, .. } => f
+                .debug_struct("Stream")
                 .field("name", name)
                 .field("size", size)
                 .finish(),
@@ -110,6 +144,13 @@ enum Open {
         size: u64,
         head: Vec<u8>,
     },
+    /// A stream whose `head` is read from `reader`, which yields what follows.
+    Stream {
+        name: String,
+        reader: Box<dyn Read + Send + Sync>,
+        size: Option<u64>,
+        head: Vec<u8>,
+    },
 }
 
 impl Opened {
@@ -118,7 +159,7 @@ impl Opened {
         match &self.0 {
             Open::Path { input, .. } => input.head(),
             Open::Memory { bytes, .. } => Some(&bytes[..bytes.len().min(HEAD_BYTES)]),
-            Open::Seekable { head, .. } => Some(head),
+            Open::Seekable { head, .. } | Open::Stream { head, .. } => Some(head),
         }
     }
 
@@ -137,6 +178,17 @@ impl Opened {
                 access: Access::Seekable { source, size },
                 reached: Default::default(),
             },
+            Open::Stream {
+                name,
+                reader,
+                size,
+                head,
+            } => Input {
+                name,
+                head: Some(head),
+                access: Access::Stream { reader, size },
+                reached: Default::default(),
+            },
         }
     }
 
@@ -147,8 +199,23 @@ impl Opened {
             Open::Seekable {
                 name, source, size, ..
             } => Named::Seekable { name, source, size },
+            Open::Stream {
+                name,
+                reader,
+                size,
+                head,
+            } => Named::Stream {
+                name,
+                reader: replaying(head, reader),
+                size,
+            },
         }
     }
+}
+
+/// `reader` from where it started, `head` having been read from it.
+fn replaying(head: Vec<u8>, reader: Box<dyn Read + Send + Sync>) -> Box<dyn Read + Send + Sync> {
+    Box::new(io::Cursor::new(head).chain(reader))
 }
 
 #[cfg(test)]
@@ -263,6 +330,75 @@ mod tests {
         };
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
         assert_eq!(named.name(), "gone.bep");
+    }
+
+    fn stream(name: &str, content: Vec<u8>) -> Named {
+        let size = Some(content.len() as u64);
+        Named::Stream {
+            name: name.into(),
+            reader: Box::new(io::Cursor::new(content)),
+            size,
+        }
+    }
+
+    #[test]
+    fn a_stream_opens_with_its_head_read_ahead() {
+        let content = bytes(HEAD_BYTES + 3);
+        let opened = stream("a.bep", content.clone()).open().unwrap();
+        assert_eq!(opened.head(), Some(&content[..HEAD_BYTES]));
+        let input = opened.into_input();
+        assert_eq!(input.name(), "a.bep");
+        assert_eq!(input.size(), Some(content.len() as u64));
+        assert!(input.seekable().is_none());
+        assert_eq!(input.read_all().unwrap(), content);
+    }
+
+    #[test]
+    fn a_stream_given_back_unread_reads_from_its_start() {
+        let content = bytes(HEAD_BYTES + 3);
+        let named = stream("again.bep", content.clone())
+            .open()
+            .unwrap()
+            .into_named();
+        assert_eq!(
+            format!("{named:?}"),
+            format!(
+                r#"Stream {{ name: "again.bep", size: Some({}) }}"#,
+                content.len()
+            )
+        );
+        let input = named.open().unwrap().into_input();
+        assert_eq!(input.read_all().unwrap(), content);
+    }
+
+    /// A reader that yields `good` bytes, then fails.
+    struct FailsAfter(io::Cursor<Vec<u8>>);
+
+    impl Read for FailsAfter {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            match self.0.read(buf)? {
+                0 => Err(io::ErrorKind::ConnectionReset.into()),
+                n => Ok(n),
+            }
+        }
+    }
+
+    #[test]
+    fn a_stream_whose_head_does_not_read_is_given_back_whole() {
+        let start = bytes(3);
+        let named = Named::Stream {
+            name: "cut.bep".into(),
+            reader: Box::new(FailsAfter(io::Cursor::new(start.clone()))),
+            size: None,
+        };
+        let Err((Named::Stream { reader, .. }, error)) = named.open() else {
+            panic!("a stream that fails within its head does not open");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::ConnectionReset);
+        let mut replayed = vec![0; start.len()];
+        let mut reader = reader;
+        reader.read_exact(&mut replayed).unwrap();
+        assert_eq!(replayed, start);
     }
 
     #[test]
