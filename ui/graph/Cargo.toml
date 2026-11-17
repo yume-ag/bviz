@@ -39,3 +39,4 @@ bviz_ui_web = { workspace = true }
 
 [dev-dependencies]
 fastrand = { workspace = true }
+bviz_ui_testing = { workspace = true }

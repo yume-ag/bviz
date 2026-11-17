@@ -207,6 +207,14 @@ impl JumpPalette {
         self.open.is_some()
     }
 
+    /// Whether the open palette lists a match for its query.
+    #[cfg(test)]
+    pub(crate) fn lists_a_match(&self) -> bool {
+        self.open
+            .as_ref()
+            .is_some_and(|jump| !jump.matching.rows().is_empty())
+    }
+
     /// Where the open palette was last painted.
     pub(crate) fn painted(&self) -> Option<Bounds<Pixels>> {
         self.open.as_ref()?.painted

@@ -96,6 +96,13 @@ impl Framing {
         self.fitted
     }
 
+    /// Whether the camera stands where it was last sent, with no move asked
+    /// of it left to make.
+    #[cfg(test)]
+    pub(crate) fn at_rest(&self) -> bool {
+        self.frame.is_none() && self.anim.is_none()
+    }
+
     pub(crate) fn viewport(&self) -> Bounds<Pixels> {
         self.viewport
     }
