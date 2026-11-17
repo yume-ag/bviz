@@ -11,13 +11,14 @@ rust_library(
         "//trace/profile:__pkg__",
         "//ui/graph:__pkg__",
         "//ui/trace:__pkg__",
+        "//util/links:__pkg__",
         "//util/parallel:__pkg__",
     ],
-    deps = ["//util/time"] + select({
-        "@platforms//cpu:wasm32": [
-            "@crates//:percent-encoding",
-            "@crates//:web-sys",
-        ],
+    deps = [
+        "//util/time",
+        "@crates//:percent-encoding",
+    ] + select({
+        "@platforms//cpu:wasm32": ["@crates//:web-sys"],
         "//conditions:default": [],
     }),
 )
@@ -26,5 +27,4 @@ rust_test(
     name = "switches_test",
     size = "small",
     crate = ":switches",
-    deps = ["@crates//:percent-encoding"],
 )
