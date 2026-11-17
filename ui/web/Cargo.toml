@@ -16,6 +16,7 @@ bviz_input = { workspace = true }
 bviz_links = { workspace = true }
 bviz_parallel = { workspace = true }
 console_error_panic_hook = { workspace = true }
+futures-channel = { workspace = true }
 js-sys = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }

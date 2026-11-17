@@ -40,6 +40,7 @@ mod single {
     use bviz_input::RESERVED_AHEAD_BYTES;
     use bviz_links::Origin;
     use bviz_links::fetch::{Answered, FetchError, Request};
+    use futures_channel::oneshot;
     use js_sys::Uint8Array;
     use std::ops::ControlFlow;
     use wasm_bindgen::closure::Closure;
@@ -115,7 +116,7 @@ mod single {
     pub fn fetch(
         request: Request,
         accepts: impl FnOnce(&Origin) -> bool,
-        mut progress: impl FnMut(u64, Option<u64>) -> ControlFlow<()>,
+        mut progress: impl FnMut(u64, Option<u64>) -> ControlFlow<()> + 'static,
     ) -> Result<(Cancel, impl Future<Output = Result<Named, FetchError>>), FetchError> {
         let window = web_sys::window().ok_or_else(|| FetchError::Failed("no window".into()))?;
         let controller =
@@ -151,18 +152,17 @@ mod single {
                 length,
             };
             request.check(&answered, accepts)?;
-            let bytes = read_body(
-                &response,
+            let controller = in_flight.controller.clone();
+            let name = request.url.name();
+            let reading = read_body(
+                response,
                 length,
                 request.max_bytes,
-                &mut in_flight,
-                |read| progress(read, length),
-            )
-            .await?;
-            Ok(Named::Memory {
-                name: request.url.name(),
-                bytes,
-            })
+                in_flight,
+                move |read| progress(read, length),
+            );
+            let bytes = on_microtasks(reading, controller).await?;
+            Ok(Named::Memory { name, bytes })
         };
         Ok((cancel, fetched))
     }
@@ -173,15 +173,44 @@ mod single {
         bviz_links::fetch::declared_length(&length)
     }
 
+    /// Runs `work` as a task of the browser's, each step of which runs as
+    /// soon as what it awaits resolves, whatever paces gpui's executor, and
+    /// resolves to what it returns. Aborts `controller` where dropped first.
+    async fn on_microtasks<T: 'static>(
+        work: impl Future<Output = Result<T, FetchError>> + 'static,
+        controller: AbortController,
+    ) -> Result<T, FetchError> {
+        let _abandon = Abandon(controller);
+        let (done, result) = oneshot::channel();
+        wasm_bindgen_futures::spawn_local(async move {
+            done.send(work.await).ok();
+        });
+        (result.await).unwrap_or_else(|_| Err(FetchError::Failed("the read did not end".into())))
+    }
+
+    /// Aborts a fetch as it drops: once its read has ended, to no effect.
+    struct Abandon(AbortController);
+
+    impl Drop for Abandon {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+
+    /// How often a body read whole reports how much of it is read: often
+    /// enough for a bar to move smoothly, seldom enough that redrawing it
+    /// does not pace the read.
+    const PROGRESS_INTERVAL_MILLIS: f64 = 100.0;
+
     /// The body of `response`, of `length` bytes where that is known and at
     /// most `max`, in a buffer sized for it as [`Input::read_all`] sizes one.
     ///
     /// [`Input::read_all`]: bviz_input::Input::read_all
     async fn read_body(
-        response: &Response,
+        response: Response,
         length: Option<u64>,
         max: u64,
-        in_flight: &mut InFlight,
+        mut in_flight: InFlight,
         mut progress: impl FnMut(u64) -> ControlFlow<()>,
     ) -> Result<Vec<u8>, FetchError> {
         let length = match length {
@@ -197,6 +226,7 @@ mod single {
             return Ok(bytes);
         };
         let reader: ReadableStreamDefaultReader = body.get_reader().unchecked_into();
+        let mut reported = f64::NEG_INFINITY;
         loop {
             let read: ReadableStreamReadResult = JsFuture::from(reader.read())
                 .await
@@ -222,8 +252,12 @@ mod single {
             reserved.map_err(|_| FetchError::OutOfMemory)?;
             bytes.resize(end, 0);
             chunk.copy_to(&mut bytes[start..]);
-            if progress(end as u64).is_break() {
-                return Err(FetchError::Cancelled);
+            let now = js_sys::Date::now();
+            if now - reported >= PROGRESS_INTERVAL_MILLIS {
+                reported = now;
+                if progress(end as u64).is_break() {
+                    return Err(FetchError::Cancelled);
+                }
             }
         }
     }

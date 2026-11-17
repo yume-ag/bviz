@@ -1192,6 +1192,7 @@ dependencies = [
  "bviz_links",
  "bviz_parallel",
  "console_error_panic_hook",
+ "futures-channel",
  "js-sys",
  "wasm-bindgen",
  "wasm-bindgen-futures",
