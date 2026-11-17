@@ -43,8 +43,8 @@ On an X11 session, run bviz inside a nested Wayland compositor such as
 
 The arm64 Linux and the macOS binaries are cross-compiled on x86_64 Linux and are
 not tested in CI. The macOS binaries are not signed, and macOS blocks an unsigned
-download until you clear its quarantine flag:
-`xattr -d com.apple.quarantine bviz`.
+download until you clear its quarantine flag on the extracted binary:
+`xattr -d com.apple.quarantine path/to/bviz`.
 
 bviz reads the outputs of Bazel 8.0 or newer.
 
