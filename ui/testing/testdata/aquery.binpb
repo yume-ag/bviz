@@ -1,0 +1,17 @@
+//:left//:join:genrule//:baseX*Vk8-fastbuildk8"@56b0edf4405433bdc56afbbc54320c26d86dde56f7665270fdb5f2c547e8c642BexternalB
+	bazel-outBbazel_toolsB	k8-fastbuild
+BtoolsB	bin	BgenruleBbase.txtBgenrule-setup.shBleft.txt
+"„@09ec025cf89e5b086313567dfb3d61a0f0cb1c16ba7adbda4b7af2ecca5267bb"Genrule(2/tmp/bviz-fixture/bin/bash2-c2Ðsource external/bazel_tools/tools/genrule/genrule-setup.sh; sleep 0.4; cat bazel-out/k8-fastbuild/bin/base.txt /dev/null > bazel-out/k8-fastbuild/bin/left.txt; echo left >> bazel-out/k8-fastbuild/bin/left.txt:
+PATH/tmp/bviz-fixture/binBJhr@@platforms//host:host
+"áÞ@f4099f6d2867799d9849def3b025ea425a1e6c61ec6813a972886d6869544a49"Genrule(2/tmp/bviz-fixture/bin/bash2-c2­source external/bazel_tools/tools/genrule/genrule-setup.sh; sleep 0.3; cat  /dev/null > bazel-out/k8-fastbuild/bin/base.txt; echo base >> bazel-out/k8-fastbuild/bin/base.txt:
+PATH/tmp/bviz-fixture/binBJhr@@platforms//host:host
+B	right.txt
+Bside.txt
+	"//:sideáÞ@eaa1eb373e596a35b99d9b322391cefe4ec82eb5909ea6f84b29660e1e208615"Genrule(2/tmp/bviz-fixture/bin/bash2-c2­source external/bazel_tools/tools/genrule/genrule-setup.sh; sleep 0.1; cat  /dev/null > bazel-out/k8-fastbuild/bin/side.txt; echo side >> bazel-out/k8-fastbuild/bin/side.txt:
+PATH/tmp/bviz-fixture/binBJhr@@platforms//host:host//:topBjoin.txt
+"Btop.txt
+þ@ebdd50dfbb02f14b8cc74e95ae22f1eb2651cc4c1e1d21a9bbbf89c13ee11b6d"Genrule(2/tmp/bviz-fixture/bin/bash2-c2Ísource external/bazel_tools/tools/genrule/genrule-setup.sh; sleep 0.1; cat bazel-out/k8-fastbuild/bin/join.txt /dev/null > bazel-out/k8-fastbuild/bin/top.txt; echo top >> bazel-out/k8-fastbuild/bin/top.txt:
+PATH/tmp/bviz-fixture/binBJhr@@platforms//host:host//:right
+"ÍÊ@2480a00a70cab5a2e2123ae56c819b5e6ab2681f2547e0205031a77a9af481f0"Genrule(2/tmp/bviz-fixture/bin/bash2-c2™source external/bazel_tools/tools/genrule/genrule-setup.sh; sleep 0.2; cat bazel-out/k8-fastbuild/bin/left.txt bazel-out/k8-fastbuild/bin/right.txt bazel-out/k8-fastbuild/bin/side.txt /dev/null > bazel-out/k8-fastbuild/bin/join.txt; echo join >> bazel-out/k8-fastbuild/bin/join.txt:
+PATH/tmp/bviz-fixture/binBJhr@@platforms//host:host"ˆ…@8e16bd13150a24061b190d1e05d89c5f7ad60e175f71375c9a8bf09299287e42"Genrule(2/tmp/bviz-fixture/bin/bash2-c2Ôsource external/bazel_tools/tools/genrule/genrule-setup.sh; sleep 0.35; cat bazel-out/k8-fastbuild/bin/base.txt /dev/null > bazel-out/k8-fastbuild/bin/right.txt; echo right >> bazel-out/k8-fastbuild/bin/right.txt:
+PATH/tmp/bviz-fixture/binBJhr@@platforms//host:host

@@ -1,0 +1,36 @@
+load("@rules_rs//rs:rust_library.bzl", "rust_library")
+
+FIXTURE_TESTS = [
+    "//bviz:__pkg__",
+    "//ui/console:__pkg__",
+    "//ui/execlog:__pkg__",
+    "//ui/graph:__pkg__",
+    "//ui/trace:__pkg__",
+]
+
+exports_files(
+    glob(
+        ["testdata/*"],
+        exclude = ["testdata/generate.sh"],
+    ),
+    visibility = FIXTURE_TESTS,
+)
+
+rust_library(
+    name = "testing",
+    testonly = True,
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "bviz_ui_testing",
+    visibility = FIXTURE_TESTS,
+    deps = [
+        "//invocation",
+        "//ui/assets",
+        "//ui/components",
+        "//ui/playback",
+        "//ui/workspace",
+        "//util/time",
+        "@crates//:gpui",
+        "@crates//:gpui_platform",
+        "@rules_rs_rules_rust//rust/runfiles",
+    ],
+)

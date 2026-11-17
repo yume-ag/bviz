@@ -1111,6 +1111,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "bviz_ui_testing"
+version = "0.1.0"
+dependencies = [
+ "bviz_invocation",
+ "bviz_time",
+ "bviz_ui_assets",
+ "bviz_ui_components",
+ "bviz_ui_playback",
+ "bviz_ui_workspace",
+ "gpui",
+ "gpui_platform",
+]
+
+[[package]]
 name = "bviz_ui_theme"
 version = "0.1.0"
 dependencies = [
