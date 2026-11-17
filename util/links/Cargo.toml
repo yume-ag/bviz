@@ -1,0 +1,20 @@
+[package]
+name = "bviz_links"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[lib]
+name = "bviz_links"
+path = "src/lib.rs"
+
+[dependencies]
+bviz_sniff = { workspace = true }
+bviz_switches = { workspace = true }
+percent-encoding = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+unicode-properties = { workspace = true }
+url = { workspace = true }

@@ -1,0 +1,34 @@
+load("@rules_rs//rs:rust_library.bzl", "rust_library")
+load("@rules_rs//rs:rust_test.bzl", "rust_test")
+load("//tools/wasm_test:wasm_test.bzl", "wasm_test")
+
+rust_library(
+    name = "links",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "bviz_links",
+    visibility = [
+        "//bviz:__pkg__",
+        "//ui/web:__pkg__",
+        "//ui/workspace:__pkg__",
+    ],
+    deps = [
+        "//sniff",
+        "//util/switches",
+        "@crates//:percent-encoding",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:unicode-properties",
+        "@crates//:url",
+    ],
+)
+
+rust_test(
+    name = "links_test",
+    size = "small",
+    crate = ":links",
+)
+
+wasm_test(
+    name = "links_wasm_test",
+    test = ":links_test",
+)
