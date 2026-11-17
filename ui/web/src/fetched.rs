@@ -37,6 +37,7 @@ pub(crate) const STALL_MILLIS: i32 = STALL.as_millis() as i32;
 mod single {
     use super::{STALL_MILLIS, options};
     use bviz_input::Named;
+    use bviz_input::RESERVED_AHEAD_BYTES;
     use bviz_links::Origin;
     use bviz_links::fetch::{Answered, FetchError, Request};
     use js_sys::Uint8Array;
@@ -173,7 +174,9 @@ mod single {
     }
 
     /// The body of `response`, of `length` bytes where that is known and at
-    /// most `max`, in a buffer sized for it before the first byte is read.
+    /// most `max`, in a buffer sized for it as [`Input::read_all`] sizes one.
+    ///
+    /// [`Input::read_all`]: bviz_input::Input::read_all
     async fn read_body(
         response: &Response,
         length: Option<u64>,
@@ -181,10 +184,14 @@ mod single {
         in_flight: &mut InFlight,
         mut progress: impl FnMut(u64) -> ControlFlow<()>,
     ) -> Result<Vec<u8>, FetchError> {
+        let length = match length {
+            Some(length) => Some(usize::try_from(length).map_err(|_| FetchError::OutOfMemory)?),
+            None => None,
+        };
         let mut bytes = Vec::new();
         if let Some(length) = length {
-            let length = usize::try_from(length).map_err(|_| FetchError::OutOfMemory)?;
-            (bytes.try_reserve_exact(length)).map_err(|_| FetchError::OutOfMemory)?;
+            let ahead = length.min(RESERVED_AHEAD_BYTES as usize);
+            (bytes.try_reserve_exact(ahead)).map_err(|_| FetchError::OutOfMemory)?;
         }
         let Some(body) = response.body() else {
             return Ok(bytes);
@@ -208,7 +215,11 @@ mod single {
                     max,
                 });
             }
-            (bytes.try_reserve(end - start)).map_err(|_| FetchError::OutOfMemory)?;
+            let reserved = match length {
+                Some(length) if end <= length => bytes.try_reserve_exact(length - start),
+                _ => bytes.try_reserve(end - start),
+            };
+            reserved.map_err(|_| FetchError::OutOfMemory)?;
             bytes.resize(end, 0);
             chunk.copy_to(&mut bytes[start..]);
             if progress(end as u64).is_break() {
