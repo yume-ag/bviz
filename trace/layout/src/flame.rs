@@ -6,7 +6,9 @@ use bviz_trace_profile::{
     CategoryId, OptStr, Profile, Slice, SliceDetail, Span32, SpanRole, Str, ThreadTrack, TimeSpan,
     Workload, encloses, occupied_span,
 };
-use rayon::iter::{IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator};
+use rayon::iter::{
+    IntoParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator,
+};
 use rayon::slice::{ParallelSlice, ParallelSliceMut};
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -79,23 +81,20 @@ struct MnemonicIndex {
 
 /// One worker's share of the name scan.
 #[derive(Default)]
-struct ScanShard<'p> {
-    /// Text → its handle. Each distinct text has one handle profile-wide.
-    by_text: FxHashMap<&'p str, Str>,
-    /// Distinct name/mnemonic handles seen, to skip the text hash of an
-    /// already-noted handle.
+struct ScanShard {
+    /// Distinct name/mnemonic handles seen. The profile interns each distinct
+    /// text to one handle, so distinct handles are distinct texts.
     handles: FxHashSet<Str>,
-    /// Mnemonic-bearing slice name text → its smallest mnemonic text. A name
+    /// Mnemonic-bearing slice name → its byte-wise smallest mnemonic. A name
     /// carrying several mnemonics resolves to the smallest, so the index is
     /// independent of visit order.
-    mnemonics: FxHashMap<&'p str, &'p str>,
+    mnemonics: FxHashMap<Str, Str>,
 }
 
-impl<'p> ScanShard<'p> {
-    fn note(&mut self, profile: &'p Profile, s: Str) {
-        if self.handles.insert(s) {
-            self.by_text.entry(profile.str(s)).or_insert(s);
-        }
+/// Replaces `held` with `seen` where `seen`'s text is byte-wise smaller.
+fn keep_smaller(profile: &Profile, held: &mut Str, seen: Str) {
+    if profile.str(seen) < profile.str(*held) {
+        *held = seen;
     }
 }
 
@@ -104,7 +103,7 @@ impl<'p> ScanShard<'p> {
 /// table — only on the lanes `note_lane` admits (by thread index), and the scan
 /// must admit every lane whose slices a build subsequently walks: an unnoted
 /// handle has no rank, and [`Ranks::rank_of`] panics on it. Mnemonic handles
-/// and the mnemonic index cover every lane regardless — hashing only the
+/// and the mnemonic index cover every lane regardless — touching only the
 /// mnemonic-bearing slices, a small fraction of the profile — because a
 /// mnemonic-less slice's label can resolve to a mnemonic carried on a lane
 /// outside the scan, and that label needs a rank like any other. So does every
@@ -115,116 +114,85 @@ fn scan(
     note_lane: impl Fn(usize) -> bool + Sync,
 ) -> (Ranks, MnemonicIndex) {
     let threads = profile.threads();
-    // Each distinct name/mnemonic is noted once, keyed by its text, so a shard
-    // holds at most the profile's distinct strings; sharing them roughly evenly
-    // over the shards, `distinct / shards` sizes each map so the scan reserves
-    // once rather than rehashing every string key through a dozen doublings. A
-    // shard that steals more than its share rehashes from this already-large
-    // base, a couple of doublings at most.
+    // A shard holds at most the profile's distinct strings; sharing them
+    // roughly evenly over the shards, `distinct / shards` sizes each set so the
+    // scan reserves once. A shard that steals more than its share regrows from
+    // this already-large base, a couple of doublings at most.
     let shard_count = workers.clamp(1, threads.len().max(1));
     let per_shard = profile.distinct_strings().div_ceil(shard_count);
     let shards = run_sharded(workers, threads.len(), |shard: &mut ScanShard, i| {
-        if shard.by_text.capacity() == 0 {
-            shard.by_text.reserve(per_shard);
+        if shard.handles.capacity() == 0 {
             shard.handles.reserve(per_shard);
-            shard.mnemonics.reserve(per_shard);
         }
         let thread = &threads[i];
         let noted = note_lane(i);
         for (s, d) in profile.slices(thread).iter().zip(profile.details(thread)) {
             if noted {
-                shard.note(profile, s.name);
+                shard.handles.insert(s.name);
             }
             if let Some(m) = d.mnemonic.get() {
-                shard.note(profile, m);
-                let mn = profile.str(m);
+                shard.handles.insert(m);
                 shard
                     .mnemonics
-                    .entry(profile.str(s.name))
-                    .and_modify(|cur| {
-                        if mn < *cur {
-                            *cur = mn;
-                        }
-                    })
-                    .or_insert(mn);
+                    .entry(s.name)
+                    .and_modify(|held| keep_smaller(profile, held, m))
+                    .or_insert(m);
             }
         }
     });
 
-    let (mut by_text, mnemonics) = merge_shards(shards);
-    for kind in profile.kinds() {
-        by_text.insert(profile.str(kind), kind);
-    }
-    (build_ranks(&by_text), build_index(&by_text, &mnemonics))
+    let (handles, mnemonics) = merge_shards(profile, shards);
+    (
+        build_ranks(profile, handles),
+        build_index(profile, mnemonics),
+    )
 }
 
-/// Merge the per-worker scan shards into one text→handle map and one
-/// name→smallest-mnemonic map. Seeds from the first shard by move — a
-/// single-worker scan merges for free — and reserves for the rest up front, so
-/// the merge never regrows (a regrow re-hashes every string key).
-fn merge_shards<'p>(
-    mut shards: Vec<ScanShard<'p>>,
-) -> (FxHashMap<&'p str, Str>, FxHashMap<&'p str, &'p str>) {
-    let (mut by_text, mut mnemonics) = {
-        let first = &mut shards[0];
-        (
-            std::mem::take(&mut first.by_text),
-            std::mem::take(&mut first.mnemonics),
-        )
-    };
-    by_text.reserve(shards.iter().skip(1).map(|s| s.by_text.len()).sum());
-    mnemonics.reserve(shards.iter().skip(1).map(|s| s.mnemonics.len()).sum());
-    for shard in shards.iter().skip(1) {
-        for (&text, &handle) in &shard.by_text {
-            by_text.entry(text).or_insert(handle);
-        }
+/// Merge the per-worker scan shards into the distinct noted handles together
+/// with every kind ([`Profile::kinds`]), and one name→smallest-mnemonic map
+/// seeded from the first shard by move. The handles dedup as integers, so no
+/// text is hashed.
+fn merge_shards(profile: &Profile, mut shards: Vec<ScanShard>) -> (Vec<Str>, FxHashMap<Str, Str>) {
+    let mut mnemonics = std::mem::take(&mut shards[0].mnemonics);
+    for shard in &shards[1..] {
         for (&name, &mn) in &shard.mnemonics {
             mnemonics
                 .entry(name)
-                .and_modify(|cur| {
-                    if mn < *cur {
-                        *cur = mn;
-                    }
-                })
+                .and_modify(|held| keep_smaller(profile, held, mn))
                 .or_insert(mn);
         }
     }
-    (by_text, mnemonics)
+    let seen: usize = shards.iter().map(|s| s.handles.len()).sum();
+    let mut handles: Vec<Str> = Vec::with_capacity(seen + profile.kinds().count());
+    for shard in shards {
+        handles.extend(shard.handles);
+    }
+    handles.extend(profile.kinds());
+    workers().install(|| handles.par_sort_unstable_by_key(|s| (s.range().start, s.range().end)));
+    handles.dedup();
+    (handles, mnemonics)
 }
 
-/// Rank the distinct scanned texts by one sort under `&str`'s byte-wise `Ord`,
-/// so comparing two ranks is exactly comparing the texts.
-fn build_ranks<'p>(by_text: &FxHashMap<&'p str, Str>) -> Ranks {
-    let mut ordered: Vec<(&'p str, Str)> = by_text.iter().map(|(&t, &h)| (t, h)).collect();
-    sort_pairs_by_text(&mut ordered);
-    let rank = ordered
+/// Rank the distinct handles by one sort of their texts under `&str`'s
+/// byte-wise `Ord`, so comparing two ranks is exactly comparing the texts.
+fn build_ranks(profile: &Profile, mut handles: Vec<Str>) -> Ranks {
+    sort_by_text(profile, &mut handles);
+    let rank = handles
         .iter()
         .enumerate()
-        .map(|(i, &(_, h))| (h, i as u32))
+        .map(|(i, &h)| (h, i as u32))
         .collect();
     Ranks { rank }
 }
 
-/// Build the mnemonic index from the merged maps: a text-keyed table over every
-/// scanned name, and a handle-keyed table restricted to names with a noted
-/// handle. A name seen only on unadmitted lanes has no noted handle and needs
-/// no handle-keyed entry: only a walked — hence noted — slice's name is ever
-/// looked up by handle, while text-keyed lookups cover every name.
-fn build_index(by_text: &FxHashMap<&str, Str>, mnemonics: &FxHashMap<&str, &str>) -> MnemonicIndex {
-    let name_to_mnemonic: Vec<(&str, Str)> =
-        mnemonics.iter().map(|(&n, &m)| (n, by_text[m])).collect();
-    let by_name = name_to_mnemonic
+/// Build the mnemonic index from the merged name→mnemonic map, which is
+/// already its handle-keyed table.
+fn build_index(profile: &Profile, by_name: FxHashMap<Str, Str>) -> MnemonicIndex {
+    let by_text = by_name
         .iter()
-        .filter_map(|&(n, m)| by_text.get(n).map(|&h| (h, m)))
+        .map(|(&n, &m)| (Box::from(profile.str(n)), m))
         .collect();
-    let by_text_idx = name_to_mnemonic
-        .into_iter()
-        .map(|(n, m)| (Box::from(n), m))
-        .collect();
-    MnemonicIndex {
-        by_name,
-        by_text: by_text_idx,
-    }
+    MnemonicIndex { by_name, by_text }
 }
 
 /// Run `task` over the indexes `0..n`, each worker folding into its own `S`;
@@ -255,16 +223,74 @@ pub(crate) fn run_sharded<S: Default + Send>(
     bviz_parallel::fan_out(workers, |_| run_one())
 }
 
-/// Sort `(text, handle)` pairs into byte-wise text order. The texts are
-/// distinct, so the result is the one total order. Small inputs sort serially —
-/// the parallel split only pays off at scale.
-fn sort_pairs_by_text<H: Send>(pairs: &mut [(&str, H)]) {
-    /// Input size below which the serial sort wins over the parallel split.
+/// Sort distinct handles into byte-wise text order.
+fn sort_by_text(profile: &Profile, handles: &mut [Str]) {
+    sort_by_text_from(profile, handles, 0);
+}
+
+/// The word of `text`'s bytes from `at`, big-endian and zero-padded, beside
+/// how many bytes of the text it holds. Pairs order as the texts' bytes from
+/// `at` do, up to the word's end.
+fn text_word(text: &[u8], at: usize) -> (u64, u8) {
+    const WORD: usize = std::mem::size_of::<u64>();
+    let rest = text.get(at..).unwrap_or_default();
+    let n = rest.len().min(WORD);
+    let mut word = [0u8; WORD];
+    word[..n].copy_from_slice(&rest[..n]);
+    (u64::from_be_bytes(word), n as u8)
+}
+
+/// Sort handles whose texts share their first `at` bytes by the rest: an MSD
+/// radix sort whose digits are [`text_word`]s, so a comparison is between
+/// integers and a shared prefix is read once per group, not once per
+/// comparison.
+fn sort_by_text_from(profile: &Profile, handles: &mut [Str], at: usize) {
+    /// Group size up to which comparing the texts outright beats keying them.
+    const SMALL: usize = 32;
+    /// Group size from which the sort spreads across the workers.
     const PARALLEL_MIN: usize = 1 << 13;
-    if pairs.len() < PARALLEL_MIN {
-        pairs.sort_unstable_by_key(|&(t, _)| t);
+    const WORD: u8 = std::mem::size_of::<u64>() as u8;
+    let text = |h: Str| profile.str(h).as_bytes();
+    if handles.len() <= SMALL {
+        handles.sort_unstable_by(|&a, &b| text(a)[at..].cmp(&text(b)[at..]));
+        return;
+    }
+    let wide = handles.len() >= PARALLEL_MIN;
+    let mut keyed: Vec<((u64, u8), Str)> = handles
+        .iter()
+        .map(|&h| (text_word(text(h), at), h))
+        .collect();
+    if wide {
+        workers().install(|| keyed.par_sort_unstable_by_key(|&(word, _)| word));
     } else {
-        workers().install(|| pairs.par_sort_unstable_by_key(|&(t, _)| t));
+        keyed.sort_unstable_by_key(|&(word, _)| word);
+    }
+    for (slot, &(_, h)) in handles.iter_mut().zip(&keyed) {
+        *slot = h;
+    }
+    // Texts sharing a whole word go on to the next one; distinct texts never
+    // share a word that ends one of them.
+    let mut groups: Vec<&mut [Str]> = Vec::new();
+    let mut rest = handles;
+    for run in keyed.chunk_by(|a, b| a.0 == b.0) {
+        let (group, tail) = std::mem::take(&mut rest).split_at_mut(run.len());
+        rest = tail;
+        if run.len() > 1 && run[0].0.1 == WORD {
+            groups.push(group);
+        }
+    }
+    drop(keyed);
+    let next = at + WORD as usize;
+    if wide {
+        workers().install(|| {
+            groups
+                .into_par_iter()
+                .for_each(|g| sort_by_text_from(profile, g, next))
+        });
+    } else {
+        for g in groups {
+            sort_by_text_from(profile, g, next);
+        }
     }
 }
 
@@ -2621,25 +2647,30 @@ mod tests {
 
     #[test]
     fn parallel_text_sort_matches_serial() {
-        // Enough pairs to cross the parallel threshold, with heavy shared
+        // Enough names to cross the parallel threshold, with heavy shared
         // prefixes, case splits, and non-ASCII segments, so the parallel sort is
-        // exercised on clustered keys.
-        let texts: Vec<String> = (0..20_000)
-            .map(|i| format!("prefix/{}/x{:05}", ["a", "A", "é", ""][i % 4], i))
+        // exercised on clustered keys and on groups sharing several words.
+        let slices = (0..20_000)
+            .map(|i| {
+                let name = format!("prefix/{}/x{:05}", ["a", "A", "é", ""][i % 4], i);
+                slice(&name, "generic", 2 * i as i64, 1)
+            })
+            .chain(
+                // Texts ending at, just before, and just past a word's end.
+                ["a", "abcdefg", "abcdefgh", "abcdefgha", "abcdefgh~"]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, name)| slice(name, "generic", 50_000 + 2 * i as i64, 1)),
+            )
             .collect();
-        let pairs: Vec<(&str, usize)> = texts
-            .iter()
-            .enumerate()
-            .map(|(i, t)| (t.as_str(), i))
-            .collect();
-        let serial = {
-            let mut p = pairs.clone();
-            p.sort_unstable_by_key(|&(t, _)| t);
-            p
-        };
-        let mut parallel = pairs;
-        sort_pairs_by_text(&mut parallel);
-        assert_eq!(parallel, serial);
+        let p = profile(vec![track(1, LaneClass::Execution, slices)]);
+        let mut handles: Vec<Str> = p.slices(&p.threads()[0]).iter().map(|s| s.name).collect();
+        handles.reverse();
+        sort_by_text(&p, &mut handles);
+        let sorted: Vec<&str> = handles.iter().map(|&h| p.str(h)).collect();
+        let mut serial = sorted.clone();
+        serial.sort_unstable();
+        assert_eq!(sorted, serial);
     }
 
     #[test]
