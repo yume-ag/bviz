@@ -45,6 +45,12 @@ The arm64 Linux and the macOS binaries are cross-compiled on x86_64 Linux and ar
 not tested in CI. The macOS binaries are not signed, and macOS blocks an unsigned
 download until you clear its quarantine flag on the extracted binary:
 `xattr -d com.apple.quarantine path/to/bviz`.
+Alternatively, download with curl, which sets no quarantine flag:
+
+```sh
+curl -fsSL "https://github.com/yume-ag/bviz/releases/download/nightly/bviz-macos-$(uname -m).tar.gz" | tar -xz bviz
+./bviz
+```
 
 bviz reads the outputs of Bazel 8.0 or newer.
 
