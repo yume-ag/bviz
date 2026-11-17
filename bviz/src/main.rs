@@ -531,20 +531,29 @@ fn open_window(arriving: impl FnOnce(WeakEntity<Workspace>, &mut Window, &mut Ap
         arriving,
         Some(PathOpener::new(open_files)),
         vec![AppAction::new(CopyBazelrc, copy_bazelrc)],
-        &[
-            bviz_ui_graph::register_keys,
-            bviz_ui_trace::register_keys,
-            bviz_ui_console::register_keys,
-            bviz_ui_execlog::register_keys,
-        ],
+        PANEL_KEYS,
     );
 }
+
+/// Registers the bindings of each viewer's panels.
+const PANEL_KEYS: &[fn(&mut App)] = &[
+    bviz_ui_graph::register_keys,
+    bviz_ui_trace::register_keys,
+    bviz_ui_console::register_keys,
+    bviz_ui_execlog::register_keys,
+];
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bviz_ui_components::LABEL_MAX_CHARS;
+    use bviz_invocation::{Chosen, Session};
+    use bviz_ui_components::{LABEL_MAX_CHARS, compact_icon_width};
+    use bviz_ui_testing::{Harness, LOAD_DEADLINE, SWEEP_STEP, fixture};
+    use bviz_ui_trace::{STATS_HEADER_HEIGHT, STATS_NUM_COL_WIDTH, STATS_ROW_HEIGHT};
+    use gpui::Entity;
+    use std::cell::RefCell;
     use std::collections::HashMap;
+    use std::rc::Rc;
 
     /// What the namespace of every action bviz declares begins with.
     const ACTION_NAMESPACE_PREFIX: &str = "bviz_";
@@ -606,6 +615,118 @@ mod tests {
                 panic!("{first} and {panel} both call themselves {}", view.as_str());
             }
         }
+    }
+
+    /// Shows the panel `P` of the window `harness` drives and sweeps the
+    /// pointer over it.
+    fn glance<P: Panel>(harness: &mut Harness) -> gpui::Bounds<gpui::Pixels> {
+        let (_, body) = harness.show::<P>();
+        harness.sweep(body, SWEEP_STEP);
+        body
+    }
+
+    #[test]
+    fn every_view_of_an_invocation_draws_its_files_joined() {
+        let session: Rc<RefCell<Option<Entity<Session>>>> = Rc::default();
+        let created = session.clone();
+        bviz_ui_testing::run(
+            PANEL_KEYS,
+            move |window, cx| {
+                cx.observe_new::<Session>(move |_, _, cx| {
+                    created.replace(Some(cx.entity()));
+                })
+                .detach();
+                let mut args = vec!["bviz".to_owned()];
+                for (flag, var) in [
+                    ("--query", "QUERY"),
+                    ("--cquery", "CQUERY"),
+                    ("--aquery", "AQUERY"),
+                    ("--profile", "PROFILE"),
+                    ("--bep", "BEP"),
+                    ("--exec_log", "EXEC_LOG"),
+                ] {
+                    args.push(flag.to_owned());
+                    args.push(fixture(var).display().to_string());
+                }
+                let Ok(Request::Open(sources)) = Cli::try_parse_from(args).map(Cli::request) else {
+                    panic!("the fixture files make a request to open them");
+                };
+                let (first, rest) =
+                    group::with_open(Load::start_all(sources), &|_| None::<Open<Joinable>>);
+                assert!(rest.is_empty(), "the fixture files are of one invocation");
+                let Placing::New(opening @ Opening::Invocation { .. }) = first else {
+                    panic!("the fixture files open as their invocation's document");
+                };
+                vec![open(opening, window, cx)]
+            },
+            async move |harness| {
+                let session = session
+                    .borrow()
+                    .clone()
+                    .expect("the document has a session");
+                harness
+                    .until("the critical path to be modeled", LOAD_DEADLINE, |cx| {
+                        !session.read(cx).nearly_critical().is_empty()
+                    })
+                    .await;
+                let (_, body) = harness.show::<bviz_ui_trace::CriticalPathPanel>();
+                let chosen = |harness: &mut Harness| harness.read(|cx| session.read(cx).chosen());
+                let (row_height, header_height) =
+                    (gpui::px(STATS_ROW_HEIGHT), gpui::px(STATS_HEADER_HEIGHT));
+                let column = body.left() + gpui::px(STATS_NUM_COL_WIDTH) / 2.;
+                let probe = row_height / 2.;
+                let mut row = body.top();
+                while !matches!(chosen(harness), Some(Chosen::Step(_))) {
+                    row += probe;
+                    assert!(row < body.bottom(), "a click on a step's row chooses it");
+                    harness.click(gpui::point(column, row));
+                }
+                // The click choosing the row lands within a probe of its top, so
+                // this lands within half a probe of the middle of the header
+                // above it.
+                let header = row - probe / 2. - header_height / 2.;
+                let mut toggle = body.left();
+                while !matches!(chosen(harness), Some(Chosen::NearlyCritical(_))) {
+                    toggle += compact_icon_width();
+                    assert!(toggle < body.right(), "the header switches the list shown");
+                    harness.click(gpui::point(toggle, header));
+                    harness.click(gpui::point(column, row));
+                }
+                harness.sweep(body, SWEEP_STEP);
+                harness.dispatch(&bviz_ui_trace::ChooseNext);
+                harness.dispatch(&bviz_ui_trace::ChoosePrevious);
+                assert!(
+                    matches!(chosen(harness), Some(Chosen::NearlyCritical(_))),
+                    "the keys step through the actions nearly critical"
+                );
+                harness.click_along(
+                    gpui::point(column, body.top()),
+                    gpui::point(column, body.bottom()),
+                    row_height,
+                );
+                harness.sweep(body, SWEEP_STEP);
+                harness.dispatch(&bviz_ui_trace::Unchoose);
+
+                glance::<bviz_ui_trace::TracePanel>(harness);
+                glance::<bviz_ui_trace::FlamePanel>(harness);
+                glance::<bviz_ui_trace::StatsPanel>(harness);
+                glance::<bviz_ui_console::ConsolePanel>(harness);
+                glance::<bviz_ui_execlog::SpawnTimePanel>(harness);
+                glance::<bviz_ui_graph::ScatterPanel>(harness);
+                glance::<bviz_ui_graph::ExclusivePanel>(harness);
+                let graph = glance::<bviz_ui_graph::GraphPanel>(harness);
+                harness.click(graph.center());
+                let overlays: [&dyn gpui::Action; 3] = [
+                    &bviz_ui_graph::ToggleOutcomes,
+                    &bviz_ui_graph::ToggleTiming,
+                    &bviz_ui_graph::ToggleCriticalPath,
+                ];
+                for overlay in overlays {
+                    harness.press_keys_for(overlay);
+                    harness.sweep(graph, SWEEP_STEP);
+                }
+            },
+        );
     }
 
     #[test]

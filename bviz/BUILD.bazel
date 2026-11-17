@@ -41,10 +41,27 @@ rust_binary(
 
 rust_test(
     name = "bviz_test",
-    size = "small",
+    size = "medium",
     compile_data = ["//terminal:testdata/sample.bep"],
     crate = ":bviz",
+    data = [
+        "//ui/testing:testdata/aquery.binpb",
+        "//ui/testing:testdata/build.bep",
+        "//ui/testing:testdata/build.profile.gz",
+        "//ui/testing:testdata/cquery.binpb",
+        "//ui/testing:testdata/exec.log.zst",
+        "//ui/testing:testdata/query.binpb",
+    ],
+    env = {
+        "AQUERY": "$(rlocationpath //ui/testing:testdata/aquery.binpb)",
+        "BEP": "$(rlocationpath //ui/testing:testdata/build.bep)",
+        "CQUERY": "$(rlocationpath //ui/testing:testdata/cquery.binpb)",
+        "EXEC_LOG": "$(rlocationpath //ui/testing:testdata/exec.log.zst)",
+        "PROFILE": "$(rlocationpath //ui/testing:testdata/build.profile.gz)",
+        "QUERY": "$(rlocationpath //ui/testing:testdata/query.binpb)",
+    },
     rustc_env = {"SAMPLE_BEP": "$(execpath //terminal:testdata/sample.bep)"},
+    deps = ["//ui/testing"],
 )
 
 third_party_notices(
