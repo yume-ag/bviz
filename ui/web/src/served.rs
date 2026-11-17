@@ -1,16 +1,17 @@
 //! Files the page's visitor hands bviz, read where they are by bviz's threads.
 //! A thread can take no browser `File`, as it handles no message while it runs
 //! bviz, so a worker of the page's own, the file server, holds the files and
-//! writes each slice a thread asks for through its [`Slot`] into bviz's memory.
+//! writes each slice a thread asks for through the file's [`Slot`] into bviz's
+//! memory.
 
 use crate::files::Unread;
 use bviz_input::{Named, ReadAt};
 use js_sys::{Atomics, Int32Array, Object, Reflect, WebAssembly};
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::io;
 use std::mem::offset_of;
-use std::ptr;
+use std::ops::ControlFlow;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 use wasm_bindgen::closure::Closure;
@@ -48,7 +49,6 @@ const CHANGED: i32 = -4;
 #[repr(C)]
 struct Request {
     state: AtomicI32,
-    file: AtomicU32,
     offset_low: AtomicU32,
     offset_high: AtomicU32,
     /// Where in bviz's memory the slice goes.
@@ -58,45 +58,30 @@ struct Request {
     answer: AtomicI32,
 }
 
-impl Request {
-    fn idle() -> Self {
-        Request {
-            state: AtomicI32::new(IDLE),
-            file: AtomicU32::new(0),
-            offset_low: AtomicU32::new(0),
-            offset_high: AtomicU32::new(0),
-            into: AtomicU32::new(0),
-            length: AtomicU32::new(0),
-            answer: AtomicI32::new(0),
-        }
-    }
-}
-
-/// What the readers of one file server reach it by. Each server takes a slot
-/// of its own that is never freed, so no request for one server reaches
-/// another, and a worker still running once it is terminated finds only its
-/// own.
+/// What the readers of one file reach the server by, so that a reader waits
+/// only on the file it reads. A slot lives as long as the page: a worker that
+/// has failed or been terminated may not have stopped touching it, so it is
+/// taken again only once a server has acknowledged the release of its file.
 struct Slot {
     request: Request,
     /// Held by the one thread at a time that writes the request, while it
     /// waits for the answer.
     asking: Mutex<()>,
-    /// The name of the channel a thread tells the window thread on of each
-    /// file it lets go of: the window thread hands the server its files, but
-    /// any thread may drop one.
-    releases: String,
 }
 
 /// A file server running, which ends when this drops.
 struct Server {
+    /// What tells this server's events from those of one that ran before.
+    number: u32,
     worker: Worker,
-    slot: &'static Slot,
-    /// The ids of the files handed over and not let go of. The server ends
-    /// once none is left, when no reader can be waiting on it.
-    live: HashSet<u32>,
-    /// The window thread's end of the channel of releases. It forwards each
-    /// release to the server on the port it handed the file over on, so the
-    /// release follows the file.
+    /// The slot of each file handed over whose release the server is yet to
+    /// acknowledge. The server ends once none is left, when no reader can be
+    /// waiting on it.
+    live: HashMap<u32, &'static Slot>,
+    /// The window thread's end of the channel a thread tells it on of each
+    /// file it lets go of: the window thread hands the server its files, but
+    /// any thread may drop one. It forwards each release to the server on the
+    /// port it handed the file over on, so the release follows the file.
     releases: BroadcastChannel,
 }
 
@@ -108,11 +93,16 @@ impl Drop for Server {
 }
 
 static NEXT_FILE: AtomicU32 = AtomicU32::new(0);
+static NEXT_SERVER: AtomicU32 = AtomicU32::new(0);
 
 thread_local! {
     /// The file server the window thread hands files to, started on the
     /// first it hands over while none runs.
     static SERVER: RefCell<Option<Server>> = const { RefCell::new(None) };
+
+    /// The slots of files whose release a server has acknowledged, for the
+    /// files handed over next.
+    static FREE_SLOTS: RefCell<Vec<&'static Slot>> = const { RefCell::new(Vec::new()) };
 
     /// This thread's view of bviz's memory by words.
     static WORDS: RefCell<Int32Array> = RefCell::new(Int32Array::new(&memory().buffer()));
@@ -121,12 +111,16 @@ thread_local! {
 /// Each of `files` as a file bviz's threads read where it is, under its name.
 pub(crate) fn serve(files: Vec<File>) -> Vec<Result<Named, Unread>> {
     SERVER.with_borrow_mut(|server| {
+        let count = files.len();
+        if let Some(running) = server {
+            running.live.reserve(count);
+        }
         (files.into_iter())
             .map(|file| {
                 let name = file.name();
                 let running = match server {
                     Some(running) => Ok(running),
-                    None => start_server().map(|started| server.insert(started)),
+                    None => start_server(count).map(|started| server.insert(started)),
                 };
                 let served = running.and_then(|running| hand_over(running, &file));
                 // No release ends a server that holds no files.
@@ -153,20 +147,43 @@ pub(crate) fn serve(files: Vec<File>) -> Vec<Result<Named, Unread>> {
     })
 }
 
-/// Hands `file` to `server`, returning what reads it there.
+/// Hands `file` to `server` with a slot of its own, returning what reads it
+/// there.
 fn hand_over(server: &mut Server, file: &File) -> Result<Served, String> {
     let id = NEXT_FILE.fetch_add(1, Ordering::Relaxed);
-    let message = object(&[("id", id.into()), ("file", file.into())]);
-    server.worker.post_message(&message).map_err(js_error)?;
-    server.live.insert(id);
+    let slot = FREE_SLOTS.with_borrow_mut(Vec::pop).unwrap_or_else(|| {
+        Box::leak(Box::new(Slot {
+            request: Request {
+                state: AtomicI32::new(IDLE),
+                offset_low: AtomicU32::new(0),
+                offset_high: AtomicU32::new(0),
+                into: AtomicU32::new(0),
+                length: AtomicU32::new(0),
+                answer: AtomicI32::new(0),
+            },
+            asking: Mutex::new(()),
+        }))
+    });
+    let message = object(&[
+        ("id", id.into()),
+        ("file", file.into()),
+        ("layout", slot.layout().into()),
+    ]);
+    if let Err(error) = server.worker.post_message(&message) {
+        FREE_SLOTS.with_borrow_mut(|free| free.push(slot));
+        return Err(js_error(error));
+    }
+    server.live.insert(id, slot);
     Ok(Served {
         id,
-        slot: server.slot,
+        slot,
+        releases: server.releases.name(),
     })
 }
 
-/// Starts a file server on the memory bviz shares between its threads.
-fn start_server() -> Result<Server, String> {
+/// Starts a file server on the memory bviz shares between its threads, with
+/// room for `files` files.
+fn start_server(files: usize) -> Result<Server, String> {
     let global = js_sys::global();
     let script = Reflect::get(&global, &SERVER_SCRIPT.into())
         .ok()
@@ -185,61 +202,98 @@ fn start_server() -> Result<Server, String> {
     let releases = BroadcastChannel::new(&name)
         .inspect_err(|_| worker.terminate())
         .map_err(js_error)?;
-    let slot: &'static Slot = Box::leak(Box::new(Slot {
-        request: Request::idle(),
-        asking: Mutex::new(()),
-        releases: name,
-    }));
+    let number = NEXT_SERVER.fetch_add(1, Ordering::Relaxed);
     let server = Server {
+        number,
         worker,
-        slot,
-        live: HashSet::new(),
+        live: HashMap::with_capacity(files),
         releases,
     };
     let released = Closure::<dyn Fn(MessageEvent)>::new(move |event: MessageEvent| {
         let Some(id) = event.data().as_f64() else {
             return;
         };
-        SERVER.with_borrow_mut(|server| {
-            let Some(running) = server
-                .as_mut()
-                .filter(|running| ptr::eq(running.slot, slot))
-            else {
-                return;
-            };
-            running.live.remove(&(id as u32));
-            if running.live.is_empty() {
-                *server = None;
-            } else {
+        on_server(number, |running| {
+            if running.live.contains_key(&(id as u32)) {
                 let release = object(&[("id", id.into())]);
                 running.worker.post_message(&release).ok();
             }
+            ControlFlow::Continue(())
         });
     });
     server
         .releases
         .set_onmessage(Some(released.into_js_value().unchecked_ref()));
-    let failed = Closure::<dyn Fn(web_sys::Event)>::new(move |_| {
-        slot.request.state.store(GONE, Ordering::SeqCst);
-        Atomics::notify(&words_to(slot.state()), slot.state()).ok();
-        SERVER.with_borrow_mut(|server| {
-            if server
-                .as_ref()
-                .is_some_and(|server| ptr::eq(server.slot, slot))
-            {
-                *server = None;
+    let acknowledged = Closure::<dyn Fn(MessageEvent)>::new(move |event: MessageEvent| {
+        let Some(id) = event.data().as_f64() else {
+            return;
+        };
+        on_server(number, |running| {
+            if let Some(slot) = running.live.remove(&(id as u32)) {
+                FREE_SLOTS.with_borrow_mut(|free| free.push(slot));
+            }
+            if running.live.is_empty() {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
             }
         });
     });
     server
         .worker
+        .set_onmessage(Some(acknowledged.into_js_value().unchecked_ref()));
+    let failed = Closure::<dyn Fn(web_sys::Event)>::new(move |_| {
+        on_server(number, |failed| {
+            for slot in failed.live.values() {
+                slot.request.state.store(GONE, Ordering::SeqCst);
+                Atomics::notify(&words_to(slot.state()), slot.state()).ok();
+            }
+            ControlFlow::Break(())
+        });
+    });
+    server
+        .worker
         .set_onerror(Some(failed.into_js_value().unchecked_ref()));
-    let start = object(&[
-        ("memory", memory().into()),
-        ("layout", slot.layout().into()),
-    ]);
+    let start = object(&[("memory", memory().into()), ("answers", answers().into())]);
     server.worker.post_message(&start).map_err(js_error)?;
     Ok(server)
+}
+
+/// Runs `f` on the window thread's server where it is the one numbered
+/// `number`, ending the server where `f` breaks.
+fn on_server(number: u32, f: impl FnOnce(&mut Server) -> ControlFlow<()>) {
+    SERVER.with_borrow_mut(|server| {
+        if let Some(running) = server.as_mut().filter(|running| running.number == number)
+            && f(running).is_break()
+        {
+            *server = None;
+        }
+    });
+}
+
+/// What the server answers a request by: each state, and the answer each
+/// exception it meets gives by its name.
+fn answers() -> Object {
+    let states = object(&[
+        ("idle", IDLE.into()),
+        ("asked", ASKED.into()),
+        ("answered", ANSWERED.into()),
+    ]);
+    let errors = object(&[
+        ("NotFoundError", NOT_FOUND.into()),
+        ("NotReadableError", NOT_READABLE.into()),
+        // Gecko names its exceptions by XPCOM result; its FileReaderSync
+        // throws NS_ERROR_FAILURE where a file ends short of the size it was
+        // handed over at (dom/file/FileReaderSync.cpp).
+        ("NS_ERROR_FILE_NOT_FOUND", NOT_FOUND.into()),
+        ("NS_ERROR_FAILURE", CHANGED.into()),
+    ]);
+    object(&[
+        ("states", states.into()),
+        ("errors", errors.into()),
+        ("failed", FAILED.into()),
+        ("changed", CHANGED.into()),
+    ])
 }
 
 impl Slot {
@@ -255,26 +309,10 @@ impl Slot {
     }
 
     /// What the server reads the request by: each field's word in bviz's
-    /// memory, each state, and the answer each exception it meets gives by
-    /// its name.
+    /// memory.
     fn layout(&self) -> Object {
-        let states = object(&[
-            ("idle", IDLE.into()),
-            ("asked", ASKED.into()),
-            ("answered", ANSWERED.into()),
-        ]);
-        let errors = object(&[
-            ("NotFoundError", NOT_FOUND.into()),
-            ("NotReadableError", NOT_READABLE.into()),
-            // Gecko names its exceptions by XPCOM result; its FileReaderSync
-            // throws NS_ERROR_FAILURE where a file ends short of the size it
-            // was handed over at (dom/file/FileReaderSync.cpp).
-            ("NS_ERROR_FILE_NOT_FOUND", NOT_FOUND.into()),
-            ("NS_ERROR_FAILURE", CHANGED.into()),
-        ]);
         object(&[
             ("state", self.state().into()),
-            ("file", self.word(offset_of!(Request, file)).into()),
             (
                 "offsetLow",
                 self.word(offset_of!(Request, offset_low)).into(),
@@ -286,10 +324,6 @@ impl Slot {
             ("into", self.word(offset_of!(Request, into)).into()),
             ("length", self.word(offset_of!(Request, length)).into()),
             ("answer", self.word(offset_of!(Request, answer)).into()),
-            ("states", states.into()),
-            ("errors", errors.into()),
-            ("failed", FAILED.into()),
-            ("changed", CHANGED.into()),
         ])
     }
 }
@@ -299,6 +333,8 @@ impl Slot {
 struct Served {
     id: u32,
     slot: &'static Slot,
+    /// The name of its server's channel of releases.
+    releases: String,
 }
 
 impl ReadAt for Served {
@@ -311,7 +347,6 @@ impl ReadAt for Served {
         let slot = self.slot;
         let request = &slot.request;
         let _asking = (slot.asking.lock()).unwrap_or_else(|poisoned| poisoned.into_inner());
-        request.file.store(self.id, Ordering::Relaxed);
         request.offset_low.store(offset as u32, Ordering::Relaxed);
         request
             .offset_high
@@ -360,7 +395,7 @@ impl ReadAt for Served {
 impl Drop for Served {
     fn drop(&mut self) {
         // The channel's messages are already on their way as it closes.
-        if let Ok(channel) = BroadcastChannel::new(&self.slot.releases) {
+        if let Ok(channel) = BroadcastChannel::new(&self.releases) {
             channel.post_message(&self.id.into()).ok();
             channel.close();
         }
