@@ -747,6 +747,25 @@ impl FlamePanel {
             .hit(&aggregates, fl, self.flame_scroll(cx), pos)
     }
 
+    /// Where on screen the panel draws each box it last laid out, with the row
+    /// the box's top edge lies on.
+    #[cfg(test)]
+    pub(crate) fn drawn_boxes(&self, cx: &App) -> Vec<(u32, Bounds<Pixels>)> {
+        let (Some(fl), Some(cache)) = (self.layout(cx), self.flame_boxes.as_ref()) else {
+            return Vec::new();
+        };
+        let scroll_y = self.flame_scroll(cx);
+        cache
+            .boxes
+            .iter()
+            .map(|b| {
+                let origin = point(px(fl.left + b.x), px(fl.top + b.y - scroll_y));
+                (b.depth, Bounds::new(origin, size(px(b.w), px(b.h))))
+            })
+            .filter(|(_, drawn)| fl.rect().contains(&drawn.center()))
+            .collect()
+    }
+
     /// Tracks the cursor for the box card.
     fn update_hover(&mut self, pos: Point<Pixels>, cx: &mut Context<Self>) {
         let boxed = self.box_at(pos, cx).map(|hovered| hovered.boxed.content);

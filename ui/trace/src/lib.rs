@@ -11,6 +11,8 @@ mod groups;
 mod model;
 mod rebuild;
 mod regions;
+#[cfg(test)]
+mod render_tests;
 mod row_step;
 mod stats_panel;
 #[cfg(test)]

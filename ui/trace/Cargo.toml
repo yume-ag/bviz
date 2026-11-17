@@ -30,5 +30,8 @@ bviz_ui_theme = { workspace = true }
 bviz_ui_trace_args = { workspace = true }
 bviz_ui_workspace = { workspace = true }
 
+[dev-dependencies]
+bviz_ui_testing = { workspace = true }
+
 [target.'cfg(target_family = "wasm")'.dependencies]
 bviz_ui_web = { workspace = true }

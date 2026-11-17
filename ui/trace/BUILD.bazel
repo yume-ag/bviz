@@ -46,6 +46,9 @@ rust_binary(
 
 rust_test(
     name = "trace_test",
-    size = "small",
+    size = "medium",
     crate = ":trace_lib",
+    data = ["//ui/testing:testdata/build.profile.gz"],
+    env = {"PROFILE": "$(rlocationpath //ui/testing:testdata/build.profile.gz)"},
+    deps = ["//ui/testing"],
 )

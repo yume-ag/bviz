@@ -271,7 +271,7 @@ impl Timeline {
 
     /// [`Regions`] for the current viewport, strip and gutter sizes, the loaded
     /// profile's counter track count, and the flame lanes' heights.
-    fn regions(&self, cx: &App) -> Regions {
+    pub(crate) fn regions(&self, cx: &App) -> Regions {
         let (n_counters, lanes) = {
             let model = self.model.read(cx);
             let n_counters = model.profile().map_or(0, |p| track_count(p));
@@ -370,6 +370,31 @@ impl Timeline {
     pub(crate) fn clear_hover(&mut self) {
         self.card.leave();
         self.crosshair = None;
+    }
+
+    /// Where the last paint drew each slice whose middle it shows, those of
+    /// the pinned band first.
+    #[cfg(test)]
+    pub(crate) fn drawn_slices(&self, cx: &App) -> Vec<Bounds<Pixels>> {
+        let Some(cache) = self.slice_draw.as_ref() else {
+            return Vec::new();
+        };
+        let regions = self.regions(cx);
+        let left = regions.content_left;
+        let mut drawn = Vec::new();
+        for (band, slices) in cache.slices.in_bands(regions, self.lane_scroll(cx)) {
+            let shown = band.rect(left, regions.time_right);
+            drawn.extend(
+                slices
+                    .iter()
+                    .map(|vs| {
+                        let origin = gpui::point(gpui::px(left + vs.x), gpui::px(band.top + vs.y));
+                        Bounds::new(origin, gpui::size(gpui::px(vs.w), gpui::px(vs.h)))
+                    })
+                    .filter(|slice| shown.contains(&slice.center())),
+            );
+        }
+        drawn
     }
 }
 
