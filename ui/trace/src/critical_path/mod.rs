@@ -608,7 +608,8 @@ fn traced_path(model: &TraceModel) -> Option<&CriticalPath> {
 }
 
 /// `row`, standing for `stands_for`, marked where that is `chosen` and
-/// toggling it on a click in the panel `entity`.
+/// toggling it on a click in the panel `entity`. It owns the row's fill and
+/// hover style, which gpui lets an element set only once.
 fn choosable(
     row: Stateful<Div>,
     stands_for: Chosen,
@@ -616,23 +617,26 @@ fn choosable(
     entity: Entity<CriticalPathPanel>,
     palette: &Palette,
 ) -> Stateful<Div> {
-    let picked_hover = palette.picked_hover();
-    row.when(chosen == Some(stands_for), |row| {
-        row.bg(palette.selection)
-            .hover(move |row| row.bg(picked_hover))
-    })
-    .on_click(move |e, window, cx| {
-        entity.update(cx, |panel, cx| {
-            GESTURES.dispatch(Pointer::click(e), |intent| match intent {
-                CriticalPathIntent::Choose => {
-                    panel.focus.focus(window, cx);
-                    panel.toggle(stands_for, cx);
-                    true
-                }
-                _ => false,
-            });
+    let picked = chosen == Some(stands_for);
+    let hover = if picked {
+        palette.picked_hover()
+    } else {
+        palette.hover
+    };
+    row.when(picked, |row| row.bg(palette.selection))
+        .hover(move |row| row.bg(hover))
+        .on_click(move |e, window, cx| {
+            entity.update(cx, |panel, cx| {
+                GESTURES.dispatch(Pointer::click(e), |intent| match intent {
+                    CriticalPathIntent::Choose => {
+                        panel.focus.focus(window, cx);
+                        panel.toggle(stands_for, cx);
+                        true
+                    }
+                    _ => false,
+                });
+            })
         })
-    })
 }
 
 /// `rows` taking the table's room under its header, scrolled through
@@ -1046,7 +1050,6 @@ fn step_row(
         .w_full()
         .pr(px(SCROLLBAR_THICKNESS))
         .text_size(px(STATS_TEXT_SIZE))
-        .hover(|row| row.bg(palette.hover))
         .child(table_cell(name.width, [described]))
         .child(table_cell(start.width, [format_duration(step.start_us())]))
         .child(table_cell(waited.width, [words::waited(index, step.gap())]))
@@ -1134,7 +1137,6 @@ fn nearly_critical_row(
         .w_full()
         .pr(px(SCROLLBAR_THICKNESS))
         .text_size(px(STATS_TEXT_SIZE))
-        .hover(|row| row.bg(palette.hover))
         .child(table_cell(name.width, [described]))
         .child(table_cell(took.width, [words::duration(action.duration)]))
         .child(table_cell(slack.width, [words::duration(action.slack)]))
