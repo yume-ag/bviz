@@ -109,6 +109,21 @@ impl Shown {
     fn phase(&self, cx: &App) -> Phase {
         Phase::ALL[self.phase_picker.read(cx).selected()]
     }
+
+    /// Every picker the panel shows, read off the whole of its state so that
+    /// a field added to it fails to build until it is counted here or not.
+    #[cfg(test)]
+    fn pickers(&self) -> [&Entity<Dropdown>; 2] {
+        let Shown {
+            summary: _,
+            runner_picker,
+            _runner_picked: _,
+            sort: _,
+            phase_picker,
+            _phase_picked: _,
+        } = self;
+        [runner_picker, phase_picker]
+    }
 }
 
 /// The spawn time of an execution log by phase: summed per runner and per
@@ -739,10 +754,65 @@ impl Render for SpawnTimePanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bviz_ui_components::{CONTROL_HEIGHT, CloseLegend, compact_icon_width};
+    use bviz_ui_session::Sharing;
+    use bviz_ui_testing::{LOAD_DEADLINE, SWEEP_STEP, fixture};
+    use gpui::{Bounds, point, size};
 
     #[test]
     fn every_gesture_is_reachable() {
         assert_eq!(GESTURES.unreachable(), []);
+    }
+
+    #[test]
+    fn the_spawn_time_draws_hovered_sorted_and_picked() {
+        bviz_ui_testing::run_alone(
+            &[crate::register_keys],
+            |session, clock, window, cx| {
+                let path = fixture("EXEC_LOG");
+                let load = crate::Load::from(bviz_ui_execlog_args::ExecLogSource { path });
+                crate::open(load, session, clock, Sharing::Alone, window, cx)
+            },
+            async |harness| {
+                let (panel, body) = harness.show::<SpawnTimePanel>();
+                harness
+                    .until("the execution log to load", LOAD_DEADLINE, |cx| {
+                        let panel = panel.read(cx);
+                        bviz_ui_testing::loaded("execution log", panel.model.read(cx).source())
+                            && panel.shown.is_some()
+                    })
+                    .await;
+                harness.sweep(body, SWEEP_STEP);
+                let pickers = harness.read(|cx| {
+                    let shown = panel.read(cx).shown.as_ref();
+                    shown.expect("the loaded log is shown").pickers().len()
+                });
+                let sections = harness.read(|cx| {
+                    let scroll = panel.read(cx).scroll.handle().clone();
+                    (0..)
+                        .map_while(|section| scroll.bounds_for_item(section))
+                        .collect::<Vec<_>>()
+                });
+                let mut menus = 0;
+                for section in sections {
+                    let title =
+                        Bounds::new(section.origin, size(section.size.width, CONTROL_HEIGHT));
+                    menus += harness.open_menus(title, compact_icon_width());
+                    let header = title.bottom() + ROW_HEIGHT / 2.;
+                    harness.click_along(
+                        point(section.left(), header),
+                        point(section.right(), header),
+                        NUMBER_WIDTH / 2.,
+                    );
+                }
+                assert_eq!(menus, pickers, "each picker opens its menu");
+                harness.sweep(body, SWEEP_STEP);
+                harness.dispatch(&ShowLegend);
+                harness.sweep(body, SWEEP_STEP);
+                harness.dispatch(&CloseLegend);
+                harness.toolbar_hints(body).await;
+            },
+        );
     }
 
     #[test]

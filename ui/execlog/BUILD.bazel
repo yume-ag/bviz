@@ -40,6 +40,9 @@ rust_binary(
 
 rust_test(
     name = "execlog_test",
-    size = "small",
+    size = "medium",
     crate = ":execlog_lib",
+    data = ["//ui/testing:testdata/exec.log.zst"],
+    env = {"EXEC_LOG": "$(rlocationpath //ui/testing:testdata/exec.log.zst)"},
+    deps = ["//ui/testing"],
 )

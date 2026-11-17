@@ -1019,6 +1019,7 @@ dependencies = [
  "bviz_ui_playback",
  "bviz_ui_session",
  "bviz_ui_spawn_phase",
+ "bviz_ui_testing",
  "bviz_ui_theme",
  "bviz_ui_workspace",
  "clap",

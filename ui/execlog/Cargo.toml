@@ -30,3 +30,6 @@ bviz_ui_session = { workspace = true }
 bviz_ui_spawn_phase = { workspace = true }
 bviz_ui_theme = { workspace = true }
 bviz_ui_workspace = { workspace = true }
+
+[dev-dependencies]
+bviz_ui_testing = { workspace = true }
