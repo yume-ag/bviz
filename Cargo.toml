@@ -86,7 +86,10 @@ bviz_ui_trace = { path = "ui/trace" }
 bviz_ui_trace_args = { path = "ui/trace/args" }
 bviz_ui_web = { path = "ui/web" }
 bviz_ui_workspace = { path = "ui/workspace" }
+cbindgen = { version = "0.28", default-features = false }
+cfg-if = "1"
 clap = { version = "4", features = ["derive"] }
+console_error_panic_hook = "0.1"
 crossbeam-channel = "0.5"
 crossbeam-utils = "0.8"
 dlmalloc = "0.2"
@@ -113,9 +116,11 @@ serde_json = "1"
 shlex = "2"
 spdx = "0.13"
 tiny_http = { version = "0.12", default-features = false }
+wasm-bindgen = "0.2"
 # Locked so Bazel can build wasm-bindgen's CLI at the version bviz links; no
 # crate links it.
 wasm-bindgen-cli = { version = "0.2", default-features = false }
+wasm-bindgen-futures = "0.4"
 wat = "1"
 web-sys = "0.3"
 web-time = "1"
