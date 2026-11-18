@@ -42,7 +42,7 @@ mod truncating_label;
 mod zoom_keys;
 
 pub use background::{Pending, load_future_in_background, load_in_background};
-pub use button::Button;
+pub use button::{Button, compact_icon_width};
 pub use by_room::ByRoom;
 pub use canvas::{Inked, LabelBoxStyle, paint_labeled_box, shape_truncated};
 pub use choice_dialog::{ChoiceDialog, ChoiceDialogEvent, ChoiceItem};
@@ -97,7 +97,7 @@ pub use zoom_keys::{ZOOM_KEY_STEP, ZoomIn, ZoomOut, zoom_key_bindings};
 use gpui::{App, Pixels, px};
 
 /// Height every control renders at, so controls sharing a row line up.
-pub(crate) const CONTROL_HEIGHT: Pixels = px(28.);
+pub const CONTROL_HEIGHT: Pixels = px(28.);
 
 /// Room added past a measured text width, so that sub-pixel rounding between
 /// measuring a line and laying the glyph run out cannot push it onto a second

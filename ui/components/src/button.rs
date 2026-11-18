@@ -18,8 +18,9 @@ pub(crate) const ICON_SIZE: Pixels = px(16.);
 /// Room a compact button leaves either side of its label or icon.
 const COMPACT_INSET: Pixels = px(8.);
 
-/// The width of a compact button showing only an icon.
-pub(crate) fn compact_icon_width() -> Pixels {
+/// The width of a compact button showing only an icon, the narrowest any
+/// control stands.
+pub fn compact_icon_width() -> Pixels {
     COMPACT_INSET * 2. + ICON_SIZE
 }
 
