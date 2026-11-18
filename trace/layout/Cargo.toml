@@ -12,7 +12,7 @@ path = "src/lib.rs"
 
 [dependencies]
 bviz_parallel = { workspace = true }
-bviz_trace_profile = { path = "../profile" }
+bviz_trace_profile = { workspace = true }
 rayon = { workspace = true }
 rustc-hash = { workspace = true }
 

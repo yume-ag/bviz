@@ -13,4 +13,4 @@ path = "src/lib.rs"
 [dependencies]
 gpui = { workspace = true }
 bviz_invocation = { workspace = true }
-bviz_ui_theme = { path = "../theme" }
+bviz_ui_theme = { workspace = true }

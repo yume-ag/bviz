@@ -50,13 +50,40 @@ repository = "https://github.com/yume-ag/bviz"
 
 [workspace.dependencies]
 alacritty_terminal = "0.26"
+bviz_alloc = { path = "alloc" }
 bviz_bazel_flags = { path = "bazel_flags" }
-bviz_label = { path = "label" }
-bviz_invocation = { path = "invocation" }
+bviz_bazel_flags_args = { path = "bazel_flags/args" }
+bviz_cli = { path = "cli" }
+bviz_critical_path = { path = "critical_path" }
+bviz_execlog = { path = "execlog" }
+bviz_graph_layout = { path = "graph/layout" }
 bviz_input = { path = "util/input" }
+bviz_invocation = { path = "invocation" }
+bviz_label = { path = "label" }
 bviz_parallel = { path = "util/parallel" }
+bviz_sniff = { path = "sniff" }
 bviz_switches = { path = "util/switches" }
+bviz_terminal = { path = "terminal" }
 bviz_time = { path = "util/time" }
+bviz_trace_layout = { path = "trace/layout" }
+bviz_trace_profile = { path = "trace/profile" }
+bviz_ui_assets = { path = "ui/assets" }
+bviz_ui_components = { path = "ui/components" }
+bviz_ui_console = { path = "ui/console" }
+bviz_ui_console_args = { path = "ui/console/args" }
+bviz_ui_execlog = { path = "ui/execlog" }
+bviz_ui_execlog_args = { path = "ui/execlog/args" }
+bviz_ui_graph = { path = "ui/graph" }
+bviz_ui_graph_args = { path = "ui/graph/args" }
+bviz_ui_playback = { path = "ui/playback" }
+bviz_ui_session = { path = "ui/session" }
+bviz_ui_shell = { path = "ui/shell" }
+bviz_ui_spawn_phase = { path = "ui/spawn_phase" }
+bviz_ui_theme = { path = "ui/theme" }
+bviz_ui_trace = { path = "ui/trace" }
+bviz_ui_trace_args = { path = "ui/trace/args" }
+bviz_ui_web = { path = "ui/web" }
+bviz_ui_workspace = { path = "ui/workspace" }
 clap = { version = "4", features = ["derive"] }
 crossbeam-channel = "0.5"
 crossbeam-utils = "0.8"
