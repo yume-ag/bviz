@@ -260,15 +260,16 @@ const TRACKS_MENU_MAX_LIST: f32 = 320.0;
 /// long group from burying the groups under it while a short one stays open.
 const TRACKS_MENU_FOLD_ABOVE: usize = 20;
 
-/// Heights of a stats-table header row and a body row.
-const STATS_HEADER_HEIGHT: f32 = 24.0;
-const STATS_ROW_HEIGHT: f32 = 22.0;
+/// Height of a stats table's header row.
+pub const STATS_HEADER_HEIGHT: f32 = 24.0;
+/// Height of a stats table's body row.
+pub const STATS_ROW_HEIGHT: f32 = 22.0;
 /// Font size of stats-table cells and headers.
 const STATS_TEXT_SIZE: f32 = 12.0;
 /// Width of each numeric stats column; the key column takes the remainder.
 /// Wide enough for the longest formatted value (e.g. "3155.54s", "871.64ms")
 /// plus padding, since cells clip rather than grow.
-const STATS_NUM_COL_WIDTH: f32 = 104.0;
+pub const STATS_NUM_COL_WIDTH: f32 = 104.0;
 /// Horizontal padding inside a stats cell.
 const STATS_CELL_PAD: f32 = 8.0;
 
