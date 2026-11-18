@@ -46,7 +46,7 @@ pub use panel::{
 };
 pub(crate) use regions::Regions;
 pub use regions::Role;
-pub use workspace::Workspace;
+pub use workspace::{DIVIDER_GRIP, SplitRight, Workspace};
 
 use workspace::register_keys;
 

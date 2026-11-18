@@ -107,7 +107,7 @@ const DIVIDER_LINE: Pixels = px(1.);
 /// The band the divider is grabbed by, wide enough to aim a press at where the
 /// line alone would be a pixel wide. Every boundary between a split's sides
 /// takes this much of the split's extent out of what those sides divide.
-pub(crate) const DIVIDER_GRIP: Pixels = px(7.);
+pub const DIVIDER_GRIP: Pixels = px(7.);
 
 /// How far a press on a panel's tab has to be carried along either axis before
 /// it is a drag of that panel rather than a click on it, so that a click from an
