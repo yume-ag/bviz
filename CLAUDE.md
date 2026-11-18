@@ -223,6 +223,9 @@ Everything is pinned and Bazel-managed. No system toolchains, no system tools.
   `Cargo.lock`, `multitool.lock.json`). Repin `Cargo.lock` with
   the Bazel-provided cargo, never system cargo. Repinning with cargo writes a
   `target/` tree (cargo's, not Bazel's); it is gitignored — never commit it.
+- Declare every Cargo dependency, in-repo crates included, once in the root
+  `Cargo.toml`'s `[workspace.dependencies]`; members reference it with
+  `{ workspace = true }` and add only features, never a version or path.
 - When a build needs a native/system C library (e.g. a Rust `*-sys` crate or a
   `#[link]`/pkg-config dependency on the host), do not link the host's copy or
   hand-vendor unpinned sources. The invariant is hermeticity: the library must be
