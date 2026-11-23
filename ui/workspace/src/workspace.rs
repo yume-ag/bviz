@@ -107,7 +107,7 @@ const DIVIDER_LINE: Pixels = px(1.);
 /// The band the divider is grabbed by, wide enough to aim a press at where the
 /// line alone would be a pixel wide. Every boundary between a split's sides
 /// takes this much of the split's extent out of what those sides divide.
-pub(crate) const DIVIDER_GRIP: Pixels = px(7.);
+pub const DIVIDER_GRIP: Pixels = px(7.);
 
 /// How far a press on a panel's tab has to be carried along either axis before
 /// it is a drag of that panel rather than a click on it, so that a click from an
@@ -2260,6 +2260,22 @@ impl Workspace {
     /// pane.
     pub fn active_panel(&self, cx: &App) -> Option<AnyPanel> {
         Some(self.frame()?.active_panel(cx))
+    }
+
+    /// Every panel the window frames, each with the body bounds of the pane
+    /// holding it, the room its shown panel draws in.
+    pub fn framed_panels(&self, cx: &App) -> Vec<(AnyPanel, Option<Bounds<Pixels>>)> {
+        let Some(frame) = self.frame() else {
+            return Vec::new();
+        };
+        let panes = || frame.arrangement.layout().panes();
+        let mut framed = Vec::with_capacity(panes().map(|pane| pane.read(cx).tab_count()).sum());
+        for pane in panes() {
+            let pane = pane.read(cx);
+            let body = pane.body_bounds();
+            framed.extend(pane.panels().map(|panel| (panel.clone(), body)));
+        }
+        framed
     }
 
     /// What names the window: the application, then, where a panel is on

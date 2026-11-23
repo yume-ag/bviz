@@ -12,4 +12,4 @@ path = "src/lib.rs"
 
 [dependencies]
 bviz_invocation = { workspace = true }
-bviz_trace_profile = { path = "../trace/profile" }
+bviz_trace_profile = { workspace = true }

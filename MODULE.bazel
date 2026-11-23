@@ -420,6 +420,7 @@ filegroup(
         "//patches/gpui:gpui-tooltip-dismiss-on-escape.patch",
         "//patches/gpui:gpui-tooltip-optional.patch",
         "//patches/gpui:gpui-focus-listener-notify-draws.patch",
+        "//patches/gpui:gpui-next-frame-without-test-support.patch",
     ],
 )
 crate.annotation(

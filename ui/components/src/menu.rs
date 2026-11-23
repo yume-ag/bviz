@@ -298,6 +298,11 @@ impl Menu {
         self.closed_holding(true, cx);
     }
 
+    /// Whether the menu stands open, no choice or dismissal taken from it.
+    pub fn is_up(&self) -> bool {
+        !self.closed
+    }
+
     fn closed_holding(&mut self, holding_focus: bool, cx: &mut Context<Self>) {
         if self.closed {
             return;

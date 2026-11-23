@@ -32,6 +32,35 @@ const LISTED_GROUPS: [LaneClass; STACKED_GROUPS.len() + 1] = {
     listed
 };
 
+/// An entry of the menu's track list.
+enum Listed {
+    /// A lane-class group's header, over `tracks` in their listed order.
+    Group {
+        group: usize,
+        class: LaneClass,
+        tracks: Vec<usize>,
+        folded: bool,
+    },
+    Track(usize),
+}
+
+/// What a click on a row the menu draws reaches.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DrawnRow {
+    /// A group's header, which folds the group, listing `listed` tracks.
+    Header {
+        group: usize,
+        listed: usize,
+        folded: bool,
+    },
+    /// The control on a group's header that hides or shows its tracks.
+    GroupVisibility {
+        group: usize,
+    },
+    Track(usize),
+}
+
 /// The tracks-visibility menu as a self-contained popover: a trigger in the
 /// gutter corner where the ruler meets the track-label column, and, when open, a
 /// filter field over a checklist of track names grouped by lane class. Owns its
@@ -58,6 +87,10 @@ pub(crate) struct TracksMenu {
     /// The owning view, read for the gutter width that positions the popover,
     /// and updated to reflow the timeline after a visibility change.
     shell: WeakEntity<TracePanel>,
+    /// Where each group's visibility control was last laid out, indexed by
+    /// [`LISTED_GROUPS`].
+    #[cfg(test)]
+    drawn_visibility: [Option<gpui::Bounds<Pixels>>; LISTED_GROUPS.len()],
 }
 
 impl TracksMenu {
@@ -76,6 +109,8 @@ impl TracksMenu {
             scroll: ListScroll::new(),
             model,
             shell,
+            #[cfg(test)]
+            drawn_visibility: [None; LISTED_GROUPS.len()],
         }
     }
 
@@ -149,16 +184,10 @@ impl TracksMenu {
 
     /// Tracks under their lane-class group headers, each group's tracks in the
     /// standing [`TrackSort`] — the same grouping and order the chart lays out.
-    fn menu_rows(
-        &self,
-        profile: &Profile,
-        palette: Palette,
-        cx: &mut Context<Self>,
-    ) -> Vec<AnyElement> {
+    fn listed(&self, profile: &Profile, cx: &App) -> Vec<Listed> {
         let filter = self.filter.read(cx).content().to_lowercase();
         let threads = profile.threads();
-        let shared_names = self.model.read(cx).shared_track_names().to_vec();
-        let mut rows: Vec<AnyElement> = Vec::new();
+        let mut listed = Vec::with_capacity(LISTED_GROUPS.len() + threads.len());
         for (group, &class) in LISTED_GROUPS.iter().enumerate() {
             let mut tracks: Vec<usize> = (0..threads.len())
                 .filter(|&t| threads[t].lane_class == class)
@@ -178,29 +207,93 @@ impl TracksMenu {
                 .track_sort()
                 .order(profile, threads, &mut tracks);
             let folded = self.folded(group, tracks.len());
-            rows.push(
-                self.group_row(group, class, &tracks, folded, palette, cx)
+            let shown = if folded { Vec::new() } else { tracks.clone() };
+            listed.push(Listed::Group {
+                group,
+                class,
+                tracks,
+                folded,
+            });
+            listed.extend(shown.into_iter().map(Listed::Track));
+        }
+        listed
+    }
+
+    /// The elements of the [`listed`](Self::listed) rows.
+    fn menu_rows(
+        &self,
+        profile: &Profile,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let shared_names = self.model.read(cx).shared_track_names().to_vec();
+        self.listed(profile, cx)
+            .into_iter()
+            .map(|row| match row {
+                Listed::Group {
+                    group,
+                    class,
+                    tracks,
+                    folded,
+                } => self
+                    .group_row(group, class, &tracks, folded, palette, cx)
                     .into_any_element(),
-            );
-            if folded {
+                Listed::Track(i) => {
+                    let label = track_label(profile, &shared_names, i);
+                    let visible = self
+                        .model
+                        .read(cx)
+                        .visible_tracks()
+                        .get(i)
+                        .copied()
+                        .unwrap_or(true);
+                    self.track_row(i, &label, visible, palette, cx)
+                        .into_any_element()
+                }
+            })
+            .collect()
+    }
+
+    /// Where the open menu last laid out each row of its track list it shows,
+    /// and what a click there reaches.
+    #[cfg(test)]
+    pub(crate) fn drawn_rows(&self, cx: &App) -> Vec<(DrawnRow, gpui::Bounds<Pixels>)> {
+        let Some(profile) = self.model.read(cx).profile().filter(|_| self.open) else {
+            return Vec::new();
+        };
+        let handle = self.scroll.handle();
+        let shown = handle.bounds();
+        let listed = self.listed(profile, cx);
+        let mut drawn = Vec::with_capacity(listed.len() + LISTED_GROUPS.len());
+        for (index, row) in listed.into_iter().enumerate() {
+            let Some(laid_out) = handle.bounds_for_item(index) else {
+                break;
+            };
+            let at = gpui::Bounds::new(laid_out.origin + handle.offset(), laid_out.size);
+            if !shown.contains(&at.center()) {
                 continue;
             }
-            for i in tracks {
-                let label = track_label(profile, &shared_names, i);
-                let visible = self
-                    .model
-                    .read(cx)
-                    .visible_tracks()
-                    .get(i)
-                    .copied()
-                    .unwrap_or(true);
-                rows.push(
-                    self.track_row(i, &label, visible, palette, cx)
-                        .into_any_element(),
-                );
+            match row {
+                Listed::Group {
+                    group,
+                    tracks,
+                    folded,
+                    ..
+                } => {
+                    let header = DrawnRow::Header {
+                        group,
+                        listed: tracks.len(),
+                        folded,
+                    };
+                    drawn.push((header, at));
+                    if let Some(control) = self.drawn_visibility[group] {
+                        drawn.push((DrawnRow::GroupVisibility { group }, control));
+                    }
+                }
+                Listed::Track(i) => drawn.push((DrawnRow::Track(i), at)),
             }
         }
-        rows
+        drawn
     }
 
     /// A group header: a caret and how many of the tracks listed under it are
@@ -224,8 +317,16 @@ impl TracksMenu {
         };
         let group_all_visible = n_visible == tracks.len();
         let listed = tracks.len();
-        div()
-            .id(SharedString::from(format!("track-group-{group}")))
+        let row = div();
+        #[cfg(test)]
+        let row = {
+            let menu = cx.weak_entity();
+            row.on_children_prepainted(move |children, _, cx| {
+                let control = children.last().copied();
+                let _ = menu.update(cx, |menu, _| menu.drawn_visibility[group] = control);
+            })
+        };
+        row.id(SharedString::from(format!("track-group-{group}")))
             .flex()
             .flex_row()
             .items_center()

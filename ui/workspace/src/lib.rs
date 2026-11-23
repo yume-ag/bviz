@@ -46,13 +46,13 @@ pub use panel::{
 };
 pub(crate) use regions::Regions;
 pub use regions::Role;
-pub use workspace::Workspace;
+pub use workspace::{DIVIDER_GRIP, SplitRight, Workspace};
 
 use workspace::register_keys;
 
 use clap::Parser;
 use clap::error::ErrorKind;
-use gpui::{App, AppContext, Pixels, Size, WeakEntity, Window, px};
+use gpui::{App, AppContext, Pixels, Size, WeakEntity, Window, WindowHandle, px};
 
 /// Opening size of a window, roomy enough for a graph or a timeline to be
 /// worth looking at before it is resized.
@@ -153,19 +153,8 @@ fn run(
     panel_keys: &'static [fn(&mut App)],
 ) {
     bviz_ui_shell::application().run(move |cx: &mut App| {
-        bviz_ui_shell::setup(cx);
-        register_keys(cx, opener.is_some());
-        if let Some(opener) = opener {
-            cx.set_global(opener);
-        }
-        cx.set_global(AppActions(actions));
-        for register in panel_keys {
-            register(cx);
-        }
-        let opening = bviz_ui_shell::open_window(&app_id, window_size, cx, |window, cx| {
-            let opened = opened(window, cx);
-            cx.new(|cx| Workspace::with_documents(app_id.clone(), opened, window, cx))
-        });
+        let opening =
+            open_first_window(app_id, window_size, opened, opener, actions, panel_keys, cx);
         #[cfg(not(target_family = "wasm"))]
         let window = opening.unwrap();
         #[cfg(target_family = "wasm")]
@@ -186,4 +175,30 @@ fn run(
             .unwrap();
         cx.activate(true);
     });
+}
+
+/// Readies the application `cx` runs as [`run_panels`] describes, and opens
+/// its first window framing the documents `opened` builds.
+pub fn open_first_window(
+    app_id: String,
+    window_size: Size<Pixels>,
+    opened: impl FnOnce(&mut Window, &mut App) -> Vec<Document> + 'static,
+    opener: Option<PathOpener>,
+    actions: Vec<AppAction>,
+    panel_keys: &'static [fn(&mut App)],
+    cx: &mut App,
+) -> gpui::Result<WindowHandle<Workspace>> {
+    bviz_ui_shell::setup(cx);
+    register_keys(cx, opener.is_some());
+    if let Some(opener) = opener {
+        cx.set_global(opener);
+    }
+    cx.set_global(AppActions(actions));
+    for register in panel_keys {
+        register(cx);
+    }
+    bviz_ui_shell::open_window(&app_id, window_size, cx, |window, cx| {
+        let opened = opened(window, cx);
+        cx.new(|cx| Workspace::with_documents(app_id.clone(), opened, window, cx))
+    })
 }

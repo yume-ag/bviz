@@ -893,10 +893,169 @@ impl ConsolePanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bviz_ui_testing::{Harness, LOAD_DEADLINE, SWEEP_STEP, fixture};
+    use gpui::{Action, Entity, point};
+    use std::iter;
+    use std::ops::Range;
 
     #[test]
     fn every_gesture_is_reachable() {
         assert_eq!(GESTURES.unreachable(), []);
+    }
+
+    /// What the find box is typed on past a match with, so that it matches
+    /// nothing.
+    const UNMATCHED: &str = "zzz";
+
+    /// A run of word characters the console's grid shows.
+    struct ShownWord {
+        row: usize,
+        columns: Range<usize>,
+        text: String,
+    }
+
+    /// Each word the console's grid shows, top row first.
+    fn shown_words(terminal: &Terminal) -> Vec<ShownWord> {
+        let mut words = Vec::new();
+        for (row, cells) in terminal.viewport().iter().enumerate() {
+            let mut word: Option<(usize, String)> = None;
+            let characters = cells.iter().map(|cell| cell.c).chain(iter::once(' '));
+            for (column, character) in characters.enumerate() {
+                match (&mut word, character.is_alphanumeric()) {
+                    (Some((_, text)), true) => text.push(character),
+                    (None, true) => word = Some((column, character.to_string())),
+                    (Some(_), false) => {
+                        let (start, text) = word.take().expect("a word is under way");
+                        words.push(ShownWord {
+                            row,
+                            columns: start..column,
+                            text,
+                        });
+                    }
+                    (None, false) => {}
+                }
+            }
+        }
+        words
+    }
+
+    /// What `read` reads of the terminal `console` draws.
+    fn terminal<R>(
+        harness: &Harness,
+        console: &Entity<ConsolePanel>,
+        read: impl FnOnce(&Terminal) -> R,
+    ) -> R {
+        harness.read(|cx| {
+            let terminal = console.read(cx).terminal.as_ref();
+            read(terminal.expect("a drawn frame builds the console's terminal"))
+        })
+    }
+
+    /// Whether `terminal` holds a selection on any row it shows.
+    fn selects(terminal: &Terminal) -> bool {
+        terminal.selection_spans().iter().any(Option::is_some)
+    }
+
+    /// Where the console draws the middle of the grid cell at `(column, row)`.
+    fn cell_centre(content: ContentLayout, (column, row): (usize, usize)) -> Point<Pixels> {
+        point(
+            px(content.left + content.cell_width * (column as f32 + 0.5)),
+            px(content.top + content.line_height * (row as f32 + 0.5)),
+        )
+    }
+
+    #[test]
+    fn the_console_draws_hovered_selected_found_and_scrolled() {
+        bviz_ui_testing::run_alone(
+            &[register_keys],
+            |session, clock, window, cx| {
+                let path = fixture("BEP");
+                let load = crate::Load::from(bviz_ui_console_args::ConsoleSource { path });
+                crate::open(load, session, clock, window, cx)
+            },
+            async |harness| {
+                let (console, body) = harness.show::<ConsolePanel>();
+                harness
+                    .until("the build event stream to load", LOAD_DEADLINE, |cx| {
+                        let source = console.read(cx).model.read(cx).source();
+                        bviz_ui_testing::loaded("build event stream", source)
+                    })
+                    .await;
+                let content = harness.read(|cx| {
+                    console
+                        .read(cx)
+                        .content
+                        .expect("a drawn frame lays out the console's grid")
+                });
+                harness.sweep(body, SWEEP_STEP);
+                let words = terminal(harness, &console, shown_words);
+                let (Some(first), Some(last)) = (words.first(), words.last()) else {
+                    panic!("the console shows words");
+                };
+                assert!(
+                    first.row < last.row,
+                    "the console shows words on several rows"
+                );
+                let from = cell_centre(content, (first.columns.start, first.row));
+                let to = cell_centre(content, (last.columns.end - 1, last.row));
+                harness.drag(from, to);
+                assert!(
+                    terminal(harness, &console, selects),
+                    "the drag selects text"
+                );
+                harness.dispatch(&Copy);
+                harness.sweep(body, SWEEP_STEP);
+                harness.dispatch(&Dismiss);
+                let longest = words
+                    .iter()
+                    .max_by_key(|word| word.columns.len())
+                    .expect("the console shows words");
+                let clicked = cell_centre(content, (longest.columns.start, longest.row));
+                for clicks in [2, 3] {
+                    harness.click_with(MouseButton::Left, clicked, clicks);
+                    assert!(
+                        terminal(harness, &console, selects),
+                        "{clicks} clicks on a word select text"
+                    );
+                    harness.sweep(body, SWEEP_STEP);
+                }
+                harness.dispatch(&Find);
+                assert!(
+                    harness.focused_within(FIND_KEY_CONTEXT.id()),
+                    "the find box opens"
+                );
+                harness.type_text(&longest.text);
+                let matches =
+                    |harness: &Harness| terminal(harness, &console, Terminal::search_count);
+                assert_ne!(
+                    matches(harness),
+                    0,
+                    "the find matches a word the console shows"
+                );
+                harness.dispatch(&FindNext);
+                harness.dispatch(&FindNext);
+                harness.dispatch(&FindPrev);
+                harness.sweep(body, SWEEP_STEP);
+                harness.type_text(UNMATCHED);
+                assert_eq!(matches(harness), 0, "the find matches nothing past a word");
+                harness.dispatch(&FindNext);
+                harness.dispatch(&FindClose);
+                let scrolls: [&dyn Action; 6] = [
+                    &ScrollToTop,
+                    &ScrollPageDown,
+                    &ScrollLineDown,
+                    &ScrollToBottom,
+                    &ScrollPageUp,
+                    &ScrollLineUp,
+                ];
+                for scroll in scrolls {
+                    harness.dispatch(scroll);
+                }
+                let middle = (content.columns / 2, content.rows / 2);
+                harness.scroll_wheel(cell_centre(content, middle), point(0., -1.));
+                harness.sweep(body, SWEEP_STEP);
+            },
+        );
     }
 
     #[test]

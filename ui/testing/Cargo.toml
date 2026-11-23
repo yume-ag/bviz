@@ -1,0 +1,26 @@
+[package]
+name = "bviz_ui_testing"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[lib]
+name = "bviz_ui_testing"
+path = "src/lib.rs"
+
+[dependencies]
+gpui = { workspace = true }
+bviz_ui_assets = { workspace = true }
+bviz_ui_components = { workspace = true }
+bviz_ui_workspace = { workspace = true }
+bviz_ui_playback = { workspace = true }
+bviz_invocation = { workspace = true }
+bviz_time = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui_platform = { workspace = true, features = ["wayland"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui_platform = { workspace = true, features = ["font-kit"] }

@@ -223,6 +223,11 @@ impl OneRow {
         CONTROL_HEIGHT + PADDING * 2. + RULE
     }
 
+    /// How far in from the strip's left edge its first control stands.
+    pub fn inset() -> Pixels {
+        INSET
+    }
+
     /// Adds `group` to those held against the left edge.
     pub fn group(mut self, group: ToolbarGroup) -> Self {
         self.leading.push(Item::Group(group));

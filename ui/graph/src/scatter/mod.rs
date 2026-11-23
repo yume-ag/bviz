@@ -2517,6 +2517,34 @@ impl Render for ScatterCanvas {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render_tests::with_graph;
+    use crate::unit_picker::CyclePoints;
+    use bviz_ui_testing::{Harness, LOAD_DEADLINE, SWEEP_STEP};
+    use gpui::Action;
+
+    /// Where `scatter` draws the middle of the first mark it plots of each
+    /// kind a click there picks: of each hue, faded or not, alone under the
+    /// click or among others.
+    fn one_mark_of_each_kind(scatter: &ScatterPanel) -> Vec<Point<Pixels>> {
+        let (Some(area), Some(plot)) = (scatter.area(), scatter.plot.as_ref()) else {
+            return Vec::new();
+        };
+        let marks = &plot.plotted.marks;
+        let mut kinds = Vec::with_capacity(marks.len());
+        let mut each = Vec::with_capacity(marks.len());
+        for mark in marks {
+            let at = area.place(mark);
+            let Some(picked) = area.pick(marks, at) else {
+                continue;
+            };
+            let kind = (mark.hue, mark.faded, picked.covered().len() > 1);
+            if !kinds.contains(&kind) {
+                kinds.push(kind);
+                each.push(at);
+            }
+        }
+        each
+    }
 
     #[test]
     fn every_gesture_is_reachable() {
@@ -2526,5 +2554,56 @@ mod tests {
     #[test]
     fn every_gesture_fits_the_keys_help() {
         assert_eq!(GESTURES.overlong(), []);
+    }
+
+    #[test]
+    fn the_scatter_draws_hovered_picked_and_recast() {
+        with_graph(async |harness| {
+            let (scatter, body) = harness.show::<ScatterPanel>();
+            let plotted = |cx: &App| {
+                let scatter = scatter.read(cx);
+                scatter.plot.is_some() && scatter.plotting.is_none()
+            };
+            harness
+                .until("the scatter to plot", LOAD_DEADLINE, plotted)
+                .await;
+            harness.sweep(body, SWEEP_STEP);
+            let marks =
+                |harness: &mut Harness| harness.read(|cx| one_mark_of_each_kind(scatter.read(cx)));
+            let clicked = marks(harness);
+            assert!(!clicked.is_empty(), "the scatter plots marks to click");
+            for at in clicked {
+                harness.click(at);
+            }
+            harness.sweep(body, SWEEP_STEP);
+            assert!(
+                harness.update(|_, window, cx| scatter.read(cx).focus.contains_focused(window, cx)),
+                "a click on the plot focuses it, where its keys act"
+            );
+            for at in marks(harness) {
+                harness.click_with(MouseButton::Left, at, 2);
+                harness.sweep(body, SWEEP_STEP);
+            }
+            harness.dispatch(&AimDown);
+            harness.dispatch(&AimUp);
+            harness.dispatch(&SelectAimed);
+            harness.dispatch(&ClosePickList);
+            let recasts: [&dyn Action; 3] = [&CycleAcross, &CycleUp, &CyclePoints];
+            for recast in recasts {
+                harness.dispatch(recast);
+                harness
+                    .until("the scatter to plot again", LOAD_DEADLINE, plotted)
+                    .await;
+                harness.sweep(body, SWEEP_STEP);
+            }
+            let menus = harness.toolbar_menus(body);
+            assert_ne!(menus, 0, "the scatter's toolbar opens a menu");
+            harness.dispatch(&ShowWholePlot);
+            harness.dispatch(&DismissCard);
+            harness.toolbar_hints(body).await;
+            let mark = marks(harness);
+            harness.click(*mark.first().expect("the scatter plots a mark to click"));
+            harness.dispatch(&ShowSelectedPoint);
+        });
     }
 }

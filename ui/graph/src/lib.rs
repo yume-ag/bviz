@@ -67,6 +67,8 @@ mod pins;
 mod playback;
 mod point;
 mod relation;
+#[cfg(test)]
+mod render_tests;
 mod report;
 mod reveal;
 mod rules;

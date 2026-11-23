@@ -1,0 +1,21 @@
+Deliver next-frame callbacks without the test-support feature
+
+A window run on gpui's headless platform has no frame loop, so the
+callbacks on_next_frame and request_animation_frame schedule never run,
+and an animated state never settles. simulate_next_frame delivers them,
+but only to builds with the test-support feature, which changes the
+features of gpui for every crate built alongside. Offer it in every build,
+so that a test drawing panels headlessly can settle them.
+
+License: Apache-2.0 (Zed v1.24.3)
+
+--- a/crates/gpui/src/window.rs
++++ b/crates/gpui/src/window.rs
+@@ -2740,7 +2740,6 @@
+     ///
+     /// Tests have no platform frame loop, so this simulates the delivery of the
+     /// next frame.
+-    #[cfg(any(test, feature = "test-support"))]
+     pub fn simulate_next_frame(&mut self, cx: &mut App) -> usize {
+         let callbacks = self.next_frame_callbacks.take();
+         let count = callbacks.len();

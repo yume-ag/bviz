@@ -754,6 +754,8 @@ fn stats_end_drag(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render_tests::{click_down, with_profile};
+    use bviz_ui_testing::{LOAD_DEADLINE, SWEEP_STEP};
 
     #[test]
     fn every_gesture_is_reachable() {
@@ -763,5 +765,28 @@ mod tests {
     #[test]
     fn every_gesture_fits_the_keys_help() {
         assert_eq!(GESTURES.overlong(), []);
+    }
+
+    #[test]
+    fn the_stats_draw_picked_sorted_and_hovered() {
+        with_profile(async |harness, _| {
+            let (stats, body) = harness.show::<StatsPanel>();
+            harness
+                .until("the stats to sort", LOAD_DEADLINE, |cx| {
+                    stats.read(cx).stats_order.is_some()
+                })
+                .await;
+            harness.sweep(body, SWEEP_STEP);
+            harness.dispatch(&ChooseNext);
+            harness.dispatch(&ChooseNext);
+            assert!(
+                harness.read(|cx| stats.read(cx).picked.is_some()),
+                "choosing the next row picks one"
+            );
+            click_down(harness, body);
+            harness.sweep(body, SWEEP_STEP);
+            harness.dispatch(&ChoosePrevious);
+            harness.dispatch(&Unchoose);
+        });
     }
 }

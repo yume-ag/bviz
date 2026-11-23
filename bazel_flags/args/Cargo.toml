@@ -13,7 +13,7 @@ path = "src/lib.rs"
 [dependencies]
 clap = { workspace = true }
 bviz_bazel_flags = { workspace = true }
-bviz_ui_console_args = { path = "../../ui/console/args" }
-bviz_ui_execlog_args = { path = "../../ui/execlog/args" }
-bviz_ui_graph_args = { path = "../../ui/graph/args" }
-bviz_ui_trace_args = { path = "../../ui/trace/args" }
+bviz_ui_console_args = { workspace = true }
+bviz_ui_execlog_args = { workspace = true }
+bviz_ui_graph_args = { workspace = true }
+bviz_ui_trace_args = { workspace = true }

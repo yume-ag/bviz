@@ -13,22 +13,25 @@ path = "src/main.rs"
 [dependencies]
 clap = { workspace = true }
 gpui = { workspace = true, features = ["inspector"] }
-bviz_alloc = { path = "../../alloc" }
-bviz_critical_path = { path = "../../critical_path" }
+bviz_alloc = { workspace = true }
+bviz_critical_path = { workspace = true }
 bviz_input = { workspace = true }
 bviz_invocation = { workspace = true }
 bviz_label = { workspace = true }
 bviz_switches = { workspace = true }
-bviz_trace_profile = { path = "../../trace/profile" }
-bviz_trace_layout = { path = "../../trace/layout" }
-bviz_ui_assets = { path = "../assets" }
-bviz_ui_components = { path = "../components" }
-bviz_ui_playback = { path = "../playback" }
-bviz_ui_session = { path = "../session" }
-bviz_ui_spawn_phase = { path = "../spawn_phase" }
-bviz_ui_theme = { path = "../theme" }
-bviz_ui_trace_args = { path = "args" }
-bviz_ui_workspace = { path = "../workspace" }
+bviz_trace_profile = { workspace = true }
+bviz_trace_layout = { workspace = true }
+bviz_ui_assets = { workspace = true }
+bviz_ui_components = { workspace = true }
+bviz_ui_playback = { workspace = true }
+bviz_ui_session = { workspace = true }
+bviz_ui_spawn_phase = { workspace = true }
+bviz_ui_theme = { workspace = true }
+bviz_ui_trace_args = { workspace = true }
+bviz_ui_workspace = { workspace = true }
+
+[dev-dependencies]
+bviz_ui_testing = { workspace = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
-bviz_ui_web = { path = "../web" }
+bviz_ui_web = { workspace = true }

@@ -48,7 +48,20 @@ rust_binary(
 
 rust_test(
     name = "graph_test",
-    size = "small",
+    size = "medium",
     crate = ":graph_lib",
-    deps = ["@crates//:fastrand"],
+    data = [
+        "//ui/testing:testdata/aquery.binpb",
+        "//ui/testing:testdata/cquery.binpb",
+        "//ui/testing:testdata/query.binpb",
+    ],
+    env = {
+        "AQUERY": "$(rlocationpath //ui/testing:testdata/aquery.binpb)",
+        "CQUERY": "$(rlocationpath //ui/testing:testdata/cquery.binpb)",
+        "QUERY": "$(rlocationpath //ui/testing:testdata/query.binpb)",
+    },
+    deps = [
+        "//ui/testing",
+        "@crates//:fastrand",
+    ],
 )

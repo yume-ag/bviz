@@ -14,20 +14,20 @@ path = "src/main.rs"
 bviz_bazel_flags = { workspace = true }
 clap = { workspace = true }
 gpui = { workspace = true, features = ["inspector"] }
-bviz_graph_layout = { path = "../../graph/layout" }
+bviz_graph_layout = { workspace = true }
 bviz_input = { workspace = true }
 bviz_invocation = { workspace = true }
 bviz_label = { workspace = true }
 bviz_parallel = { workspace = true }
 bviz_switches = { workspace = true }
 bviz_time = { workspace = true }
-bviz_ui_assets = { path = "../assets" }
-bviz_ui_components = { path = "../components" }
-bviz_ui_graph_args = { path = "args" }
-bviz_ui_playback = { path = "../playback" }
-bviz_ui_session = { path = "../session" }
-bviz_ui_theme = { path = "../theme" }
-bviz_ui_workspace = { path = "../workspace" }
+bviz_ui_assets = { workspace = true }
+bviz_ui_components = { workspace = true }
+bviz_ui_graph_args = { workspace = true }
+bviz_ui_playback = { workspace = true }
+bviz_ui_session = { workspace = true }
+bviz_ui_theme = { workspace = true }
+bviz_ui_workspace = { workspace = true }
 fixedbitset = { workspace = true }
 lyon_tessellation = { workspace = true }
 cfg-if = "1"
@@ -35,7 +35,8 @@ nucleo = { workspace = true }
 rustc-hash = { workspace = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
-bviz_ui_web = { path = "../web" }
+bviz_ui_web = { workspace = true }
 
 [dev-dependencies]
 fastrand = { workspace = true }
+bviz_ui_testing = { workspace = true }

@@ -3026,10 +3026,89 @@ impl Render for IcicleCanvas {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render_tests::with_graph;
+    use crate::unit_picker::CyclePoints;
+    use bviz_ui_testing::{LOAD_DEADLINE, SWEEP_STEP};
 
     #[test]
     fn every_gesture_is_reachable() {
         assert_eq!(GESTURES.unreachable(), []);
+    }
+
+    /// Where `exclusive` draws the middle of the widest cell of its icicle.
+    fn widest_cell(exclusive: &ExclusivePanel) -> Point<Pixels> {
+        let laid = exclusive
+            .laid_out()
+            .expect("a drawn frame lays out the icicle");
+        laid.spots()
+            .filter(|spot| matches!(spot, Spot::Cell(_)))
+            .map(|spot| spot.rect())
+            .max_by(|a, b| f32::from(a.size.width).total_cmp(&f32::from(b.size.width)))
+            .expect("the icicle draws a cell")
+            .center()
+    }
+
+    #[test]
+    fn the_exclusive_deps_draw_hovered_selected_focused_and_rooted() {
+        with_graph(async |harness| {
+            let (exclusive, body) = harness.show::<ExclusivePanel>();
+            let at_rest = |cx: &App| {
+                let exclusive = exclusive.read(cx);
+                exclusive.drawing.is_none()
+                    && exclusive.showing.is_none()
+                    && exclusive
+                        .drawn
+                        .as_ref()
+                        .is_some_and(|drawn| drawn.transition.is_none())
+            };
+            harness
+                .until("the icicle to draw", LOAD_DEADLINE, at_rest)
+                .await;
+            harness.sweep(body, SWEEP_STEP);
+            let widest = harness.read(|cx| widest_cell(exclusive.read(cx)));
+            harness.click(widest);
+            assert!(
+                harness.update(|_, window, cx| exclusive.read(cx).focus_handle.is_focused(window)),
+                "a click on the icicle focuses it, where its keys act"
+            );
+            let moves: [&dyn Action; 5] = [
+                &SelectChild,
+                &SelectChild,
+                &SelectNext,
+                &SelectPrevious,
+                &SelectParent,
+            ];
+            for step in moves {
+                harness.dispatch(step);
+            }
+            let focus_moves: [&dyn Action; 4] =
+                [&FocusSelected, &FocusUp, &FocusBack, &FocusForward];
+            for focus_move in focus_moves {
+                harness.dispatch(focus_move);
+                harness
+                    .until("the icicle to come to rest", LOAD_DEADLINE, at_rest)
+                    .await;
+                harness.sweep(body, SWEEP_STEP);
+            }
+            harness.dispatch(&EditRoots);
+            harness.sweep(body, SWEEP_STEP);
+            harness.dispatch(&CloseRoots);
+            harness.dispatch(&CyclePoints);
+            harness
+                .until("the icicle to draw again", LOAD_DEADLINE, at_rest)
+                .await;
+            let menus = harness.toolbar_menus(body);
+            assert_ne!(menus, 0, "the icicle's toolbar opens a menu");
+            harness.dispatch(&Deselect);
+            harness.dispatch(&ShowWholeBuild);
+            harness
+                .until("the icicle to come to rest", LOAD_DEADLINE, at_rest)
+                .await;
+            harness.toolbar_hints(body).await;
+            let widest = harness.read(|cx| widest_cell(exclusive.read(cx)));
+            harness.click(widest);
+            harness.dispatch(&ShowSelected);
+        });
     }
 
     #[test]

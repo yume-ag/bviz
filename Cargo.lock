@@ -745,6 +745,7 @@ dependencies = [
  "bviz_ui_graph",
  "bviz_ui_graph_args",
  "bviz_ui_session",
+ "bviz_ui_testing",
  "bviz_ui_trace",
  "bviz_ui_web",
  "bviz_ui_workspace",
@@ -989,6 +990,7 @@ dependencies = [
  "bviz_ui_console_args",
  "bviz_ui_playback",
  "bviz_ui_session",
+ "bviz_ui_testing",
  "bviz_ui_theme",
  "bviz_ui_workspace",
  "clap",
@@ -1018,6 +1020,7 @@ dependencies = [
  "bviz_ui_playback",
  "bviz_ui_session",
  "bviz_ui_spawn_phase",
+ "bviz_ui_testing",
  "bviz_ui_theme",
  "bviz_ui_workspace",
  "clap",
@@ -1048,6 +1051,7 @@ dependencies = [
  "bviz_ui_graph_args",
  "bviz_ui_playback",
  "bviz_ui_session",
+ "bviz_ui_testing",
  "bviz_ui_theme",
  "bviz_ui_web",
  "bviz_ui_workspace",
@@ -1111,6 +1115,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "bviz_ui_testing"
+version = "0.1.0"
+dependencies = [
+ "bviz_invocation",
+ "bviz_time",
+ "bviz_ui_assets",
+ "bviz_ui_components",
+ "bviz_ui_playback",
+ "bviz_ui_workspace",
+ "gpui",
+ "gpui_platform",
+]
+
+[[package]]
 name = "bviz_ui_theme"
 version = "0.1.0"
 dependencies = [
@@ -1136,6 +1154,7 @@ dependencies = [
  "bviz_ui_playback",
  "bviz_ui_session",
  "bviz_ui_spawn_phase",
+ "bviz_ui_testing",
  "bviz_ui_theme",
  "bviz_ui_trace_args",
  "bviz_ui_web",
