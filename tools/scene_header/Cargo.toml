@@ -11,4 +11,4 @@ name = "bviz_scene_header_gen"
 path = "scene_header_gen.rs"
 
 [dependencies]
-cbindgen = { version = "0.28", default-features = false }
+cbindgen = { workspace = true }
