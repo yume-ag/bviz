@@ -12,10 +12,7 @@ path = "src/lib.rs"
 
 [dependencies]
 bviz_time = { workspace = true }
+percent-encoding = { workspace = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
-percent-encoding = { workspace = true }
 web-sys = { workspace = true, features = ["console"] }
-
-[dev-dependencies]
-percent-encoding = { workspace = true }

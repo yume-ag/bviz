@@ -291,7 +291,7 @@ impl Reopener {
 
 /// The length of the head of an input of `size` bytes, where that is known,
 /// or the most a head holds where it is not.
-fn head_bytes(size: Option<u64>) -> usize {
+pub(crate) fn head_bytes(size: Option<u64>) -> usize {
     size.map_or(HEAD_BYTES, |size| size.min(HEAD_BYTES as u64) as usize)
 }
 

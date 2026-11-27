@@ -852,6 +852,19 @@ name = "bviz_label"
 version = "0.1.0"
 
 [[package]]
+name = "bviz_links"
+version = "0.1.0"
+dependencies = [
+ "bviz_sniff",
+ "bviz_switches",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+ "unicode-properties",
+ "url",
+]
+
+[[package]]
 name = "bviz_notices"
 version = "0.1.0"
 dependencies = [

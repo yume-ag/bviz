@@ -76,10 +76,10 @@ impl fmt::Display for ThreadName {
     }
 }
 
+pub use fragment::fragment_pairs;
 #[cfg(target_family = "wasm")]
 pub use fragment::set_from_fragment;
 
-#[cfg(any(test, target_family = "wasm"))]
 mod fragment {
     /// The switches the page's fragment set, once read.
     #[cfg(target_family = "wasm")]
@@ -90,31 +90,36 @@ mod fragment {
     /// `#`; a later call changes nothing.
     #[cfg(target_family = "wasm")]
     pub fn set_from_fragment(fragment: &str) {
-        let _ = SWITCHES.set(parse(fragment));
+        let _ = SWITCHES.set(fragment_pairs(fragment));
     }
 
-    /// The switches `fragment` names, `&`-separated, each a percent-encoded
-    /// name with an optional `=value`; a name without one is set to empty.
-    pub(crate) fn parse(fragment: &str) -> Vec<(String, String)> {
+    /// The names and values a URL fragment, with or without its `#`, sets:
+    /// `&`-separated, each a percent-encoded name with an optional `=value`;
+    /// a name without one is set to empty.
+    pub fn fragment_pairs(fragment: &str) -> Vec<(String, String)> {
         let fragment = fragment.strip_prefix('#').unwrap_or(fragment);
         let decode = |text: &str| {
             percent_encoding::percent_decode_str(text)
                 .decode_utf8_lossy()
                 .into_owned()
         };
-        fragment
-            .split('&')
-            .filter(|switch| !switch.is_empty())
-            .map(|switch| {
-                let (name, value) = switch.split_once('=').unwrap_or((switch, ""));
-                (decode(name), decode(value))
-            })
-            .collect()
+        let mut pairs =
+            Vec::with_capacity(fragment.bytes().filter(|&byte| byte == b'&').count() + 1);
+        pairs.extend(
+            fragment
+                .split('&')
+                .filter(|pair| !pair.is_empty())
+                .map(|pair| {
+                    let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+                    (decode(name), decode(value))
+                }),
+        );
+        pairs
     }
 
     #[cfg(test)]
     mod tests {
-        use super::parse;
+        use super::fragment_pairs as parse;
 
         fn owned(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
             pairs
