@@ -98,6 +98,7 @@ dlmalloc = "0.2"
 fastrand = "2"
 fixedbitset = "0.5"
 flate2 = { version = "1", features = ["zlib-rs"] }
+futures-channel = "0.3"
 hashbrown = { version = "0.16", default-features = false }
 heck = "0.5"
 js-sys = "0.3"

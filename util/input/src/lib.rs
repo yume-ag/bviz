@@ -25,6 +25,12 @@ pub use progress::{Counted, ReadProgress};
 /// wrote it, reads within these.
 pub const HEAD_BYTES: usize = 256 << 10;
 
+/// The most bytes reserved for the rest of an input's declared size before
+/// they arrive: a size a fetched document's server declares takes no more
+/// memory than this until its bytes come, and the rest is reserved in one step
+/// once they have.
+pub const RESERVED_AHEAD_BYTES: u64 = 64 << 20;
+
 /// A source read at any offset, by several readers at once.
 pub trait ReadAt: Send + Sync {
     /// Reads into `buf` from `offset`, returning how many bytes it read: fewer
@@ -244,23 +250,29 @@ impl Input {
         let read_ahead = self.read_ahead();
         let size = self.size();
         let reached = self.reached;
-        let with_room = |head: Option<Vec<u8>>| {
-            let mut all = head.unwrap_or_default();
-            if let Some(size) = size {
-                reserve_exact(&mut all, size.saturating_sub(read_ahead))?;
-            }
-            io::Result::Ok(all)
-        };
         let all = match self.access {
             Access::Memory(bytes) => bytes,
             Access::Seekable { source, .. } => {
-                let mut all = with_room(self.head)?;
-                source.read_to_end_from(read_ahead, &mut all)?;
+                let mut all = self.head.unwrap_or_default();
+                let ahead = reserve_ahead(&mut all, size)?;
+                let read = At::new(&*source, read_ahead)
+                    .take(ahead)
+                    .read_to_end(&mut all)?;
+                if read as u64 == ahead {
+                    reserve_rest(&mut all, size)?;
+                    let offset = all.len() as u64;
+                    source.read_to_end_from(offset, &mut all)?;
+                }
                 all
             }
             Access::Stream { mut reader, .. } => {
-                let mut all = with_room(self.head)?;
-                reader.read_to_end(&mut all)?;
+                let mut all = self.head.unwrap_or_default();
+                let ahead = reserve_ahead(&mut all, size)?;
+                let read = (&mut reader).take(ahead).read_to_end(&mut all)?;
+                if read as u64 == ahead {
+                    reserve_rest(&mut all, size)?;
+                    reader.read_to_end(&mut all)?;
+                }
                 all
             }
         };
@@ -301,6 +313,27 @@ pub fn reserved<T>(capacity: usize) -> Vec<T> {
     let mut items = Vec::new();
     let _ = items.try_reserve_exact(capacity);
     items
+}
+
+/// Reserves room in `all`, which holds the start of an input of `size` bytes,
+/// for at most [`RESERVED_AHEAD_BYTES`] more of it, returning how many bytes
+/// to read before [`reserve_rest`], once they have all arrived.
+fn reserve_ahead(all: &mut Vec<u8>, size: Option<u64>) -> io::Result<u64> {
+    let Some(size) = size else {
+        return Ok(u64::MAX);
+    };
+    let ahead = (size.saturating_sub(all.len() as u64)).min(RESERVED_AHEAD_BYTES);
+    reserve_exact(all, ahead)?;
+    Ok(ahead)
+}
+
+/// Reserves room in `all`, which holds the start of an input of `size`
+/// bytes, for the rest of it.
+fn reserve_rest(all: &mut Vec<u8>, size: Option<u64>) -> io::Result<()> {
+    match size {
+        Some(size) => reserve_exact(all, size.saturating_sub(all.len() as u64)),
+        None => Ok(()),
+    }
 }
 
 /// Reserves room in `buf` for `additional` more bytes, failing with
@@ -503,16 +536,46 @@ mod tests {
         assert!(progress.is_done());
     }
 
-    #[test]
-    fn a_size_past_what_memory_can_hold_fails_the_read_whole() {
+    /// An input of `content` that declares `size`, read once, in order.
+    fn declaring(content: Vec<u8>, size: u64) -> Input {
         let access = Access::Stream {
-            reader: Box::new(io::Cursor::new(bytes(1))),
-            size: Some(u64::MAX),
+            reader: Box::new(io::Cursor::new(content)),
+            size: Some(size),
         };
-        let input = Input::new("huge".into(), access).expect("an in-memory input reads");
+        Input::new("declaring".into(), access).expect("an in-memory input reads")
+    }
+
+    /// Bytes enough to fill the head and what is reserved ahead, and one more.
+    fn past_the_reservation() -> Vec<u8> {
+        bytes(HEAD_BYTES + RESERVED_AHEAD_BYTES as usize + 1)
+    }
+
+    #[test]
+    fn a_size_past_what_memory_can_hold_fails_the_read_whole_once_its_bytes_come() {
         assert_eq!(
-            input.read_all().map_err(|e| e.kind()),
+            declaring(past_the_reservation(), u64::MAX)
+                .read_all()
+                .map_err(|e| e.kind()),
             Err(io::ErrorKind::OutOfMemory)
         );
+    }
+
+    #[test]
+    fn a_declared_size_reserves_no_more_than_the_reservation_ahead_before_its_bytes_come() {
+        let all = declaring(bytes(3), 1 << 40).read_all().unwrap();
+        assert_eq!(all, bytes(3));
+        assert!(all.capacity() <= HEAD_BYTES + RESERVED_AHEAD_BYTES as usize);
+    }
+
+    #[test]
+    fn a_size_the_bytes_reach_is_reserved_whole() {
+        let content = past_the_reservation();
+        let size = content.len() as u64;
+        let all = declaring(content.clone(), size).read_all().unwrap();
+        assert_eq!(all, content);
+        assert_eq!(all.capacity(), content.len());
+        let all = seekable(content.clone()).read_all().unwrap();
+        assert_eq!(all, content);
+        assert_eq!(all.capacity(), content.len());
     }
 }

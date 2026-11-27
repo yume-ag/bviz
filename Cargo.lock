@@ -1189,8 +1189,10 @@ version = "0.1.0"
 dependencies = [
  "bviz_alloc",
  "bviz_input",
+ "bviz_links",
  "bviz_parallel",
  "console_error_panic_hook",
+ "futures-channel",
  "js-sys",
  "wasm-bindgen",
  "wasm-bindgen-futures",
